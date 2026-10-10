@@ -59,6 +59,32 @@ spec:
         fsGroup: 33
         seccompProfile:
           type: RuntimeDefault
+      # local-path plus fsGroup leaves the volume root owned by root with setgid, and the
+      # official entrypoint's tar copy aborts when it cannot chmod that directory. A uid 33
+      # owned subdirectory avoids it.
+      initContainers:
+        - name: prepare-html
+          image: {{ include "store.wordpressImage" . }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - mkdir
+            - -p
+            - /volume/html
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          volumeMounts:
+            - name: html
+              mountPath: /volume
       containers:
         - name: wordpress
           image: {{ include "store.wordpressImage" . }}
@@ -103,6 +129,7 @@ spec:
           volumeMounts:
             - name: html
               mountPath: /var/www/html
+              subPath: html
       volumes:
         - name: html
           persistentVolumeClaim:

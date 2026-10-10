@@ -75,6 +75,15 @@ done
 lacks "$w" "sysctls:" wordpress
 pass "wordpress"
 
+# The volume root is root-owned and setgid (local-path plus fsGroup), so the official
+# entrypoint's tar copy fails there. WordPress lives in a uid 33 subdirectory instead.
+for want in "initContainers:" "name: prepare-html" "- mkdir" "- /volume/html" "mountPath: /volume" "subPath: html"; do
+  has "$w" "$want" "wordpress subPath"
+done
+[ "$(grep -c "runAsUser: 33" <<<"$w")" -ge 1 ] || fail "wordpress subPath: uid"
+[ "$(grep -c "cpu: 10m" <<<"$w")" -eq 1 ] || fail "wordpress subPath: init resources"
+pass "wordpress subPath html"
+
 i=$(show ingress.yaml)
 for want in "ingressClassName: traefik" "host: main.shop.127.0.0.1.nip.io" "name: wordpress"; do
   has "$i" "$want" ingress
@@ -98,6 +107,7 @@ for want in "kind: Job" "name: store-bootstrap" "\"helm.sh/hook\": post-install,
   "claimName: wordpress-html" "cpu: 500m" "memory: 384Mi"; do
   has "$j" "$want" bootstrap
 done
+has "$j" "subPath: html" bootstrap
 lacks "$j" "readinessProbe" bootstrap
 pass "bootstrap job"
 

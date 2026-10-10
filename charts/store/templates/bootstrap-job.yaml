@@ -75,6 +75,7 @@ spec:
           volumeMounts:
             - name: html
               mountPath: /var/www/html
+              subPath: html
       volumes:
         - name: html
           persistentVolumeClaim:
