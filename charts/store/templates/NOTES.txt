@@ -1,0 +1,8 @@
+Store {{ .Values.storeName }} ({{ .Values.slug }}) in namespace {{ .Release.Namespace }}.
+
+Storefront: {{ include "store.url" . }}
+wp-admin:   {{ include "store.url" . }}/wp-admin
+
+Admin user and password (printed only when you run these):
+  kubectl -n {{ .Release.Namespace }} get secret store-wp -o jsonpath='{.data.WP_ADMIN_USER}' | base64 -d; echo
+  kubectl -n {{ .Release.Namespace }} get secret store-wp -o jsonpath='{.data.WP_ADMIN_PASSWORD}' | base64 -d; echo

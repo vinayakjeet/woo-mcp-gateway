@@ -1,0 +1,81 @@
+# Helm runs post-install hooks only after the release is ready, which is why WordPress
+# readiness (healthz.php) must not depend on an installed site.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-bootstrap
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bootstrap
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "store.labels" . | nindent 8 }}
+        app.kubernetes.io/component: bootstrap
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ include "store.wordpressImage" . }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/store/bootstrap.sh
+          env:
+            {{- include "store.wordpressEnv" . | nindent 12 }}
+            - name: STORE_NAME
+              value: {{ .Values.storeName | quote }}
+            - name: WP_ADMIN_EMAIL
+              value: {{ .Values.admin.email | quote }}
+            - name: WP_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: store-wp
+                  key: WP_ADMIN_USER
+            - name: WP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: store-wp
+                  key: WP_ADMIN_PASSWORD
+            - name: WC_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: store-wc-api
+                  key: WC_CONSUMER_KEY
+            - name: WC_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: store-wc-api
+                  key: WC_CONSUMER_SECRET
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          volumeMounts:
+            - name: html
+              mountPath: /var/www/html
+      volumes:
+        - name: html
+          persistentVolumeClaim:
+            claimName: wordpress-html

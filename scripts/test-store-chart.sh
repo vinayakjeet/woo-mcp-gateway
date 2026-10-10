@@ -85,7 +85,24 @@ has "$it" "cert-manager.io/cluster-issuer: letsencrypt-prod" "ingress tls"
 has "$it" "secretName: wordpress-tls" "ingress tls"
 pass "ingress"
 
-if render --set global.imageTag=latest >/dev/null 2>&1; then fail "imageTag latest accepted"; fi
+{ render --set global.imageTag=latest 2>&1 || true; } | grep -q "global.imageTag must not be latest" || fail "imageTag latest accepted"
 pass "imageTag latest rejected"
+
+j=$(show bootstrap-job.yaml)
+pod_checks "$j" 33 bootstrap
+for want in "kind: Job" "name: store-bootstrap" "\"helm.sh/hook\": post-install,post-upgrade" \
+  "\"helm.sh/hook-delete-policy\": before-hook-creation,hook-succeeded" \
+  "backoffLimit: 3" "activeDeadlineSeconds: 600" "restartPolicy: Never" \
+  "- /opt/store/bootstrap.sh" "name: STORE_NAME" "value: \"Main Store\"" \
+  "key: WP_ADMIN_PASSWORD" "key: WC_CONSUMER_KEY" "key: WC_CONSUMER_SECRET" \
+  "claimName: wordpress-html" "cpu: 500m" "memory: 384Mi"; do
+  has "$j" "$want" bootstrap
+done
+lacks "$j" "readinessProbe" bootstrap
+pass "bootstrap job"
+
+render | grep -q "main.shop.127.0.0.1.nip.io" || fail "render"
+helm template store-main charts/store -n store-main -f deploy/store-values-local.yaml --set slug=main >/dev/null
+pass "full render"
 
 echo "OK"
