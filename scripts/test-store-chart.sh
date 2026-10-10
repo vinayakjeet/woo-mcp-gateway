@@ -42,4 +42,24 @@ lacks "$s" "name: store-mcp-token" "secrets without token"
 has "$(show secrets.yaml --set mcp.sharedToken=test-token)" "name: store-mcp-token" "secrets with token"
 pass "secrets"
 
+pod_checks() { # rendered yaml, uid, label
+  local y=$1
+  for want in "runAsNonRoot: true" "runAsUser: $2" "type: RuntimeDefault" \
+    "automountServiceAccountToken: false" "allowPrivilegeEscalation: false" "- ALL" \
+    "requests:" "limits:"; do
+    has "$y" "$want" "$3"
+  done
+}
+
+m=$(show mariadb.yaml)
+pod_checks "$m" 999 mariadb
+for want in "kind: StatefulSet" "serviceName: mariadb-headless" "image: mariadb:11.4.13" \
+  "clusterIP: None" "name: mariadb-headless" "port: 3306" \
+  "cpu: 100m" "memory: 256Mi" "cpu: \"1\"" "memory: 768Mi" \
+  "- --innodb_initialized" "storageClassName: local-path" "storage: 2Gi" \
+  "failureThreshold: 30" "fsGroup: 999"; do
+  has "$m" "$want" mariadb
+done
+pass "mariadb"
+
 echo "OK"
