@@ -1,0 +1,6 @@
+apiVersion: v2
+name: store
+description: One WooCommerce store (MariaDB, WordPress, bootstrap Job)
+type: application
+version: 0.1.0
+appVersion: 'wordpress-7.1.3-woocommerce-10.9.4'

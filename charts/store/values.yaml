@@ -1,0 +1,36 @@
+# Installer sets slug and storeName (Makefile or provisioner).
+slug: main
+storeName: Main Store
+
+global:
+  domain: 127.0.0.1.nip.io
+  scheme: http
+  imageTag: dev
+
+images:
+  # Empty means images imported into k3d with no registry prefix.
+  registry: ''
+  wordpress: store-wordpress
+  mariadb: mariadb:11.4.13
+
+ingress:
+  className: traefik
+  tls:
+    enabled: false
+    clusterIssuer: ''
+
+storage:
+  className: local-path
+  mariadb: 2Gi
+  wordpress: 2Gi
+
+admin:
+  user: admin
+  email: admin@example.com
+
+wordpress:
+  environmentType: local
+
+# Passed by the installer from deploy/secrets/store-<slug>.yaml; woo-mcp uses it after M1.
+mcp:
+  sharedToken: ''
