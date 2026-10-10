@@ -62,4 +62,30 @@ for want in "kind: StatefulSet" "serviceName: mariadb-headless" "image: mariadb:
 done
 pass "mariadb"
 
+w=$(show wordpress.yaml)
+pod_checks "$w" 33 wordpress
+for want in "kind: PersistentVolumeClaim" "name: wordpress-html" "type: Recreate" \
+  "image: store-wordpress:dev" "fsGroup: 33" "containerPort: 8080" "port: 80" "targetPort: http" \
+  "path: /healthz.php" "tcpSocket:" "periodSeconds: 20" "failureThreshold: 6" \
+  "failureThreshold: 30" "cpu: 100m" "memory: 256Mi" "memory: 512Mi" \
+  "key: MARIADB_PASSWORD" "key: WORDPRESS_NONCE_SALT" "define('WP_HOME', 'http://main.shop.127.0.0.1.nip.io');" \
+  "define('WP_ENVIRONMENT_TYPE', 'local');" "mountPath: /var/www/html"; do
+  has "$w" "$want" wordpress
+done
+lacks "$w" "sysctls:" wordpress
+pass "wordpress"
+
+i=$(show ingress.yaml)
+for want in "ingressClassName: traefik" "host: main.shop.127.0.0.1.nip.io" "name: wordpress"; do
+  has "$i" "$want" ingress
+done
+lacks "$i" "tls:" ingress
+it=$(show ingress.yaml --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=letsencrypt-prod)
+has "$it" "cert-manager.io/cluster-issuer: letsencrypt-prod" "ingress tls"
+has "$it" "secretName: wordpress-tls" "ingress tls"
+pass "ingress"
+
+if render --set global.imageTag=latest >/dev/null 2>&1; then fail "imageTag latest accepted"; fi
+pass "imageTag latest rejected"
+
 echo "OK"
