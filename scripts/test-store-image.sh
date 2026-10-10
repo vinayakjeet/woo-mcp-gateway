@@ -79,4 +79,44 @@ pass "healthz.php 503 after the database stops"
 docker start sit-db >/dev/null
 wait_code 200
 
+# Fixed test keys in the ck_/cs_ + 40 hex format. Not secrets.
+TEST_CK=ck_$(printf 'a%.0s' $(seq 40))
+TEST_CS=cs_$(printf 'b%.0s' $(seq 40))
+TEST_TITLE="Asha's Shop, Pune"
+
+run_bootstrap() {
+  docker exec \
+    -e WP_HOME="http://127.0.0.1:$PORT" -e STORE_NAME="$TEST_TITLE" \
+    -e WP_ADMIN_USER=admin -e WP_ADMIN_PASSWORD=test-only-password \
+    -e WP_ADMIN_EMAIL=admin@example.com \
+    -e WC_CONSUMER_KEY="$TEST_CK" -e WC_CONSUMER_SECRET="$TEST_CS" \
+    sit-wp /opt/store/bootstrap.sh 2>&1 | tail -1
+}
+wpc() { docker exec sit-wp wp --path=/var/www/html "$@"; }
+
+for run in 1 2; do
+  line=$(run_bootstrap || true)
+  [ "$line" = "store-bootstrap: ok url=http://127.0.0.1:$PORT products=3 cod=yes mcp_feature=no" ] \
+    || fail "bootstrap run $run summary: $line"
+  pass "bootstrap run $run summary"
+done
+
+# WordPress stores blogname HTML-escaped (&#039;), so compare the decoded value.
+title=$(wpc eval 'echo html_entity_decode(get_option("blogname"), ENT_QUOTES);')
+[ "$title" = "$TEST_TITLE" ] || fail "title: $title"
+[ "$(wpc option get woocommerce_currency)" = "INR" ] || fail "currency"
+[ "$(wpc option get woocommerce_ship_to_countries)" = "disabled" ] || fail "shipping disabled"
+[ "$(wpc option get permalink_structure)" = "/%postname%/" ] || fail "permalinks"
+[ "$(wpc post list --post_type=page --name=checkout --format=count)" = "1" ] || fail "one checkout page"
+pass "options, permalinks and pages"
+
+# The hash check needs the plain key inside the container, passed as CK.
+match=$(docker exec -e CK="$TEST_CK" sit-wp wp --path=/var/www/html eval 'global $wpdb; echo $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_api_keys WHERE consumer_key = %s AND permissions = %s AND truncated_key = %s", wc_api_hash(getenv("CK")), "read_write", substr(getenv("CK"), -7)));')
+[ "$match" = "1" ] || fail "stored key does not match WC_CONSUMER_KEY"
+pass "stored key hash matches WC_CONSUMER_KEY"
+
+keys=$(wpc eval 'global $wpdb; echo $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_api_keys WHERE description = \"mcp-gateway\"");')
+[ "$keys" = "1" ] || fail "expected 1 mcp-gateway key, got $keys"
+pass "exactly one mcp-gateway API key after two runs"
+
 echo "OK"
