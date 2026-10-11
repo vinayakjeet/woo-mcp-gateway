@@ -67,7 +67,7 @@ spec:
       # owned subdirectory avoids it.
       initContainers:
         - name: prepare-html
-          image: {{ include "store.wordpressImage" . }}
+          image: {{ include "store.image" (list . .Values.images.wordpress) }}
           imagePullPolicy: IfNotPresent
           command:
             - mkdir
@@ -90,7 +90,7 @@ spec:
               mountPath: /volume
       containers:
         - name: wordpress
-          image: {{ include "store.wordpressImage" . }}
+          image: {{ include "store.image" (list . .Values.images.wordpress) }}
           imagePullPolicy: IfNotPresent
           ports:
             # The image moves Apache to 8080 so uid 33 can bind it; the Service exposes 80.

@@ -30,7 +30,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: bootstrap
-          image: {{ include "store.wordpressImage" . }}
+          image: {{ include "store.image" (list . .Values.images.wordpress) }}
           imagePullPolicy: IfNotPresent
           command:
             - /opt/store/bootstrap.sh

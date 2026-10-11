@@ -18,12 +18,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ printf "%s://%s" .Values.global.scheme (include "store.host" .) }}
 {{- end }}
 
-{{- define "store.wordpressImage" -}}
-{{- if eq .Values.global.imageTag "latest" }}{{ fail "global.imageTag must not be latest" }}{{ end -}}
-{{- if .Values.images.registry -}}
-{{ printf "%s/%s:%s" .Values.images.registry .Values.images.wordpress .Values.global.imageTag }}
+{{/* Args: list . imageName */}}
+{{- define "store.image" -}}
+{{- $root := index . 0 -}}
+{{- if eq $root.Values.global.imageTag "latest" }}{{ fail "global.imageTag must not be latest" }}{{ end -}}
+{{- if $root.Values.images.registry -}}
+{{ printf "%s/%s:%s" $root.Values.images.registry (index . 1) $root.Values.global.imageTag }}
 {{- else -}}
-{{ printf "%s:%s" .Values.images.wordpress .Values.global.imageTag }}
+{{ printf "%s:%s" (index . 1) $root.Values.global.imageTag }}
 {{- end }}
 {{- end }}
 

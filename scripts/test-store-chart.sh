@@ -12,7 +12,7 @@ pass() { echo "PASS: $*"; }
 
 render() {
   helm template store-main charts/store --namespace store-main \
-    -f deploy/store-values-local.yaml --set slug=main --set-string storeName="Main Store" "$@"
+    -f deploy/store-values-local.yaml --set slug=main --set-string storeName="Main Store" --set mcp.sharedToken=test-token "$@"
 }
 show() { render --show-only "templates/$1" "${@:2}"; }
 has() { grep -qF -- "$2" <<<"$1" || fail "$3: missing '$2'"; }
@@ -38,7 +38,6 @@ for key in MARIADB_ROOT_PASSWORD MARIADB_PASSWORD WP_ADMIN_USER WP_ADMIN_PASSWOR
 done
 secret_value "$s" WC_CONSUMER_KEY | grep -Eqx 'ck_[0-9a-f]{40}' || fail "WC_CONSUMER_KEY format"
 secret_value "$s" WC_CONSUMER_SECRET | grep -Eqx 'cs_[0-9a-f]{40}' || fail "WC_CONSUMER_SECRET format"
-lacks "$s" "name: store-mcp-token" "secrets without token"
 has "$(show secrets.yaml --set mcp.sharedToken=test-token)" "name: store-mcp-token" "secrets with token"
 pass "secrets"
 
@@ -118,7 +117,43 @@ lacks "$j" "readinessProbe" bootstrap
 pass "bootstrap job"
 
 render | grep -q "main.shop.127.0.0.1.nip.io" || fail "render"
-helm template store-main charts/store -n store-main -f deploy/store-values-local.yaml --set slug=main >/dev/null
+helm template store-main charts/store -n store-main -f deploy/store-values-local.yaml --set slug=main --set mcp.sharedToken=test-token >/dev/null
 pass "full render"
+
+w=$(show woo-mcp.yaml)
+has "$w" "kind: Deployment" woo-mcp
+has "$w" "app.kubernetes.io/name: woo-mcp" woo-mcp
+lacks "$w" "app.kubernetes.io/name: store" woo-mcp
+# Every Service selects on a component label, so no Service can route to another workload's pods.
+for svc in wordpress.yaml mariadb.yaml woo-mcp.yaml; do
+  sel=$(show "$svc" | awk '/^kind: Service$/{svc=1} svc&&/^  selector:/{p=1;next} p&&/^  [a-z]/{p=0;svc=0} p')
+  services=$(show "$svc" | grep -c '^kind: Service$')
+  [ "$(grep -c 'app.kubernetes.io/component:' <<<"$sel")" -eq "$services" ] || fail "$svc: a Service selector lacks app.kubernetes.io/component"
+done
+has "$(show woo-mcp.yaml)" "app.kubernetes.io/component: woo-mcp" woo-mcp
+pass "service selectors include component"
+has "$w" "image: woo-mcp:dev" woo-mcp
+for s in "runAsNonRoot: true" "runAsUser: 10001" "type: RuntimeDefault" "allowPrivilegeEscalation: false" "readOnlyRootFilesystem: true" "automountServiceAccountToken: false" "path: /readyz" "path: /healthz" "cpu: 20m" "memory: 64Mi" "cpu: 250m" "memory: 192Mi"; do
+  has "$w" "$s" woo-mcp
+done
+has "$w" "value: http://wordpress.store-main.svc.cluster.local" woo-mcp
+has "$w" 'value: "http://main.shop.127.0.0.1.nip.io"' woo-mcp
+has "$w" "name: store-wc-api" woo-mcp
+has "$w" "name: store-mcp-token" woo-mcp
+lacks "$w" "test-token" woo-mcp
+pass "woo-mcp deployment"
+
+n=$(show networkpolicy-woo-mcp.yaml)
+has "$n" "kind: NetworkPolicy" netpol
+has "$n" "policyTypes:" netpol
+has "$n" "kubernetes.io/metadata.name: platform" netpol
+has "$n" "app.kubernetes.io/name: gateway" netpol
+has "$n" "port: 8080" netpol
+pass "woo-mcp networkpolicy"
+
+if helm template x charts/store -f deploy/store-values-local.yaml --set slug=main >/dev/null 2>&1; then
+  fail "render without mcp.sharedToken must fail"
+fi
+pass "sharedToken required"
 
 echo "OK"

@@ -11,6 +11,7 @@ images:
   # Empty means images imported into k3d with no registry prefix.
   registry: ''
   wordpress: store-wordpress
+  wooMcp: woo-mcp
   mariadb: mariadb:11.4.13
 
 ingress:
@@ -34,3 +35,10 @@ wordpress:
 # Passed by the installer from deploy/secrets/store-<slug>.yaml; woo-mcp uses it after M1.
 mcp:
   sharedToken: ''
+
+wooMcp:
+  # Only these pods may call woo-mcp (SPEC 16). The platform chart (M3) must label the gateway to match.
+  gateway:
+    namespace: platform
+    podLabels:
+      app.kubernetes.io/name: gateway

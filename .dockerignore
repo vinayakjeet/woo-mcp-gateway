@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+.git
+.notes
+.claude
+.superpowers
+deploy/secrets
+images

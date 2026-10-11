@@ -6,3 +6,5 @@ wp-admin:   {{ include "store.url" . }}/wp-admin
 Admin user and password (printed only when you run these):
   kubectl -n {{ .Release.Namespace }} get secret store-wp -o jsonpath='{.data.WP_ADMIN_USER}' | base64 -d; echo
   kubectl -n {{ .Release.Namespace }} get secret store-wp -o jsonpath='{.data.WP_ADMIN_PASSWORD}' | base64 -d; echo
+
+MCP endpoint (in-cluster, gateway pods only): http://woo-mcp.{{ .Release.Namespace }}.svc.cluster.local:8080/mcp

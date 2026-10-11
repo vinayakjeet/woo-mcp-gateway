@@ -1,0 +1,21 @@
+# SPEC 16: only the gateway may call woo-mcp. Exists from M2, before the default-deny policies of M10.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: woo-mcp-from-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: woo-mcp
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.wooMcp.gateway.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.wooMcp.gateway.podLabels | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
