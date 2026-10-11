@@ -58,9 +58,9 @@ seed=$(secret_value "$(doc "$s" platform-seed)" SEED_SERVERS)
 fxtoken=$(secret_value "$(doc "$s" fx-mcp-token)" MCP_SHARED_TOKEN)
 [ -n "$fxtoken" ] || fail "empty fx token"
 jq -e '.[] | select(.slug == "main") | .url == "http://woo-mcp.store-main.svc.cluster.local:8080/mcp"
-  and .kind == "store" and .managed == true and .auth.type == "bearer" and .auth.secret == "test-token"' \
+  and .kind == "store" and .managed == true and .protocolMode == "auto" and .auth.type == "bearer" and .auth.secret == "test-token"' \
   <<<"$seed" >/dev/null || fail "seed server main"
-jq -e --arg t "$fxtoken" '.[] | select(.slug == "fx") | .kind == "system" and .managed == true
+jq -e --arg t "$fxtoken" '.[] | select(.slug == "fx") | .kind == "system" and .managed == true and .protocolMode == "auto"
   and .auth.type == "bearer" and .auth.secret == $t and .url == "http://fx-mcp.platform.svc.cluster.local:8080/mcp"' \
   <<<"$seed" >/dev/null || fail "seed server fx"
 [ "$(jq length <<<"$seed")" -eq 2 ] || fail "seed server count"
