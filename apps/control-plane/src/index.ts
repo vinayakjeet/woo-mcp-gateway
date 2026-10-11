@@ -1,1 +1,29 @@
-export {};
+import pg from 'pg';
+import { buildInternalApp, buildPublicApp } from './app.js';
+import { requireEnv } from './env.js';
+import { pgDeps } from './repo.js';
+
+const env = requireEnv('DATABASE_URL', 'APP_ORIGIN');
+const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 5 });
+const deps = pgDeps(pool);
+const logger = {
+  redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'],
+};
+
+const pub = buildPublicApp(
+  deps,
+  { appOrigin: env.APP_ORIGIN, secureCookies: env.APP_ORIGIN.startsWith('https://') },
+  logger,
+);
+const internal = buildInternalApp(deps, logger);
+
+await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
+await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });
+
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    void Promise.all([pub.close(), internal.close()])
+      .then(() => pool.end())
+      .finally(() => process.exit(0));
+  });
+}

@@ -5,8 +5,10 @@ import { SCHEMA_VERSION } from '@woo/core/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrateAndSeed } from './migrate-run.js';
 import type { SeedServer } from './seed.js';
+import { freshDatabase } from './test-db.js';
 
-const url = process.env.TEST_DATABASE_URL;
+const base = process.env.TEST_DATABASE_URL;
+let url: string;
 const kek = randomBytes(32);
 
 function servers(mainToken: string): SeedServer[] {
@@ -30,21 +32,19 @@ function servers(mainToken: string): SeedServer[] {
   ];
 }
 const opts = (mainToken: string, adminPassword: string) => ({
-  databaseUrl: url!,
+  databaseUrl: url,
   kek,
   adminEmail: 'admin@example.com',
   adminPassword,
   seedServers: servers(mainToken),
 });
 
-describe.skipIf(!url)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
+describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
   let client: pg.Client;
   beforeAll(async () => {
+    url = await freshDatabase(base!, 'woo_migrate_test');
     client = new pg.Client({ connectionString: url });
     await client.connect();
-    await client.query(
-      'drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public',
-    );
   });
   afterAll(async () => {
     await client.end();
