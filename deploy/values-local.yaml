@@ -1,0 +1,7 @@
+global:
+  domain: 127.0.0.1.nip.io
+  scheme: http
+  imageTag: dev
+
+bootstrap:
+  adminEmail: admin@example.com

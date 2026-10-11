@@ -1,0 +1,33 @@
+global:
+  domain: 127.0.0.1.nip.io
+  scheme: http
+  imageTag: dev
+
+images:
+  # Empty means images imported into k3d with no registry prefix.
+  registry: ''
+  controlPlane: control-plane
+  gateway: gateway
+  fxMcp: fx-mcp
+  postgres: postgres:17-alpine
+
+storage:
+  className: local-path
+  postgres: 2Gi
+
+bootstrap:
+  adminEmail: admin@example.com
+
+# Passed by the installer from deploy/secrets/store-main.yaml. The same file feeds charts/store.
+mcp:
+  sharedToken: ''
+
+seed:
+  stores:
+    - slug: main
+      name: Main Store
+      namespace: store-main
+
+fxMcp:
+  slug: fx
+  name: Currency

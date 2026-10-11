@@ -1,0 +1,35 @@
+{{/* Args: list . component */}}
+{{- define "platform.labels" -}}
+{{ include "platform.selectorLabels" . }}
+app.kubernetes.io/component: {{ index . 1 }}
+app.kubernetes.io/part-of: platform
+app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
+{{- end }}
+
+{{/* Args: list . component. The name label is the component, so the gateway pod carries app.kubernetes.io/name: gateway (the woo-mcp NetworkPolicy matches it). */}}
+{{- define "platform.selectorLabels" -}}
+app.kubernetes.io/name: {{ index . 1 }}
+app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
+{{- end }}
+
+{{/* Args: list . imageName */}}
+{{- define "platform.image" -}}
+{{- $root := index . 0 -}}
+{{- if eq $root.Values.global.imageTag "latest" }}{{ fail "global.imageTag must not be latest" }}{{ end -}}
+{{- if $root.Values.images.registry -}}
+{{ printf "%s/%s:%s" $root.Values.images.registry (index . 1) $root.Values.global.imageTag }}
+{{- else -}}
+{{ printf "%s:%s" (index . 1) $root.Values.global.imageTag }}
+{{- end }}
+{{- end }}
+
+{{/* Existing base64 value from a looked-up Secret, or the new plain value encoded. Args: list data key new */}}
+{{- define "platform.secretValue" -}}
+{{- $data := index . 0 -}}
+{{- $key := index . 1 -}}
+{{- if hasKey $data $key -}}
+{{ index $data $key }}
+{{- else -}}
+{{ index . 2 | b64enc }}
+{{- end -}}
+{{- end }}
