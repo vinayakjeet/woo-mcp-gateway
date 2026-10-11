@@ -159,3 +159,110 @@ describe('POST /api/auth/login', () => {
     ).toBe(400);
   });
 });
+
+describe('login rate limits', () => {
+  const post = (
+    app: ReturnType<typeof buildPublicApp>,
+    email: string,
+    xff?: string,
+    origin: string | null = ORIGIN,
+  ) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: {
+        'content-type': 'application/json',
+        ...(origin ? { origin } : {}),
+        ...(xff ? { 'x-forwarded-for': xff } : {}),
+      },
+      payload: JSON.stringify({ email, password: 'pw-wrong' }),
+    });
+  const publicApp = () =>
+    buildPublicApp(fakeDeps(null).deps, { appOrigin: ORIGIN, secureCookies: false });
+
+  it('allows 10 attempts per minute per IP and answers 429 after that', async () => {
+    const app = publicApp();
+    for (let i = 0; i < 10; i++) {
+      expect((await post(app, `u${i}@example.com`, '203.0.113.7')).statusCode).toBe(401);
+    }
+    const r = await post(app, 'u10@example.com', '203.0.113.7');
+    expect(r.statusCode).toBe(429);
+    expect(r.json()).toEqual({ error: 'rate_limited' });
+    expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+    expect((await post(app, 'u11@example.com', '203.0.113.8')).statusCode).toBe(401);
+  });
+
+  it('allows 5 attempts per minute per email across IPs, case-insensitively', async () => {
+    const app = publicApp();
+    const emails = ['Target@Example.com', 'target@example.com', 'TARGET@example.com'];
+    for (let i = 0; i < 5; i++) {
+      expect((await post(app, emails[i % 3]!, `198.51.100.${i}`)).statusCode).toBe(401);
+    }
+    const r = await post(app, 'target@example.com', '198.51.100.99');
+    expect(r.statusCode).toBe(429);
+    expect(r.json()).toEqual({ error: 'rate_limited' });
+    expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
+    expect((await post(app, 'other@example.com', '198.51.100.99')).statusCode).toBe(401);
+  });
+
+  it('trusts only the address the proxy added, so a forged left entry does not reset the IP limit', async () => {
+    const app = publicApp();
+    for (let i = 0; i < 10; i++) {
+      expect((await post(app, `s${i}@example.com`, `forged-${i}, 192.0.2.50`)).statusCode).toBe(
+        401,
+      );
+    }
+    expect((await post(app, 's10@example.com', 'forged-x, 192.0.2.50')).statusCode).toBe(429);
+  });
+
+  it('does not count requests that fail the Origin check', async () => {
+    const app = publicApp();
+    for (let i = 0; i < 20; i++) {
+      expect((await post(app, 'v@example.com', '192.0.2.60', null)).statusCode).toBe(403);
+    }
+    expect((await post(app, 'v@example.com', '192.0.2.60')).statusCode).toBe(401);
+  });
+});
+
+describe('error handling', () => {
+  it('logs the error code and route, never the message, and answers 500 without detail', async () => {
+    const lines: string[] = [];
+    const drizzleLike = Object.assign(
+      new Error('Failed query: insert into sessions ...\nparams: LEAKMARKER,hunter2'),
+      { cause: Object.assign(new Error('boom'), { code: '23505' }) },
+    );
+    const { deps } = fakeDeps(user(), {
+      createSession: async () => {
+        throw drizzleLike;
+      },
+    });
+    const app = buildPublicApp(
+      deps,
+      { appOrigin: ORIGIN, secureCookies: false },
+      {
+        level: 'info',
+        stream: { write: (s: string) => void lines.push(s) },
+      },
+    );
+    const r = await login(app, { email: 'admin@example.com', password: 'pw-correct' });
+    expect(r.statusCode).toBe(500);
+    expect(r.json()).toEqual({ error: 'internal_error' });
+    const logs = lines.join('');
+    expect(logs).toContain('23505');
+    expect(logs).toContain('/api/auth/login');
+    expect(logs).not.toContain('LEAKMARKER');
+    expect(logs).not.toContain('hunter2');
+    expect(logs).not.toContain('pw-correct');
+  });
+
+  it('keeps 4xx for malformed requests', async () => {
+    const app = buildPublicApp(fakeDeps(user()).deps, { appOrigin: ORIGIN, secureCookies: false });
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      payload: '{not json',
+    });
+    expect(r.statusCode).toBe(400);
+  });
+});

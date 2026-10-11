@@ -1,6 +1,6 @@
 import { parseKek } from '@woo/core';
 import { requireEnv } from './env.js';
-import { migrateAndSeed } from './migrate-run.js';
+import { MigrateStepError, migrateAndSeed } from './migrate-run.js';
 import { parseSeedServers } from './seed.js';
 
 try {
@@ -22,9 +22,12 @@ try {
     }),
   );
 } catch (err) {
-  // Only the message: a driver error object can carry the connection string.
-  console.error(
-    JSON.stringify({ level: 'error', msg: 'migrate failed', error: (err as Error).message }),
-  );
+  // A step error carries only a step name and a code. Anything else is one of our own
+  // validation messages (env, KEK, seed JSON), which never include values.
+  const detail =
+    err instanceof MigrateStepError
+      ? { step: err.step, code: err.code }
+      : { error: (err as Error).message };
+  console.error(JSON.stringify({ level: 'error', msg: 'migrate failed', ...detail }));
   process.exit(1);
 }

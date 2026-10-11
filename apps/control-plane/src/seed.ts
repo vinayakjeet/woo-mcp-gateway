@@ -48,8 +48,9 @@ export async function seedServers(db: Db, servers: SeedServer[], kek: Buffer): P
       managed: s.managed,
       authType: s.auth.type,
       authHeaderName: s.auth.type === 'header' ? s.auth.headerName : null,
-      authSecretEnc: s.auth.type === 'none' ? null : encryptSecret(s.auth.secret, kek),
+      authSecretEnc: s.auth.type === 'none' ? null : encryptSecret(s.auth.secret, kek, s.slug),
     };
+    // The secret is rewritten on every run, which also re-encrypts rows that predate the slug as aad.
     // enabled is left out of the update so an admin's choice survives an upgrade.
     await db
       .insert(schema.mcpServers)

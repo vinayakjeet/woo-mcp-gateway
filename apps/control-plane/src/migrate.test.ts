@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { decryptSecret } from '@woo/core';
+import { decryptSecret, encryptSecret } from '@woo/core';
 import { SCHEMA_VERSION } from '@woo/core/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { migrateAndSeed } from './migrate-run.js';
+import { MIGRATION_LOCK, MigrateStepError, migrateAndSeed } from './migrate-run.js';
 import type { SeedServer } from './seed.js';
 import { freshDatabase } from './test-db.js';
 
@@ -73,7 +73,7 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
       ['fx', 'system', 'bearer'],
       ['main', 'store', 'bearer'],
     ]);
-    expect(decryptSecret(r.rows[1].auth_secret_enc, kek)).toBe('tok-1');
+    expect(decryptSecret(r.rows[1].auth_secret_enc, kek, 'main')).toBe('tok-1');
   });
 
   it('reseeding updates the token, keeps enabled and the existing admin', async () => {
@@ -81,7 +81,7 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
     await client.query("update mcp_servers set enabled = false where slug = 'fx'");
     await migrateAndSeed(opts('tok-2', 'pw-two'));
     const main = await client.query("select auth_secret_enc from mcp_servers where slug = 'main'");
-    expect(decryptSecret(main.rows[0].auth_secret_enc, kek)).toBe('tok-2');
+    expect(decryptSecret(main.rows[0].auth_secret_enc, kek, 'main')).toBe('tok-2');
     const fx = await client.query("select enabled from mcp_servers where slug = 'fx'");
     expect(fx.rows[0].enabled).toBe(false);
     const after = await client.query('select password_hash from users');
@@ -89,8 +89,79 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
     expect(after.rows[0].password_hash).toBe(before.rows[0].password_hash);
   });
 
+  it('binds each secret to its slug', async () => {
+    const r = await client.query("select auth_secret_enc from mcp_servers where slug = 'main'");
+    expect(() => decryptSecret(r.rows[0].auth_secret_enc, kek, 'fx')).toThrow();
+  });
+
+  it('reseeding re-encrypts a row stored without the slug as aad', async () => {
+    await client.query("update mcp_servers set auth_secret_enc = $1 where slug = 'main'", [
+      encryptSecret('tok-2', kek, ''),
+    ]);
+    await migrateAndSeed(opts('tok-2', 'pw-two'));
+    const r = await client.query("select auth_secret_enc from mcp_servers where slug = 'main'");
+    expect(decryptSecret(r.rows[0].auth_secret_enc, kek, 'main')).toBe('tok-2');
+  });
+
   it('records every migration', async () => {
     const r = await client.query('select count(*)::int as n from drizzle.__drizzle_migrations');
     expect(r.rows[0].n).toBe(SCHEMA_VERSION);
+  });
+});
+
+describe.skipIf(!base)('migrateAndSeed failures (needs TEST_DATABASE_URL)', () => {
+  it('reports the step and the SQLSTATE, never the query params', async () => {
+    url = await freshDatabase(base!, 'woo_migrate_fail_test');
+    const bad = servers('tok-1');
+    // A NUL byte is rejected by Postgres, so the failing insert carries LEAKMARKER in its params.
+    bad[0]!.name = 'LEAKMARKER\u0000';
+    const err = await migrateAndSeed({ ...opts('tok-1', 'pw'), seedServers: bad }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(MigrateStepError);
+    expect(err).toMatchObject({ step: 'seed-servers', code: '22021' });
+    expect(String((err as Error).message)).not.toContain('LEAKMARKER');
+    expect((err as Error).message).toBe('seed-servers failed (code 22021)');
+  });
+
+  it('times out waiting for the lock, closes its connection and works again once the lock is free', async () => {
+    url = await freshDatabase(base!, 'woo_migrate_lock_test');
+    const holder = new pg.Client({ connectionString: url });
+    await holder.connect();
+    await holder.query('select pg_advisory_lock($1)', [MIGRATION_LOCK]);
+    try {
+      const err = await migrateAndSeed({ ...opts('tok-1', 'pw'), lockTimeout: '300ms' }).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toMatchObject({ step: 'lock', code: '55P03' });
+      const waiting = await holder.query(
+        'select count(*)::int as n from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()',
+      );
+      expect(waiting.rows[0].n).toBe(0);
+    } finally {
+      await holder.end();
+    }
+    await expect(migrateAndSeed(opts('tok-1', 'pw'))).resolves.toMatchObject({
+      adminCreated: true,
+    });
+  });
+
+  it('survives the connection being killed while it waits for the lock', async () => {
+    url = await freshDatabase(base!, 'woo_migrate_kill_test');
+    const holder = new pg.Client({ connectionString: url });
+    await holder.connect();
+    await holder.query('select pg_advisory_lock($1)', [MIGRATION_LOCK]);
+    try {
+      const run = migrateAndSeed({ ...opts('tok-1', 'pw'), lockTimeout: '10s' }).catch(
+        (e: unknown) => e,
+      );
+      await new Promise((r) => setTimeout(r, 500));
+      await holder.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and query like '%pg_advisory_lock%'",
+      );
+      expect(await run).toMatchObject({ step: 'lock' });
+    } finally {
+      await holder.end();
+    }
   });
 });
