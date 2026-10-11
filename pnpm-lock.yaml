@@ -60,7 +60,21 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
 
-  apps/gateway: {}
+  apps/gateway:
+    dependencies:
+      '@woo/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      fastify:
+        specifier: 5.12.5
+        version: 5.12.5
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
 
   apps/web: {}
 
