@@ -41,9 +41,9 @@ describe('startMcpHttpServer', () => {
 
   it('turns a readyz probe that hangs past 2 s into 503', async () => {
     const url = await start(() => new Promise(() => {}));
-    const t = Date.now();
+    const t = performance.now();
     expect((await fetch(`${url}/readyz`)).status).toBe(503);
-    expect(Date.now() - t).toBeLessThan(2500);
+    expect(performance.now() - t).toBeLessThan(2500);
   });
 
   it('rejects /mcp without the right bearer token', async () => {
