@@ -19,6 +19,7 @@ function servers(mainToken: string): SeedServer[] {
       url: 'http://woo-mcp.store-main.svc.cluster.local:8080/mcp',
       kind: 'store',
       managed: true,
+      protocolMode: 'auto',
       auth: { type: 'bearer', secret: mainToken },
     },
     {
@@ -27,6 +28,7 @@ function servers(mainToken: string): SeedServer[] {
       url: 'http://fx-mcp.platform.svc.cluster.local:8080/mcp',
       kind: 'system',
       managed: true,
+      protocolMode: 'auto',
       auth: { type: 'bearer', secret: 'fx-token' },
     },
   ];
@@ -74,6 +76,23 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
       ['main', 'store', 'bearer'],
     ]);
     expect(decryptSecret(r.rows[1].auth_secret_enc, kek, 'main')).toBe('tok-1');
+  });
+
+  it('seeds main and fx with protocol_mode auto and reseeding rewrites it', async () => {
+    const modes = async () =>
+      (await client.query('select slug, protocol_mode from mcp_servers order by slug')).rows.map(
+        (x) => [x.slug, x.protocol_mode],
+      );
+    expect(await modes()).toEqual([
+      ['fx', 'auto'],
+      ['main', 'auto'],
+    ]);
+    await client.query("update mcp_servers set protocol_mode = 'legacy'");
+    await migrateAndSeed(opts('tok-1', 'pw-one'));
+    expect(await modes()).toEqual([
+      ['fx', 'auto'],
+      ['main', 'auto'],
+    ]);
   });
 
   it('reseeding updates the token, keeps enabled and the existing admin', async () => {

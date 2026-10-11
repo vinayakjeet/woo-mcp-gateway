@@ -17,6 +17,7 @@ const seedServer = z.object({
   url: z.url(),
   kind: z.enum(['external', 'store', 'hosted', 'system']),
   managed: z.boolean(),
+  protocolMode: z.enum(['legacy', 'auto']).default('legacy'),
   auth,
 });
 
@@ -46,11 +47,14 @@ export async function seedServers(db: Db, servers: SeedServer[], kek: Buffer): P
       url: s.url,
       kind: s.kind,
       managed: s.managed,
+      protocolMode: s.protocolMode,
       authType: s.auth.type,
       authHeaderName: s.auth.type === 'header' ? s.auth.headerName : null,
       authSecretEnc: s.auth.type === 'none' ? null : encryptSecret(s.auth.secret, kek, s.slug),
     };
     // The secret is rewritten on every run, which also re-encrypts rows that predate the slug as aad.
+    // protocol_mode is rewritten like url: our own servers speak the 2026 era, and the gateway can
+    // only cancel an upstream handler on a timeout in that era.
     // enabled is left out of the update so an admin's choice survives an upgrade.
     await db
       .insert(schema.mcpServers)

@@ -25,6 +25,19 @@ describe('parseSeedServers', () => {
     );
     expect(list.map((s) => s.slug)).toEqual(['main', 'fx', 'open']);
   });
+  it('defaults protocolMode to legacy and accepts auto', () => {
+    const [a, b] = parseSeedServers(
+      JSON.stringify([
+        { ...base, auth: { type: 'none' } },
+        { ...base, slug: 'fx', protocolMode: 'auto', auth: { type: 'none' } },
+      ]),
+    );
+    expect(a?.protocolMode).toBe('legacy');
+    expect(b?.protocolMode).toBe('auto');
+    expect(() =>
+      parseSeedServers(JSON.stringify([{ ...base, protocolMode: 'v3', auth: { type: 'none' } }])),
+    ).toThrow(/protocolMode/);
+  });
   it('requires a secret for bearer and a header name for header', () => {
     expect(() => parseSeedServers(JSON.stringify([{ ...base, auth: { type: 'bearer' } }]))).toThrow(
       /auth/,
