@@ -106,7 +106,7 @@ for want in "kind: ServiceAccount" "name: control-plane" "name: control-plane-in
   "name: migrate" "- node" "- dist/migrate.js" "key: SEED_SERVERS" "name: platform-seed" "key: KEK" "name: platform-crypto" \
   "key: ADMIN_EMAIL" "key: ADMIN_PASSWORD" "key: API_KEY_PEPPER" "key: JWT_SIGNING_KEY" "key: INTERNAL_SECRET" \
   "key: DATABASE_URL" "name: APP_ORIGIN" "value: \"http://app.127.0.0.1.nip.io\"" \
-  "serviceAccountName: control-plane" "automountServiceAccountToken: true" \
+  "serviceAccountName: control-plane" "automountServiceAccountToken: false" \
   "path: /readyz" "path: /healthz" "containerPort: 3000" "containerPort: 3001" \
   "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 384Mi" "checksum/seed:" \
   "app.kubernetes.io/name: control-plane" "app.kubernetes.io/component: control-plane"; do
@@ -117,6 +117,9 @@ probe_port() { grep -A2 "$2:" <<<"$1" | grep -o 'port: [0-9]*' | head -1 | cut -
 [ "$(probe_port "$cp" readinessProbe)" = "3001" ] || fail "control-plane readiness port"
 [ "$(probe_port "$cp" livenessProbe)" = "3001" ] || fail "control-plane liveness port"
 lacks "$cp" "app.kubernetes.io/name: gateway" control-plane
+# The API token is mounted only once the provisioner (M5) needs the Kubernetes API.
+lacks "$cp" "automountServiceAccountToken: true" control-plane
+has "$(show control-plane.yaml --set provisioner.enabled=true)" "automountServiceAccountToken: true" "control-plane with provisioner"
 pass "control-plane"
 
 gw=$(show gateway.yaml)

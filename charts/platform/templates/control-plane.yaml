@@ -53,8 +53,8 @@ spec:
         checksum/seed: {{ list .Values.mcp.sharedToken .Values.seed .Values.fxMcp | toJson | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: control-plane
-      # The control-plane talks to the Kubernetes API from M5 on.
-      automountServiceAccountToken: true
+      # Only the provisioner (M5) talks to the Kubernetes API, so the token is mounted when it is enabled.
+      automountServiceAccountToken: {{ .Values.provisioner.enabled }}
       securityContext:
         {{- include "platform.nodePodSecurity" . | nindent 8 }}
       initContainers:
