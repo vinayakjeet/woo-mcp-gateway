@@ -5,6 +5,9 @@ metadata:
   labels:
     {{- include "store.labels" . | nindent 4 }}
     app.kubernetes.io/component: wordpress
+  # Kept like the MariaDB PVC and the Secrets, so a reinstall never pairs the old database with empty uploads.
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

@@ -75,6 +75,12 @@ done
 lacks "$w" "sysctls:" wordpress
 pass "wordpress"
 
+# The MariaDB PVC and the Secrets outlive an uninstall, so the WordPress files must too.
+# Otherwise a reinstall pairs an installed database with empty uploads.
+pvc=$(awk 'BEGIN{RS="---\n"} /kind: PersistentVolumeClaim/' <<<"$w")
+has "$pvc" "helm.sh/resource-policy: keep" "wordpress-html PVC"
+pass "wordpress-html PVC kept on uninstall"
+
 # The volume root is root-owned and setgid (local-path plus fsGroup), so the official
 # entrypoint's tar copy fails there. WordPress lives in a uid 33 subdirectory instead.
 for want in "initContainers:" "name: prepare-html" "- mkdir" "- /volume/html" "mountPath: /volume" "subPath: html"; do
