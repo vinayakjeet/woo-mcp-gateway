@@ -1,6 +1,7 @@
 import { schemaReady } from '@woo/core/db';
 import pg from 'pg';
 import { buildHealthApp } from './health.js';
+import { gatewayLogger } from './logger.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -9,7 +10,7 @@ if (!databaseUrl) {
 }
 
 const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-const app = buildHealthApp({ ready: () => schemaReady(pool) }, { level: 'info' });
+const app = buildHealthApp({ ready: () => schemaReady(pool) }, gatewayLogger);
 
 await app.listen({ host: '0.0.0.0', port: Number(process.env.HEALTH_PORT ?? 9090) });
 
