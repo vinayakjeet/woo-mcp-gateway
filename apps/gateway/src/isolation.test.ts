@@ -56,12 +56,12 @@ function record(id: string, slug: string, base: string, timeoutMs: number): Serv
     enabled: true,
     approval: 'approved',
     timeoutMs,
-    protocolMode: 'legacy',
+    protocolMode: 'auto',
     auth: { type: 'bearer', secret: TOKEN },
   };
 }
 
-describe.skip.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (mode) => {
+describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (mode) => {
   const audit: AuditRow[] = [];
   const silentAborts: number[] = [];
   let fast: Fake;
@@ -185,4 +185,45 @@ describe.skip.each(['legacy', 'auto'] as const)('gateway isolation, %s client er
     );
     await c.close();
   });
+
+  // A raw 2025-era POST, so closing it closes exactly the stream the gateway is answering on.
+  it.runIf(mode === 'legacy')(
+    'aborts the upstream call when the client closes the stream',
+    async () => {
+      const before = silentAborts.length;
+      const ac = new AbortController();
+      const res = fetch(url, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer good',
+          'mcp-protocol-version': '2025-11-25',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          method: 'tools/call',
+          params: { name: 'silent__wait', arguments: {} },
+        }),
+      }).catch(() => undefined);
+      await sleep(200);
+      const t0 = Date.now();
+      ac.abort();
+      await res;
+      await vi.waitFor(() => expect(silentAborts.length).toBe(before + 1), {
+        timeout: 900,
+        interval: 10,
+      });
+      expect(silentAborts.at(-1)! - t0).toBeLessThan(SILENT_TIMEOUT_MS - 200);
+      await vi.waitFor(() =>
+        expect(audit.at(-1)).toMatchObject({
+          exposedName: 'silent__wait',
+          outcome: 'upstream_error',
+          errorMessage: 'cancelled by client',
+        }),
+      );
+    },
+  );
 });
