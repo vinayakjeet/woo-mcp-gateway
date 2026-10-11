@@ -69,6 +69,11 @@ wait_code() {
 wait_code 503
 pass "healthz.php 503 without a database"
 
+# The Ingress sends Host without a port, so Apache must not fill in its own 8080.
+loc=$(curl -sI -H "Host: shop.test" "http://127.0.0.1:$PORT/wp-admin" | tr -d '\r' | grep -i '^location:' || true)
+[ "$loc" = "Location: http://shop.test/wp-admin/" ] || fail "wp-admin redirect: $loc"
+pass "directory redirect has no :8080"
+
 start_db
 wait_code 200
 pass "healthz.php 200 on an empty, uninstalled database"

@@ -27,12 +27,16 @@ COPY create-api-key.php /opt/store/create-api-key.php
 
 # uid 33 cannot bind ports below 1024, so Apache listens on 8080. The Service maps 80 to it.
 # chmod here instead of COPY --chmod, which needs BuildKit.
+# Self-referential URLs (mod_dir's /wp-admin -> /wp-admin/) take the host from the Host header.
+# The Ingress sends no port there, so Apache falls back to the vhost port. ServerName with :80
+# makes that fallback 80, which URLs omit, instead of the internal 8080.
 RUN set -eux; \
     chmod 0755 /opt/store/bootstrap.sh; \
     sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf; \
-    sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>/' /etc/apache2/sites-available/000-default.conf; \
+    sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8080>\n\tServerName localhost:80\n\tUseCanonicalName Off/' /etc/apache2/sites-available/000-default.conf; \
     grep -qx 'Listen 8080' /etc/apache2/ports.conf; \
-    grep -q '<VirtualHost \*:8080>' /etc/apache2/sites-available/000-default.conf
+    grep -q '<VirtualHost \*:8080>' /etc/apache2/sites-available/000-default.conf; \
+    grep -q 'ServerName localhost:80' /etc/apache2/sites-available/000-default.conf
 
 EXPOSE 8080
 
