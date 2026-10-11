@@ -12,7 +12,8 @@ const TIMEOUT = new Set<string>([
   'TimeoutError',
   SdkErrorCode.RequestTimeout,
 ]);
-const TLS = /^(ERR_TLS_|ERR_SSL_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_)/;
+const TLS =
+  /^(ERR_TLS_|ERR_SSL_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_)/;
 const PROTOCOL = new Set<string>([
   SdkErrorCode.InvalidResult,
   SdkErrorCode.UnsupportedResultType,

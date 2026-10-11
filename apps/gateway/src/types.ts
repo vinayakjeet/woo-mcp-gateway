@@ -42,7 +42,12 @@ export type ServerRecord = {
 };
 
 export type ToolState = 'active' | 'changed' | 'removed';
-export type PersistedTool = { name: string; exposedName: string; state: ToolState; definitionHash: string };
+export type PersistedTool = {
+  name: string;
+  exposedName: string;
+  state: ToolState;
+  definitionHash: string;
+};
 
 export type Principal = {
   userId: string;

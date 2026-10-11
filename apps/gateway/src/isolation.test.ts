@@ -37,7 +37,9 @@ function fakeUpstream(
       s.registerTool(
         tool,
         { description: `${tool} tool`, inputSchema: z.object({}) },
-        async (_args, ctx) => ({ content: [{ type: 'text', text: await answer(ctx.mcpReq.signal) }] }),
+        async (_args, ctx) => ({
+          content: [{ type: 'text', text: await answer(ctx.mcpReq.signal) }],
+        }),
       );
       return s;
     },
@@ -99,7 +101,10 @@ describe.skip.each(['legacy', 'auto'] as const)('gateway isolation, %s client er
     });
     await app.listen({ host: '127.0.0.1', port: 0 });
     url = new URL(`http://127.0.0.1:${(app.server.address() as AddressInfo).port}/mcp`);
-    await vi.waitFor(() => expect(registry.list()).toHaveLength(2), { timeout: 5000, interval: 20 });
+    await vi.waitFor(() => expect(registry.list()).toHaveLength(2), {
+      timeout: 5000,
+      interval: 20,
+    });
   });
 
   // Optional chaining: while the stubs throw, setup stops half way and teardown must not mask that error.
@@ -111,7 +116,10 @@ describe.skip.each(['legacy', 'auto'] as const)('gateway isolation, %s client er
   });
 
   async function connect(): Promise<Client> {
-    const c = new Client({ name: 'isolation-test', version: '0.0.0' }, { versionNegotiation: { mode } });
+    const c = new Client(
+      { name: 'isolation-test', version: '0.0.0' },
+      { versionNegotiation: { mode } },
+    );
     await c.connect(
       new StreamableHTTPClientTransport(url, {
         requestInit: { headers: { Authorization: 'Bearer good' } },
@@ -172,7 +180,9 @@ describe.skip.each(['legacy', 'auto'] as const)('gateway isolation, %s client er
     }
     expect(settled).toBe(false);
     for (const r of await hanging) expect(r.isError).toBe(true);
-    expect(audit.filter((a) => a.exposedName === 'fast__echo' && a.outcome === 'ok')).toHaveLength(3);
+    expect(audit.filter((a) => a.exposedName === 'fast__echo' && a.outcome === 'ok')).toHaveLength(
+      3,
+    );
     await c.close();
   });
 });

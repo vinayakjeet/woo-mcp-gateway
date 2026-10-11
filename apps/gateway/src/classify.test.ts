@@ -58,7 +58,9 @@ describe('classifyError with real client failures', () => {
   ] as const)('classifies HTTP %i as %s without echoing the credential', async (status, kind) => {
     const url = await serve((req, res) => {
       req.resume();
-      res.writeHead(status, { 'content-type': 'text/plain' }).end(`echo ${req.headers.authorization}`);
+      res
+        .writeHead(status, { 'content-type': 'text/plain' })
+        .end(`echo ${req.headers.authorization}`);
     });
     const f = await failureOf(url);
     expect(f.kind).toBe(kind);
