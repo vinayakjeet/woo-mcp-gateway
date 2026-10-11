@@ -1,7 +1,7 @@
 import { Client, StreamableHTTPClientTransport, type Tool } from '@modelcontextprotocol/client';
 import { errorCode } from '@woo/core';
 import { canonicalJson } from './canonical.js';
-import { classifyError } from './classify.js';
+import { classifyError, isConnectionReset } from './classify.js';
 import { Bulkhead, BulkheadFullError, CircuitBreaker } from './resilience.js';
 import type { CallOutcome, ErrorKind, Failure, Log, ServerRecord } from './types.js';
 
@@ -59,6 +59,8 @@ export class Upstream {
   private toolList: Tool[] = [];
   private toolsKey = '';
   private failures = 0;
+  private checking = false;
+  private resetSeen = false;
   private attempt = 0;
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
@@ -124,20 +126,28 @@ export class Upstream {
 
   async checkHealth(): Promise<void> {
     const client = this.client;
-    if (!client || this.stopped) return;
+    if (!client || this.stopped || this.checking) return;
+    this.checking = true;
     try {
       const { tools } = await client.listTools(undefined, {
         timeout: this.healthTimeoutMs,
         cacheMode: 'refresh',
       });
       if (this.client !== client) return;
+      this.resetSeen = false;
       this.ok(tools);
       this.schedule(this.healthIntervalMs, () => this.checkHealth());
     } catch (err) {
       if (this.client !== client) return;
-      this.fail(classifyError(err), err);
+      const f = classifyError(err);
+      // After a reset on a real call, a refused or unresolvable upstream is down now: no three strikes.
+      const immediate = this.resetSeen && FAST_PATH.has(f.kind);
+      this.resetSeen = false;
+      this.fail(f, err, immediate);
       if (this.st.state === 'unreachable') this.reconnect();
       else this.schedule(this.healthIntervalMs, () => this.checkHealth());
+    } finally {
+      this.checking = false;
     }
   }
 
@@ -193,12 +203,20 @@ export class Upstream {
       if (FAST_PATH.has(f.kind)) {
         this.fail(f, undefined, true);
         this.reconnect();
+      } else if (isConnectionReset(err)) {
+        this.checkAfterReset();
       }
       return {
         outcome: 'upstream_error',
         message: `Server ${slug} failed (${f.kind}: ${f.message})`,
       };
     }
+  }
+
+  // A check now, not at the next tick. If one is already running it picks the flag up when it fails.
+  private checkAfterReset(): void {
+    this.resetSeen = true;
+    void this.checkHealth();
   }
 
   private async connect(): Promise<void> {

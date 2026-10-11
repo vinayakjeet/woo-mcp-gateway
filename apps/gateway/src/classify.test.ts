@@ -2,7 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it } from 'vitest';
-import { classifyError } from './classify.js';
+import { classifyError, isConnectionReset } from './classify.js';
 import type { Failure } from './types.js';
 
 const SECRET = 'sk-test-credential-123';
@@ -95,5 +95,32 @@ describe('classifyError with built errors', () => {
       kind: 'unknown',
       message: 'unexpected error (unknown)',
     });
+  });
+});
+
+describe('isConnectionReset', () => {
+  const wrapped = (cause: unknown) => new TypeError('fetch failed', { cause });
+  const coded = (code: string) => Object.assign(new Error('x'), { code });
+
+  it.each(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'])(
+    'recognises %s anywhere in the cause chain',
+    (code) => {
+      expect(isConnectionReset(coded(code))).toBe(true);
+      expect(isConnectionReset(wrapped(coded(code)))).toBe(true);
+    },
+  );
+
+  it('recognises a socket hang up without a code', () => {
+    expect(isConnectionReset(wrapped(new Error('socket hang up')))).toBe(true);
+  });
+
+  it.each(['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT'])('does not treat %s as a reset', (code) => {
+    expect(isConnectionReset(wrapped(coded(code)))).toBe(false);
+  });
+
+  it('does not treat other errors as a reset', () => {
+    expect(isConnectionReset(new Error('boom'))).toBe(false);
+    expect(isConnectionReset('ECONNRESET')).toBe(false);
+    expect(isConnectionReset(undefined)).toBe(false);
   });
 });

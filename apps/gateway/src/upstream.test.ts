@@ -237,6 +237,78 @@ describe('Upstream', () => {
     });
   });
 
+  it('checks health at once after a connection reset and stays connected when it passes', async () => {
+    let resetNext = false;
+    const transitions: string[] = [];
+    const fake = await fakeUpstream({
+      tools: new Map([['a', async () => text('a')]]),
+      accept: bearerOk,
+      reset: () => {
+        const r = resetNext;
+        resetNext = false;
+        return r;
+      },
+    });
+    cleanup.push(() => fake.close());
+    const u = new Upstream(record(fake.url), {
+      log: quietLog,
+      healthIntervalMs: 60_000,
+      healthTimeoutMs: 500,
+      onStatus: (x, changed) => void (changed && transitions.push(x.state)),
+    });
+    cleanup.push(() => u.stop());
+    u.start();
+    await connected(u);
+    await sleep(20);
+    const before = u.status().lastOkAt!.getTime();
+    resetNext = true;
+    expect((await u.call('a', {}, signal())).outcome).toBe('upstream_error');
+    // The interval is 60 s, so a fresh lastOkAt can only come from the out-of-cycle check.
+    await vi.waitFor(() => expect(u.status().lastOkAt!.getTime()).toBeGreaterThan(before), {
+      timeout: 2000,
+      interval: 10,
+    });
+    expect(u.state).toBe('connected');
+    expect(transitions).toEqual(['connected']);
+    expect((await u.call('a', {}, signal())).outcome).toBe('ok');
+  });
+
+  it('marks the server unreachable when the check after a reset is refused', async () => {
+    let resetNext = false;
+    const transitions: string[] = [];
+    const fake = await fakeUpstream({
+      tools: new Map([['a', async () => text('a')]]),
+      accept: bearerOk,
+      reset: (_req, ctl) => {
+        if (!resetNext) return false;
+        resetNext = false;
+        ctl.stopListening();
+        return true;
+      },
+    });
+    cleanup.push(() => fake.close());
+    const u = new Upstream(record(fake.url), {
+      log: quietLog,
+      healthIntervalMs: 60_000,
+      healthTimeoutMs: 500,
+      backoffMinMs: 60_000,
+      backoffMaxMs: 60_000,
+      onStatus: (x, changed) => void (changed && transitions.push(x.state)),
+    });
+    cleanup.push(() => u.stop());
+    u.start();
+    await connected(u);
+    resetNext = true;
+    expect((await u.call('a', {}, signal())).outcome).toBe('upstream_error');
+    await vi.waitFor(() => expect(u.state).toBe('unreachable'), { timeout: 2000, interval: 10 });
+    expect(u.status().lastError).toEqual({ kind: 'refused', message: 'connection refused' });
+    expect(transitions).toEqual(['connected', 'unreachable']);
+    expect(await u.call('a', {}, signal())).toEqual({
+      outcome: 'unreachable',
+      message: 'Server up is unreachable (refused: connection refused)',
+    });
+  });
+
   it('reconnects when the upstream comes back on the same port', async () => {
     const tools = new Map([['a', async () => text('a')]]);
     const { u, fake } = await upstreamFor(tools, {}, { healthIntervalMs: 60_000 });

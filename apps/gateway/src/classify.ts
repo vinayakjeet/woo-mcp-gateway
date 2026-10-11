@@ -21,6 +21,8 @@ const PROTOCOL = new Set<string>([
   'SyntaxError',
 ]);
 
+const RESET = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET']);
+
 const failure = (kind: ErrorKind, message: string): Failure => ({ kind, message });
 
 // Messages come from codes and status numbers only. An upstream error body or message can echo
@@ -50,4 +52,18 @@ export function classifyError(err: unknown): Failure {
   if (rpcCode !== undefined) return failure('protocol', `JSON-RPC error ${rpcCode}`);
   if (codes.some((c) => PROTOCOL.has(c))) return failure('protocol', 'invalid response');
   return failure('unknown', `unexpected error (${errorCode(err)})`);
+}
+
+// A reset or broken pipe on a call can be one dropped pooled connection or a dead upstream. It is
+// not a refusal, so it never marks a server unreachable by itself: the caller checks health instead.
+export function isConnectionReset(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 6 && cur !== null && typeof cur === 'object'; depth++) {
+    const { code, message } = cur as { code?: unknown; message?: unknown };
+    if (typeof code === 'string' && RESET.has(code)) return true;
+    // Node's http client sometimes reports a reset by message only. Matched, never copied.
+    if (typeof message === 'string' && message === 'socket hang up') return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
 }

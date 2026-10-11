@@ -19,6 +19,8 @@ export async function fakeUpstream(o: {
   accept?: (req: http.IncomingMessage) => boolean;
   onRequest?: (req: http.IncomingMessage) => void;
   createServer?: () => McpServer | Server;
+  // Destroy the socket instead of answering, to simulate a reset. stopListening() also refuses new connections.
+  reset?: (req: http.IncomingMessage, ctl: { stopListening(): void }) => boolean;
   port?: number;
 }): Promise<{ url: string; port: number; close(): Promise<void> }> {
   const handler = createMcpHandler(() => {
@@ -36,6 +38,12 @@ export async function fakeUpstream(o: {
   const node = toNodeHandler(handler);
   const server = http.createServer((req, res) => {
     o.onRequest?.(req);
+    if (o.reset?.(req, { stopListening: () => server.close() })) {
+      req.socket.destroy();
+      return;
+    }
+    // No keep-alive: a pooled socket that outlives close() makes a later call fail with a reset, not a refusal.
+    res.setHeader('connection', 'close');
     if (o.accept && !o.accept(req)) {
       res
         .writeHead(401, { 'content-type': 'text/plain' })
