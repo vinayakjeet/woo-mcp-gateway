@@ -5,3 +5,4 @@ pnpm-lock.yaml
 .notes
 .claude
 charts/*/templates
+packages/core/drizzle/meta
