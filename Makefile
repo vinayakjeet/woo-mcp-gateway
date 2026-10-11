@@ -1,4 +1,4 @@
-.PHONY: cluster images store platform up e2e down
+.PHONY: cluster images image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway store platform up e2e down
 
 CLUSTER ?= urumi
 IMAGE_TAG ?= dev
@@ -11,13 +11,28 @@ comma := ,
 cluster:
 	k3d cluster create --config deploy/k3d.yaml
 
-images:
+images: image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway
+
+# image-store-wordpress is the 856MB image: build the others by name when only they changed.
+image-store-wordpress:
 	docker build -t store-wordpress:$(IMAGE_TAG) images/store-wordpress
 	k3d image import store-wordpress:$(IMAGE_TAG) --cluster $(CLUSTER)
+
+image-woo-mcp:
 	docker build -t woo-mcp:$(IMAGE_TAG) -f servers/woo-mcp/Dockerfile .
 	k3d image import woo-mcp:$(IMAGE_TAG) --cluster $(CLUSTER)
+
+image-fx-mcp:
 	docker build -t fx-mcp:$(IMAGE_TAG) -f servers/fx-mcp/Dockerfile .
 	k3d image import fx-mcp:$(IMAGE_TAG) --cluster $(CLUSTER)
+
+image-control-plane:
+	docker build -t control-plane:$(IMAGE_TAG) -f apps/control-plane/Dockerfile .
+	k3d image import control-plane:$(IMAGE_TAG) --cluster $(CLUSTER)
+
+image-gateway:
+	docker build -t gateway:$(IMAGE_TAG) -f apps/gateway/Dockerfile .
+	k3d image import gateway:$(IMAGE_TAG) --cluster $(CLUSTER)
 
 # The token file is created once and reused, so the platform release (seed) gets the same value.
 # Commas are escaped because helm --set splits on them.
@@ -31,8 +46,13 @@ store:
 		--set slug=$(SLUG) --set-string storeName="$(subst $(comma),\$(comma),$(NAME))" \
 		$(HELM_FLAGS)
 
+# The seed needs the store token, so the store secrets file must exist: run make store first.
 platform:
-	@echo "not yet"
+	@test -f $(STORE_SECRETS) || (echo "missing $(STORE_SECRETS): run make store SLUG=$(SLUG) first" >&2; exit 1)
+	helm upgrade --install platform charts/platform --namespace platform --create-namespace \
+		-f deploy/values-local.yaml -f $(STORE_SECRETS) \
+		--set global.imageTag=$(IMAGE_TAG) \
+		$(HELM_FLAGS)
 
 up:
 	@echo "not yet"
