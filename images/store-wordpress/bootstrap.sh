@@ -61,6 +61,10 @@ set_option woocommerce_task_list_completed_lists '["setup"]' --format=json
 
 wp wc tool run install_pages --user=1 >/dev/null
 
+# The homepage is the shop, not WordPress's default blog.
+set_option show_on_front page
+set_option page_on_front "$(wp option get woocommerce_shop_page_id)"
+
 set_option woocommerce_cod_settings --format=json \
   '{"enabled":"yes","title":"Cash on delivery","description":"Pay with cash upon delivery.","instructions":"Pay with cash upon delivery.","enable_for_methods":[],"enable_for_virtual":"yes"}'
 

@@ -120,6 +120,8 @@ title=$(wpc eval 'echo html_entity_decode(get_option("blogname"), ENT_QUOTES);')
 [ "$(wpc option get woocommerce_ship_to_countries)" = "disabled" ] || fail "shipping disabled"
 [ "$(wpc option get permalink_structure)" = "/%postname%/" ] || fail "permalinks"
 [ "$(wpc post list --post_type=page --name=checkout --format=count)" = "1" ] || fail "one checkout page"
+[ "$(wpc option get show_on_front)" = "page" ] || fail "static front page"
+[ "$(wpc option get page_on_front)" = "$(wpc option get woocommerce_shop_page_id)" ] || fail "shop is the front page"
 pass "options, permalinks and pages"
 
 # The hash check needs the plain key inside the container, passed as CK.
