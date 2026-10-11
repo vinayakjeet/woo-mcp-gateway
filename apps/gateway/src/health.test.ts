@@ -36,7 +36,7 @@ describe('buildHealthApp', () => {
     expect(res.body).toBe('not ready');
   });
 
-  it('does not serve /mcp yet', async () => {
+  it('does not serve /mcp on the health port', async () => {
     const res = await buildHealthApp({ ready: async () => true }).inject('/mcp');
     expect(res.statusCode).toBe(404);
   });

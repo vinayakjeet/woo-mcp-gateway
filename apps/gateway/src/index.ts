@@ -1,24 +1,18 @@
-import { schemaReady } from '@woo/core/db';
-import pg from 'pg';
-import { buildHealthApp } from './health.js';
-import { gatewayLogger } from './logger.js';
+import { loadConfig, type GatewayConfig } from './config.js';
+import { startGateway } from './main.js';
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error(JSON.stringify({ level: 'error', msg: 'Missing env vars: DATABASE_URL' }));
+let cfg: GatewayConfig;
+try {
+  cfg = loadConfig(process.env);
+} catch (err) {
+  console.error(JSON.stringify({ level: 'error', msg: (err as Error).message }));
   process.exit(1);
 }
 
-const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-const app = buildHealthApp({ ready: () => schemaReady(pool) }, gatewayLogger);
-
-await app.listen({ host: '0.0.0.0', port: Number(process.env.HEALTH_PORT ?? 9090) });
+const gateway = await startGateway(cfg);
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
-    void app
-      .close()
-      .then(() => pool.end())
-      .finally(() => process.exit(0));
+    void gateway.close().finally(() => process.exit(0));
   });
 }
