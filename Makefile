@@ -16,6 +16,8 @@ images:
 	k3d image import store-wordpress:$(IMAGE_TAG) --cluster $(CLUSTER)
 	docker build -t woo-mcp:$(IMAGE_TAG) -f servers/woo-mcp/Dockerfile .
 	k3d image import woo-mcp:$(IMAGE_TAG) --cluster $(CLUSTER)
+	docker build -t fx-mcp:$(IMAGE_TAG) -f servers/fx-mcp/Dockerfile .
+	k3d image import fx-mcp:$(IMAGE_TAG) --cluster $(CLUSTER)
 
 # The token file is created once and reused, so the platform release (seed) gets the same value.
 # Commas are escaped because helm --set splits on them.
