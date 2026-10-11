@@ -1,0 +1,253 @@
+import { randomBytes } from 'node:crypto';
+import type { Tool } from '@modelcontextprotocol/client';
+import { encryptSecret } from '@woo/core';
+import { schema } from '@woo/core/db';
+import { and, eq } from 'drizzle-orm';
+import type pg from 'pg';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { definitionHash, loadServers, upsertTools, type LoadedServer } from './registry-db.js';
+import { GatewaySync } from './sync.js';
+import { migratedDatabase, TEST_DATABASE_URL } from './test-db.js';
+import { quietLog } from './test-helpers.js';
+import type { Db, ServerRecord, ToolState } from './types.js';
+
+const kek = randomBytes(32);
+const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
+  name,
+  description: `does ${name}`,
+  inputSchema: { type: 'object', properties: { x: { type: 'string' } } },
+  ...extra,
+});
+
+class FakeRegistry {
+  applied: LoadedServer[] = [];
+  removed: string[] = [];
+  states = new Map<string, Map<string, ToolState>>();
+  private present = new Set<string>();
+  apply(record: ServerRecord, tools: LoadedServer['tools'] = []) {
+    this.applied.push({ record, tools });
+    this.present.add(record.id);
+  }
+  async remove(id: string) {
+    this.removed.push(id);
+    this.present.delete(id);
+  }
+  ids() {
+    return [...this.present];
+  }
+  setToolStates(id: string, s: Map<string, ToolState>) {
+    this.states.set(id, s);
+  }
+}
+
+describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
+  let url: string;
+  let pool: pg.Pool;
+  let db: Db;
+  const ids: Record<string, string> = {};
+
+  async function addServer(slug: string, values: Partial<typeof schema.mcpServers.$inferInsert>) {
+    const [row] = await db
+      .insert(schema.mcpServers)
+      .values({
+        slug,
+        name: slug.toUpperCase(),
+        url: `http://${slug}.test/mcp`,
+        kind: 'external',
+        ...values,
+      })
+      .returning({ id: schema.mcpServers.id });
+    ids[slug] = row!.id;
+  }
+
+  beforeAll(async () => {
+    ({ url, pool, db } = await migratedDatabase('woo_gw_sync_test'));
+    await addServer('fx', {
+      authType: 'bearer',
+      authSecretEnc: encryptSecret('fx-secret', kek, 'fx'),
+    });
+    await addServer('hdr', {
+      authType: 'header',
+      authHeaderName: 'X-Api-Key',
+      authSecretEnc: encryptSecret('hdr-secret', kek, 'hdr'),
+    });
+    // A ciphertext made for another slug, as if copied between rows.
+    await addServer('moved', {
+      authType: 'bearer',
+      authSecretEnc: encryptSecret('moved-secret', kek, 'other'),
+    });
+  });
+  afterAll(() => pool.end());
+
+  it('decrypts bearer and header credentials with the slug as AAD', async () => {
+    const all = await loadServers(db, kek);
+    const by = (slug: string) => all.find((s) => s.record.slug === slug)!.record;
+    expect(by('fx').auth).toEqual({ type: 'bearer', secret: 'fx-secret' });
+    expect(by('hdr').auth).toEqual({
+      type: 'header',
+      headerName: 'X-Api-Key',
+      secret: 'hdr-secret',
+    });
+    expect(by('fx')).toMatchObject({
+      enabled: true,
+      approval: 'approved',
+      timeoutMs: 15_000,
+      protocolMode: 'legacy',
+    });
+  });
+
+  it('flags a credential encrypted for another slug', async () => {
+    const [moved] = await loadServers(db, kek, ids.moved);
+    expect(moved!.record).toMatchObject({ credentialError: true, auth: { type: 'none' } });
+    expect(JSON.stringify(moved)).not.toContain('moved-secret');
+  });
+
+  it('upserts tools, marks missing ones removed, revives them and keeps changed', async () => {
+    const id = ids.fx!;
+    expect(await upsertTools(db, id, 'fx', [tool('a'), tool('b')])).toEqual(
+      new Map([
+        ['a', 'active'],
+        ['b', 'active'],
+      ]),
+    );
+    const [row] = await db
+      .select()
+      .from(schema.mcpTools)
+      .where(and(eq(schema.mcpTools.serverId, id), eq(schema.mcpTools.name, 'a')));
+    expect(row).toMatchObject({ exposedName: 'fx__a', definitionHash: definitionHash(tool('a')) });
+    expect((await upsertTools(db, id, 'fx', [tool('a')])).get('b')).toBe('removed');
+    await db
+      .update(schema.mcpTools)
+      .set({ state: 'changed' })
+      .where(and(eq(schema.mcpTools.serverId, id), eq(schema.mcpTools.name, 'a')));
+    const states = await upsertTools(db, id, 'fx', [tool('a'), tool('b')]);
+    expect(states.get('a')).toBe('changed');
+    expect(states.get('b')).toBe('active');
+    const [persisted] = await loadServers(db, kek, id);
+    expect(persisted!.tools).toContainEqual({
+      name: 'a',
+      exposedName: 'fx__a',
+      state: 'changed',
+      definitionHash: definitionHash(tool('a')),
+    });
+  });
+
+  it('hashes a definition the same whatever the key order', () => {
+    const a = tool('a', { inputSchema: { type: 'object', properties: { x: { type: 'string' } } } });
+    const b = {
+      inputSchema: { properties: { x: { type: 'string' } }, type: 'object' },
+      description: 'does a',
+      name: 'a',
+    } as Tool;
+    expect(definitionHash(a)).toBe(definitionHash(b));
+  });
+
+  describe('GatewaySync', () => {
+    function start() {
+      const registry = new FakeRegistry();
+      const auth = { purge: vi.fn(), purgeAll: vi.fn() };
+      const sync = new GatewaySync({
+        databaseUrl: url,
+        db,
+        kek,
+        registry,
+        auth,
+        log: quietLog,
+        reconnectMinMs: 20,
+        reconnectMaxMs: 100,
+      });
+      return { registry, auth, sync };
+    }
+    const notify = (channel: string, payload: string) =>
+      pool.query('select pg_notify($1, $2)', [channel, payload]);
+
+    it('applies registry_changed and removes deleted servers', async () => {
+      const { registry, sync } = start();
+      await sync.start();
+      expect(sync.loaded).toBe(true);
+      expect(registry.ids().sort()).toEqual(Object.values(ids).sort());
+      await db
+        .update(schema.mcpServers)
+        .set({ name: 'FX 2' })
+        .where(eq(schema.mcpServers.id, ids.hdr!));
+      await notify('registry_changed', ids.hdr!);
+      await vi.waitFor(() => expect(registry.applied.at(-1)?.record.name).toBe('FX 2'));
+      await db.delete(schema.mcpServers).where(eq(schema.mcpServers.id, ids.moved!));
+      await notify('registry_changed', ids.moved!);
+      await vi.waitFor(() => expect(registry.removed).toContain(ids.moved));
+      await sync.close();
+    });
+
+    it('purges a key on key_revoked and ignores payloads that are not uuids', async () => {
+      const { registry, auth, sync } = start();
+      await sync.start();
+      const applied = registry.applied.length;
+      await notify('registry_changed', 'not-a-uuid');
+      await notify('key_revoked', '00000000-0000-4000-8000-0000000000aa');
+      await vi.waitFor(() =>
+        expect(auth.purge).toHaveBeenCalledWith('00000000-0000-4000-8000-0000000000aa'),
+      );
+      expect(registry.applied.length).toBe(applied);
+      await sync.close();
+    });
+
+    it('reloads everything after the listen connection drops', async () => {
+      const { registry, auth, sync } = start();
+      await sync.start();
+      // Changed with no NOTIFY: only the reload after reconnecting can see it.
+      await db
+        .update(schema.mcpServers)
+        .set({ name: 'FX 3' })
+        .where(eq(schema.mcpServers.id, ids.fx!));
+      await pool.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'gateway-listen' and datname = current_database()",
+      );
+      await vi.waitFor(
+        () => expect(registry.applied.some((s) => s.record.name === 'FX 3')).toBe(true),
+        {
+          timeout: 3000,
+        },
+      );
+      expect(auth.purgeAll).toHaveBeenCalled();
+      await sync.close();
+    });
+
+    it('writes mcp_tools only when a definition hash changes, across restarts too', async () => {
+      const id = ids.hdr!;
+      const seenAt = async () =>
+        (
+          await db
+            .select({ v: schema.mcpTools.lastSeenAt })
+            .from(schema.mcpTools)
+            .where(and(eq(schema.mcpTools.serverId, id), eq(schema.mcpTools.name, 'q')))
+        )[0]?.v.getTime();
+      const upstream = (tools: Tool[]) => ({
+        record: { id, slug: 'hdr' } as ServerRecord,
+        tools: () => tools,
+      });
+      const settle = () => new Promise((r) => setTimeout(r, 150));
+
+      const first = start();
+      await first.sync.start();
+      first.sync.persistTools(upstream([tool('q')]));
+      await vi.waitFor(() => expect(first.registry.states.get(id)?.get('q')).toBe('active'));
+      const t1 = await seenAt();
+      // title is outside the definition hash: the in-memory list changes, the table does not.
+      first.sync.persistTools(upstream([tool('q', { title: 'Q' })]));
+      await settle();
+      expect(await seenAt()).toBe(t1);
+      first.sync.persistTools(upstream([tool('q', { description: 'new text' })]));
+      await vi.waitFor(async () => expect(await seenAt()).toBeGreaterThan(t1!));
+      const t2 = await seenAt();
+      await first.sync.close();
+
+      // A restarted replica loads the stored hashes and finds nothing to write.
+      const second = start();
+      await second.sync.start();
+      second.sync.persistTools(upstream([tool('q', { description: 'new text' })]));
+      await settle();
+      expect(await seenAt()).toBe(t2);
+      await second.sync.close();
+    });
+  });
+});
