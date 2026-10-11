@@ -106,6 +106,13 @@ for run in 1 2; do
   pass "bootstrap run $run summary"
 done
 
+# WooCommerce keeps the placeholder attachment row even when the file is gone, so bootstrap restores it.
+wpc eval 'unlink(get_attached_file(get_option("woocommerce_placeholder_image")));'
+run_bootstrap >/dev/null || true
+placeholder_url=$(wpc eval 'echo wp_get_attachment_url(get_option("woocommerce_placeholder_image"));')
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$placeholder_url")" = "200" ] || fail "placeholder image $placeholder_url"
+pass "bootstrap restores a missing placeholder image"
+
 # WordPress stores blogname HTML-escaped (&#039;), so compare the decoded value.
 title=$(wpc eval 'echo html_entity_decode(get_option("blogname"), ENT_QUOTES);')
 [ "$title" = "$TEST_TITLE" ] || fail "title: $title"

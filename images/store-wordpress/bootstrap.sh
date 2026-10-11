@@ -33,6 +33,18 @@ wp rewrite structure '/%postname%/' --hard >/dev/null 2>&1
 wp plugin activate woocommerce >/dev/null 2>&1
 wp wc update >/dev/null
 
+# WooCommerce creates its placeholder image once and never checks that the file still exists,
+# so an attachment row that outlived its file (an older install path) shows a broken image.
+wp eval '
+$id = (int) get_option("woocommerce_placeholder_image");
+$file = $id ? get_attached_file($id) : "";
+if ($file && !file_exists($file)) {
+  copy(WC()->plugin_path() . "/assets/images/placeholder-attachment.webp", $file)
+    || WP_CLI::error("could not restore the WooCommerce placeholder image");
+  require_once ABSPATH . "wp-admin/includes/image.php";
+  wp_update_attachment_metadata($id, wp_generate_attachment_metadata($id, $file));
+}'
+
 set_option woocommerce_coming_soon no
 set_option woocommerce_store_pages_only no
 set_option woocommerce_currency INR
