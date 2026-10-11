@@ -1,6 +1,9 @@
 export type DatePreset = 'today' | 'yesterday' | 'last_7_days';
 
-export function storeTimeZone(index: { timezone_string?: string; gmt_offset?: number | string }): string {
+export function storeTimeZone(index: {
+  timezone_string?: string;
+  gmt_offset?: number | string;
+}): string {
   if (index.timezone_string) return index.timezone_string;
   const minutes = Math.round(Number(index.gmt_offset ?? 0) * 60);
   const abs = Math.abs(minutes);
@@ -20,7 +23,14 @@ function wallClock(timeZone: string, d: Date) {
     second: 'numeric',
   }).formatToParts(d);
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
-  return { y: get('year'), m: get('month'), d: get('day'), h: get('hour'), mi: get('minute'), s: get('second') };
+  return {
+    y: get('year'),
+    m: get('month'),
+    d: get('day'),
+    h: get('hour'),
+    mi: get('minute'),
+    s: get('second'),
+  };
 }
 
 function offsetMs(timeZone: string, d: Date): number {

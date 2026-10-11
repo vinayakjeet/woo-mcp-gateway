@@ -12,7 +12,10 @@ export interface OAuthInput {
 
 // PHP rawurlencode also encodes !'()*, and WooCommerce verifies with it.
 export function rfc3986(s: string): string {
-  return encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(s).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 function oauthParams(i: OAuthInput): Record<string, string> {
@@ -35,7 +38,9 @@ export function oauthBaseString(i: OAuthInput): string {
 }
 
 export function signedQuery(i: OAuthInput): Record<string, string> {
-  const signature = createHmac('sha256', `${i.consumerSecret}&`).update(oauthBaseString(i)).digest('base64');
+  const signature = createHmac('sha256', `${i.consumerSecret}&`)
+    .update(oauthBaseString(i))
+    .digest('base64');
   return { ...oauthParams(i), oauth_signature: signature };
 }
 

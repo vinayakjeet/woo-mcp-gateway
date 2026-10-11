@@ -16,7 +16,12 @@ describe('rfc3986', () => {
 
 describe('WooCommerce vectors', () => {
   it('signs a request without query params', () => {
-    const i: OAuthInput = { ...base, method: 'GET', url: 'http://main.shop.127.0.0.1.nip.io/wp-json/wc/v3/products', query: {} };
+    const i: OAuthInput = {
+      ...base,
+      method: 'GET',
+      url: 'http://main.shop.127.0.0.1.nip.io/wp-json/wc/v3/products',
+      query: {},
+    };
     expect(oauthBaseString(i)).toBe(
       'GET&http%3A%2F%2Fmain.shop.127.0.0.1.nip.io%2Fwp-json%2Fwc%2Fv3%2Fproducts&oauth_consumer_key%3Dck_0123456789abcdef0123456789abcdef01234567%26oauth_nonce%3Dabcdefghijklmnopqrstuvwxyz012345%26oauth_signature_method%3DHMAC-SHA256%26oauth_timestamp%3D1791676800',
     );
