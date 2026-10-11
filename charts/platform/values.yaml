@@ -11,6 +11,12 @@ images:
   fxMcp: fx-mcp
   postgres: postgres:17-alpine
 
+ingress:
+  className: traefik
+  tls:
+    enabled: false
+    clusterIssuer: ''
+
 storage:
   className: local-path
   postgres: 2Gi

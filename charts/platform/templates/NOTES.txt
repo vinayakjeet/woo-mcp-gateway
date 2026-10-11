@@ -1,0 +1,7 @@
+Platform installed in namespace {{ .Release.Namespace }}.
+
+Dashboard: {{ include "platform.url" . }}
+Admin email: {{ .Values.bootstrap.adminEmail }}
+
+Admin password (printed only when you run this):
+  kubectl -n {{ .Release.Namespace }} get secret platform-bootstrap -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d; echo

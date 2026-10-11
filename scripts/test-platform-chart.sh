@@ -98,4 +98,104 @@ has "$p" "livenessProbe:" postgres
 lacks "$p" "readOnlyRootFilesystem" postgres
 pass "postgres"
 
+# Counts of a pattern in one rendered file.
+count() { grep -c -- "$2" <<<"$1" || true; }
+
+cp=$(show control-plane.yaml)
+for want in "kind: ServiceAccount" "name: control-plane" "name: control-plane-internal" "port: 3000" "port: 3001" \
+  "name: migrate" "- node" "- dist/migrate.js" "key: SEED_SERVERS" "name: platform-seed" "key: KEK" "name: platform-crypto" \
+  "key: ADMIN_EMAIL" "key: ADMIN_PASSWORD" "key: API_KEY_PEPPER" "key: JWT_SIGNING_KEY" "key: INTERNAL_SECRET" \
+  "key: DATABASE_URL" "name: APP_ORIGIN" "value: \"http://app.127.0.0.1.nip.io\"" \
+  "serviceAccountName: control-plane" "automountServiceAccountToken: true" \
+  "path: /readyz" "path: /healthz" "containerPort: 3000" "containerPort: 3001" \
+  "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 384Mi" "checksum/seed:" \
+  "app.kubernetes.io/name: control-plane" "app.kubernetes.io/component: control-plane"; do
+  has "$cp" "$want" control-plane
+done
+# Probes target the internal port so the public listener stays free of health routes.
+probe_port() { grep -A2 "$2:" <<<"$1" | grep -o 'port: [0-9]*' | head -1 | cut -d' ' -f2; }
+[ "$(probe_port "$cp" readinessProbe)" = "3001" ] || fail "control-plane readiness port"
+[ "$(probe_port "$cp" livenessProbe)" = "3001" ] || fail "control-plane liveness port"
+lacks "$cp" "app.kubernetes.io/name: gateway" control-plane
+pass "control-plane"
+
+gw=$(show gateway.yaml)
+for want in "app.kubernetes.io/name: gateway" "containerPort: 9090" "path: /readyz" "path: /healthz" \
+  "automountServiceAccountToken: false" "name: POD_NAME" "fieldPath: metadata.name" "key: DATABASE_URL" \
+  "cpu: 50m" "memory: 128Mi" "cpu: \"1\"" "memory: 384Mi"; do
+  has "$gw" "$want" gateway
+done
+[ "$(probe_port "$gw" readinessProbe)" = "9090" ] || fail "gateway readiness port"
+[ "$(probe_port "$gw" livenessProbe)" = "9090" ] || fail "gateway liveness port"
+pass "gateway"
+
+fx=$(show fx-mcp.yaml)
+for want in "image: fx-mcp:dev" "name: fx-mcp" "port: 8080" "path: /readyz" "path: /healthz" \
+  "name: fx-mcp-token" "key: MCP_SHARED_TOKEN" "automountServiceAccountToken: false" \
+  "cpu: 20m" "memory: 64Mi" "cpu: 200m" "memory: 128Mi" "app.kubernetes.io/component: fx-mcp"; do
+  has "$fx" "$want" fx-mcp
+done
+lacks "$fx" "test-token" fx-mcp
+pass "fx-mcp"
+
+np=$(show networkpolicy-fx-mcp.yaml)
+for want in "kind: NetworkPolicy" "policyTypes:" "- Egress" "kubernetes.io/metadata.name: kube-system" \
+  "app.kubernetes.io/name: fx-mcp" "cidr: 0.0.0.0/0" "port: 443" \
+  "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "169.254.0.0/16" "100.64.0.0/10"; do
+  has "$np" "$want" fx-mcp-netpol
+done
+[ "$(count "$np" 'port: 53')" -eq 2 ] || fail "fx-mcp-netpol: port 53 must appear for UDP and TCP"
+has "$np" "protocol: UDP" fx-mcp-netpol
+has "$np" "protocol: TCP" fx-mcp-netpol
+lacks "$np" "Ingress" fx-mcp-netpol
+pass "fx-mcp networkpolicy"
+
+# No policy selects every pod in the namespace (default-deny is M10).
+lacks "$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')" "podSelector: {}" "netpol"
+pass "no empty podSelector"
+
+# Every workload file: one probe pair per Deployment or StatefulSet, and the pod and container hardening.
+for f in postgres control-plane gateway fx-mcp; do
+  y=$(show "$f.yaml")
+  [ "$(grep -cE '^kind: (Deployment|StatefulSet)$' <<<"$y")" -eq 1 ] || fail "$f: expected one workload"
+  [ "$(count "$y" 'readinessProbe:')" -eq 1 ] || fail "$f: readinessProbe count"
+  [ "$(count "$y" 'livenessProbe:')" -eq 1 ] || fail "$f: livenessProbe count"
+  [ "$(count "$y" 'runAsNonRoot: true')" -eq 1 ] || fail "$f: runAsNonRoot count"
+  [ "$(count "$y" 'type: RuntimeDefault')" -eq 1 ] || fail "$f: seccompProfile count"
+  per=$(count "$y" 'allowPrivilegeEscalation: false')
+  [ "$per" -ge 1 ] || fail "$f: allowPrivilegeEscalation"
+  [ "$(count "$y" '        - ALL\|- ALL')" -eq "$per" ] || fail "$f: drop ALL must match each container"
+  # limits: only appears on containers (the PVC template has its own resources key).
+  [ "$(count "$y" 'limits:')" -eq "$per" ] || fail "$f: limits must match each container"
+done
+pass "workload hardening counts"
+
+for f in control-plane gateway fx-mcp; do
+  y=$(show "$f.yaml")
+  per=$(count "$y" 'allowPrivilegeEscalation: false')
+  [ "$(count "$y" 'readOnlyRootFilesystem: true')" -eq "$per" ] || fail "$f: readOnlyRootFilesystem on every container"
+  [ "$(count "$y" 'runAsUser: 10001')" -eq 1 ] || fail "$f: runAsUser"
+  has "$y" "mountPath: /tmp" "$f"
+  has "$y" "emptyDir: {}" "$f"
+done
+[ "$(count "$cp" 'allowPrivilegeEscalation: false')" -eq 2 ] || fail "control-plane: migrate and main containers"
+pass "node containers read-only with /tmp"
+
+ig=$(show ingress-app.yaml)
+for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api" "name: control-plane" "number: 3000"; do
+  has "$ig" "$want" ingress
+done
+lacks "$ig" "tls:" ingress
+pass "ingress"
+
+all_notes=$(helm install platform charts/platform -n platform -f deploy/values-local.yaml --set mcp.sharedToken=test-token --dry-run=client 2>&1 || true)
+has "$all_notes" "http://app.127.0.0.1.nip.io" notes
+has "$all_notes" "admin@example.com" notes
+has "$all_notes" "kubectl -n platform get secret platform-bootstrap -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d" notes
+pass "notes"
+
+{ render --set global.imageTag=latest 2>&1 || true; } | grep -q "global.imageTag must not be latest" || fail "imageTag latest accepted"
+pass "imageTag latest rejected"
+
+
 echo "OK"

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    {{- include "platform.labels" (list . "gateway") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" (list . "gateway") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "platform.nodePodSecurity" . | nindent 8 }}
+      containers:
+        - name: gateway
+          image: {{ include "platform.image" (list . .Values.images.gateway) }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: health
+              containerPort: 9090
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-db, key: DATABASE_URL } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 9090 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 9090 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 384Mi }
+          securityContext:
+            {{- include "platform.nodeContainerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

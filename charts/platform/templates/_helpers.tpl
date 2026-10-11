@@ -33,3 +33,23 @@ app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
 {{ index . 2 | b64enc }}
 {{- end -}}
 {{- end }}
+
+{{- define "platform.nodePodSecurity" -}}
+runAsNonRoot: true
+runAsUser: 10001
+runAsGroup: 10001
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{- define "platform.nodeContainerSecurity" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+capabilities:
+  drop:
+    - ALL
+{{- end }}
+
+{{- define "platform.url" -}}
+{{ printf "%s://app.%s" .Values.global.scheme .Values.global.domain }}
+{{- end }}

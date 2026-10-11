@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: control-plane
+  labels:
+    {{- include "platform.labels" (list . "control-plane") | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  labels:
+    {{- include "platform.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  selector:
+    {{- include "platform.selectorLabels" (list . "control-plane") | nindent 4 }}
+  ports:
+    - name: public
+      port: 3000
+      targetPort: public
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane-internal
+  labels:
+    {{- include "platform.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  selector:
+    {{- include "platform.selectorLabels" (list . "control-plane") | nindent 4 }}
+  ports:
+    - name: internal
+      port: 3001
+      targetPort: internal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  labels:
+    {{- include "platform.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" (list . "control-plane") | nindent 8 }}
+      annotations:
+        # A new store token or seed entry must rerun the seed, which only happens when the pod restarts.
+        checksum/seed: {{ list .Values.mcp.sharedToken .Values.seed .Values.fxMcp | toJson | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: control-plane
+      # The control-plane talks to the Kubernetes API from M5 on.
+      automountServiceAccountToken: true
+      securityContext:
+        {{- include "platform.nodePodSecurity" . | nindent 8 }}
+      initContainers:
+        - name: migrate
+          image: {{ include "platform.image" (list . .Values.images.controlPlane) }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - dist/migrate.js
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-db, key: DATABASE_URL } }
+            - name: KEK
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: KEK } }
+            - name: ADMIN_EMAIL
+              valueFrom: { secretKeyRef: { name: platform-bootstrap, key: ADMIN_EMAIL } }
+            - name: ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: platform-bootstrap, key: ADMIN_PASSWORD } }
+            - name: SEED_SERVERS
+              valueFrom: { secretKeyRef: { name: platform-seed, key: SEED_SERVERS } }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          securityContext:
+            {{- include "platform.nodeContainerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: control-plane
+          image: {{ include "platform.image" (list . .Values.images.controlPlane) }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: public
+              containerPort: 3000
+            - name: internal
+              containerPort: 3001
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-db, key: DATABASE_URL } }
+            - name: APP_ORIGIN
+              value: {{ include "platform.url" . | quote }}
+            - name: API_KEY_PEPPER
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: API_KEY_PEPPER } }
+            - name: JWT_SIGNING_KEY
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: JWT_SIGNING_KEY } }
+            - name: INTERNAL_SECRET
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: INTERNAL_SECRET } }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3001 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3001 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          securityContext:
+            {{- include "platform.nodeContainerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
