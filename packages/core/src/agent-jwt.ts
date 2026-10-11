@@ -66,7 +66,8 @@ export function verifyAgentJwt(
     throw new AgentJwtError('wrong header');
   const want = sign(`${h}.${p}`, o.key);
   const got = Buffer.from(s, 'base64url');
-  if (got.length !== want.length || !timingSafeEqual(got, want))
+  // Buffer.from ignores padding bits and a trailing "=", so several spellings decode to one signature.
+  if (got.toString('base64url') !== s || got.length !== want.length || !timingSafeEqual(got, want))
     throw new AgentJwtError('bad signature');
   const c = decode(p);
   const now = o.now ?? nowS();
@@ -77,6 +78,7 @@ export function verifyAgentJwt(
     throw new AgentJwtError('wrong subject');
   if (typeof c.exp !== 'number' || typeof c.iat !== 'number')
     throw new AgentJwtError('missing times');
+  if (c.exp <= c.iat || c.iat > now + CLOCK_SKEW_S) throw new AgentJwtError('bad issued-at time');
   if (c.exp <= now - CLOCK_SKEW_S || c.exp > now + AGENT_JWT_MAX_TTL_S + CLOCK_SKEW_S)
     throw new AgentJwtError('expired or too long lived');
   return c as AgentClaims;
