@@ -17,6 +17,10 @@ ingress:
     enabled: false
     clusterIssuer: ''
 
+gateway:
+  # Browser origins allowed to call /mcp. Empty means <scheme>://app.<domain>.
+  allowedOrigins: []
+
 storage:
   className: local-path
   postgres: 2Gi

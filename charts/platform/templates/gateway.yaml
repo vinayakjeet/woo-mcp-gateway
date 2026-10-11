@@ -22,11 +22,23 @@ spec:
           image: {{ include "platform.image" (list . .Values.images.gateway) }}
           imagePullPolicy: IfNotPresent
           ports:
+            - name: http
+              containerPort: 8080
             - name: health
               containerPort: 9090
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: platform-db, key: DATABASE_URL } }
+            - name: KEK
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: KEK } }
+            - name: API_KEY_PEPPER
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: API_KEY_PEPPER } }
+            - name: JWT_SIGNING_KEY
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: JWT_SIGNING_KEY } }
+            - name: GATEWAY_URL
+              value: {{ printf "%s://mcp.%s/mcp" .Values.global.scheme .Values.global.domain | quote }}
+            - name: ALLOWED_ORIGINS
+              value: {{ include "platform.gatewayAllowedOrigins" . | quote }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           readinessProbe:
@@ -47,3 +59,17 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    {{- include "platform.labels" (list . "gateway") | nindent 4 }}
+spec:
+  selector:
+    {{- include "platform.selectorLabels" (list . "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

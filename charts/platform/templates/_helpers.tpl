@@ -53,3 +53,12 @@ capabilities:
 {{- define "platform.url" -}}
 {{ printf "%s://app.%s" .Values.global.scheme .Values.global.domain }}
 {{- end }}
+
+{{/* Browser origins allowed to call /mcp. Empty values mean the app host only. */}}
+{{- define "platform.gatewayAllowedOrigins" -}}
+{{- if .Values.gateway.allowedOrigins -}}
+{{- join "," .Values.gateway.allowedOrigins -}}
+{{- else -}}
+{{- printf "%s://app.%s" .Values.global.scheme .Values.global.domain -}}
+{{- end -}}
+{{- end }}

@@ -123,13 +123,18 @@ has "$(show control-plane.yaml --set provisioner.enabled=true)" "automountServic
 pass "control-plane"
 
 gw=$(show gateway.yaml)
-for want in "app.kubernetes.io/name: gateway" "containerPort: 9090" "path: /readyz" "path: /healthz" \
+for want in "app.kubernetes.io/name: gateway" "containerPort: 9090" "containerPort: 8080" "path: /readyz" "path: /healthz" \
   "automountServiceAccountToken: false" "name: POD_NAME" "fieldPath: metadata.name" "key: DATABASE_URL" \
+  "key: KEK" "key: API_KEY_PEPPER" "key: JWT_SIGNING_KEY" "name: platform-crypto" \
+  'value: "http://mcp.127.0.0.1.nip.io/mcp"' 'value: "http://app.127.0.0.1.nip.io"' \
+  "kind: Service" "port: 8080" "targetPort: http" \
   "cpu: 50m" "memory: 128Mi" "cpu: \"1\"" "memory: 384Mi"; do
   has "$gw" "$want" gateway
 done
 [ "$(probe_port "$gw" readinessProbe)" = "9090" ] || fail "gateway readiness port"
 [ "$(probe_port "$gw" livenessProbe)" = "9090" ] || fail "gateway liveness port"
+has "$(show gateway.yaml --set 'gateway.allowedOrigins={https://a.example,https://b.example}')" \
+  'value: "https://a.example,https://b.example"' "gateway origins override"
 pass "gateway"
 
 fx=$(show fx-mcp.yaml)
@@ -190,6 +195,14 @@ for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api
 done
 lacks "$ig" "tls:" ingress
 pass "ingress"
+im=$(show ingress-mcp.yaml)
+for want in "ingressClassName: traefik" "host: mcp.127.0.0.1.nip.io" "path: /mcp" "name: gateway" "number: 8080"; do
+  has "$im" "$want" ingress-mcp
+done
+lacks "$im" "tls:" ingress-mcp
+lacks "$im" "9090" ingress-mcp
+has "$(show ingress-mcp.yaml --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=le)" "secretName: mcp-tls" "ingress-mcp tls"
+pass "ingress mcp"
 
 all_notes=$(helm install platform charts/platform -n platform -f deploy/values-local.yaml --set mcp.sharedToken=test-token --dry-run=client 2>&1 || true)
 has "$all_notes" "http://app.127.0.0.1.nip.io" notes
