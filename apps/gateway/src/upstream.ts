@@ -221,40 +221,43 @@ export class Upstream {
 
   private async connect(): Promise<void> {
     if (this.stopped) return;
-    const client = new Client(
-      { name: 'woo-gateway', version: '0.1.0' },
-      {
-        ...(this.record.protocolMode === 'auto'
-          ? { versionNegotiation: { mode: 'auto' as const } }
-          : {}),
-        listChanged: {
-          tools: {
-            onChanged: (err: Error | null, tools: Tool[] | null) => {
-              if (!err && tools && this.client === client) this.setTools(tools);
+    let client: Client | undefined;
+    try {
+      // Built inside the try: a malformed stored url must be classified and retried, not thrown.
+      const created = new Client(
+        { name: 'woo-gateway', version: '0.1.0' },
+        {
+          ...(this.record.protocolMode === 'auto'
+            ? { versionNegotiation: { mode: 'auto' as const } }
+            : {}),
+          listChanged: {
+            tools: {
+              onChanged: (err: Error | null, tools: Tool[] | null) => {
+                if (!err && tools && this.client === created) this.setTools(tools);
+              },
             },
           },
         },
-      },
-    );
-    const transport = new StreamableHTTPClientTransport(new URL(this.record.url), {
-      requestInit: { headers: authHeaders(this.record.auth) },
-    });
-    try {
-      await client.connect(transport, { timeout: this.healthTimeoutMs });
-      const { tools } = await client.listTools(undefined, {
+      );
+      client = created;
+      const transport = new StreamableHTTPClientTransport(new URL(this.record.url), {
+        requestInit: { headers: authHeaders(this.record.auth), redirect: 'error' },
+      });
+      await created.connect(transport, { timeout: this.healthTimeoutMs });
+      const { tools } = await created.listTools(undefined, {
         timeout: this.healthTimeoutMs,
         cacheMode: 'refresh',
       });
       if (this.stopped) {
-        await client.close().catch(() => {});
+        await created.close().catch(() => {});
         return;
       }
-      this.client = client;
+      this.client = created;
       this.attempt = 0;
       this.ok(tools);
       this.schedule(this.healthIntervalMs, () => this.checkHealth());
     } catch (err) {
-      await client.close().catch(() => {});
+      await client?.close().catch(() => {});
       if (this.stopped) return;
       this.fail(classifyError(err), err);
       this.schedule(backoffMs(this.attempt++, this.backoffMinMs, this.backoffMaxMs), () =>

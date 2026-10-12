@@ -1,4 +1,5 @@
-import type http from 'node:http';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Server } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -92,6 +93,79 @@ describe('Upstream', () => {
     expect((await u.call('a', {}, signal())).outcome).toBe('ok');
     expect(seen.length).toBeGreaterThan(1);
     expect(seen.every((x) => x.key === SECRET && x.auth === undefined)).toBe(true);
+  });
+
+  it('classifies a malformed url and keeps retrying instead of rejecting unhandled', async () => {
+    const u = new Upstream(record('not a url'), {
+      log: quietLog,
+      healthIntervalMs: 50,
+      healthTimeoutMs: 500,
+      backoffMinMs: 10,
+      backoffMaxMs: 20,
+    });
+    cleanup.push(() => u.stop());
+    u.start();
+    await vi.waitFor(() => expect(u.state).toBe('unreachable'), { timeout: 3000, interval: 10 });
+    expect(u.status().lastError).toMatchObject({ kind: 'unknown' });
+  });
+
+  it('never follows a redirect, so the credential stays with the configured host', async () => {
+    const hits: Array<string | string[] | undefined> = [];
+    const target = await fakeUpstream({
+      tools: new Map([['a', async () => text('a')]]),
+      onRequest: (req) => hits.push(req.headers['x-api-key']),
+    });
+    cleanup.push(() => target.close());
+    const redirector = http.createServer((_req, res) => {
+      res.writeHead(307, { location: target.url, connection: 'close' }).end();
+    });
+    await new Promise<void>((r) => redirector.listen(0, '127.0.0.1', r));
+    cleanup.push(async () => {
+      redirector.closeAllConnections();
+      await new Promise((r) => redirector.close(r));
+    });
+    const port = (redirector.address() as AddressInfo).port;
+    const u = new Upstream(
+      record(`http://127.0.0.1:${port}/mcp`, {
+        auth: { type: 'header', headerName: 'X-Api-Key', secret: SECRET },
+      }),
+      {
+        log: quietLog,
+        healthIntervalMs: 50,
+        healthTimeoutMs: 500,
+        backoffMinMs: 10,
+        backoffMaxMs: 20,
+      },
+    );
+    cleanup.push(() => u.stop());
+    u.start();
+    await vi.waitFor(() => expect(u.state).toBe('unreachable'), { timeout: 3000, interval: 10 });
+    expect(hits).toEqual([]);
+  });
+
+  it('does not follow a redirect to the same origin either', async () => {
+    const paths: string[] = [];
+    const server = http.createServer((req, res) => {
+      paths.push(req.url ?? '');
+      res.writeHead(307, { location: '/moved', connection: 'close' }).end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    cleanup.push(async () => {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    });
+    const port = (server.address() as AddressInfo).port;
+    const u = new Upstream(record(`http://127.0.0.1:${port}/mcp`), {
+      log: quietLog,
+      healthIntervalMs: 50,
+      healthTimeoutMs: 500,
+      backoffMinMs: 10,
+      backoffMaxMs: 20,
+    });
+    cleanup.push(() => u.stop());
+    u.start();
+    await vi.waitFor(() => expect(u.state).toBe('unreachable'), { timeout: 3000, interval: 10 });
+    expect(paths.every((x) => x === '/mcp')).toBe(true);
   });
 
   it('turns unreachable after three failed attempts and never logs the credential', async () => {
