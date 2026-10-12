@@ -4,6 +4,7 @@ import { api, ApiError } from './api';
 import { useConfig, useMe } from './session';
 
 export const NAV: Array<{ to: string; label: string; admin: boolean }> = [
+  { to: '/members', label: 'Members', admin: true },
   { to: '/keys', label: 'My keys', admin: false },
 ];
 
