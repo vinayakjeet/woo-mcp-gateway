@@ -28,6 +28,8 @@ export type AuthenticatorOptions = {
   audience: string;
   log: Log;
   cacheTtlMs?: number;
+  negativeTtlMs?: number;
+  negativeMax?: number;
   touchEveryMs?: number;
   now?: () => number;
 };
@@ -48,15 +50,22 @@ function isAgentJwt(token: string): boolean {
 export class Authenticator {
   private readonly cache = new Map<string, { row: KeyRow; at: number }>();
   private readonly touched = new Map<string, number>();
+  // Prefixes that matched no key. Only unknown prefixes: caching a wrong secret would let anyone lock out the real holder.
+  private readonly negative = new Map<string, number>();
+  private prunedAt = 0;
   // Bumped on every purge, so a lookup that started before a revocation cannot refill the cache after it.
   private generation = 0;
   private readonly ttl: number;
   private readonly touchEvery: number;
+  private readonly negativeTtl: number;
+  private readonly negativeMax: number;
   private readonly now: () => number;
 
   constructor(private readonly o: AuthenticatorOptions) {
     this.ttl = o.cacheTtlMs ?? 10_000;
     this.touchEvery = o.touchEveryMs ?? 60_000;
+    this.negativeTtl = o.negativeTtlMs ?? 5_000;
+    this.negativeMax = o.negativeMax ?? 1000;
     this.now = o.now ?? Date.now;
   }
 
@@ -76,18 +85,30 @@ export class Authenticator {
   purgeAll(): void {
     this.generation++;
     this.cache.clear();
+    this.negative.clear();
+  }
+
+  cacheSizes(): { positive: number; negative: number; touched: number } {
+    return { positive: this.cache.size, negative: this.negative.size, touched: this.touched.size };
   }
 
   private async apiKey(token: string): Promise<Principal | null> {
     const parsed = parseApiKey(token);
     if (!parsed) return null;
     const now = this.now();
+    this.prune(now);
+    const missedAt = this.negative.get(parsed.prefix);
+    if (missedAt !== undefined && now - missedAt < this.negativeTtl) return null;
     let hit = this.cache.get(parsed.prefix);
     if (!hit || now - hit.at >= this.ttl) {
       this.cache.delete(parsed.prefix);
       const gen = this.generation;
       const row = await this.lookup(parsed.prefix);
-      if (!row || !this.valid(parsed.secret, row, now)) return null;
+      if (!row) {
+        this.remember(parsed.prefix, now);
+        return null;
+      }
+      if (!this.valid(parsed.secret, row, now)) return null;
       hit = { row, at: now };
       if (gen === this.generation) this.cache.set(parsed.prefix, hit);
     } else if (!this.valid(parsed.secret, hit.row, now)) {
@@ -102,6 +123,25 @@ export class Authenticator {
       via: 'api_key',
       apiKeyId: row.id,
     };
+  }
+
+  // Without this the maps keep one entry per key ever used until the process restarts.
+  private prune(now: number): void {
+    if (now - this.prunedAt < this.ttl) return;
+    this.prunedAt = now;
+    for (const [k, h] of this.cache) if (now - h.at >= this.ttl) this.cache.delete(k);
+    for (const [k, at] of this.negative) if (now - at >= this.negativeTtl) this.negative.delete(k);
+    for (const [k, at] of this.touched) if (now - at >= this.touchEvery) this.touched.delete(k);
+  }
+
+  private remember(prefix: string, now: number): void {
+    this.negative.delete(prefix);
+    while (this.negative.size >= this.negativeMax) {
+      const oldest = this.negative.keys().next().value;
+      if (oldest === undefined) break;
+      this.negative.delete(oldest);
+    }
+    this.negative.set(prefix, now);
   }
 
   private valid(secret: string, row: KeyRow, now: number): boolean {

@@ -51,12 +51,14 @@ export class BulkheadFullError extends Error {
 export class Bulkhead {
   readonly limit: number;
   readonly maxWaitMs: number;
+  readonly maxQueue: number;
   private active = 0;
   private readonly waiting: Array<() => void> = [];
 
-  constructor(o: { limit?: number; maxWaitMs?: number } = {}) {
+  constructor(o: { limit?: number; maxWaitMs?: number; maxQueue?: number } = {}) {
     this.limit = o.limit ?? 8;
     this.maxWaitMs = o.maxWaitMs ?? 2000;
+    this.maxQueue = o.maxQueue ?? 32;
   }
 
   get inFlight(): number {
@@ -83,6 +85,8 @@ export class Bulkhead {
       this.active++;
       return Promise.resolve();
     }
+    // The wait is capped in time, this caps it in length: a burst cannot park thousands of requests.
+    if (this.waiting.length >= this.maxQueue) return Promise.reject(new BulkheadFullError());
     return new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);

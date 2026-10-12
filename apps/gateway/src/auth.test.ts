@@ -126,6 +126,35 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
     await vi.waitFor(async () => expect((await lastUsed(id))!.getTime()).toBeGreaterThan(first));
   });
 
+  it('remembers an unknown prefix for 5 s, then asks the database again', async () => {
+    const k = generateApiKey(PEPPER);
+    const a = auth();
+    expect(await a.authenticate(`Bearer ${k.key}`)).toBeNull();
+    await db
+      .insert(schema.apiKeys)
+      .values({ userId: adminId, name: 'late', prefix: k.prefix, secretHash: k.secretHash });
+    t += 4_999;
+    expect(await a.authenticate(`Bearer ${k.key}`)).toBeNull();
+    t += 1;
+    expect(await a.authenticate(`Bearer ${k.key}`)).not.toBeNull();
+  });
+
+  it('keeps at most 1000 unknown prefixes', async () => {
+    const a = auth();
+    for (let i = 0; i < 1001; i++) await a.authenticate(`Bearer ${generateApiKey(PEPPER).key}`);
+    expect(a.cacheSizes().negative).toBe(1000);
+  });
+
+  it('prunes expired cache and last_used entries', async () => {
+    const { key } = await addKey(adminId);
+    const a = auth();
+    await a.authenticate(`Bearer ${key}`);
+    expect(a.cacheSizes()).toMatchObject({ positive: 1, touched: 1 });
+    t += 61_000;
+    await a.authenticate(`Bearer ${generateApiKey(PEPPER).key}`);
+    expect(a.cacheSizes()).toEqual({ positive: 0, negative: 1, touched: 0 });
+  });
+
   it('accepts an agent token for an active user', async () => {
     const token = signAgentJwt({
       key: JWT_KEY,

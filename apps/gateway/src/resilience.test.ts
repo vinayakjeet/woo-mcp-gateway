@@ -110,6 +110,20 @@ describe('Bulkhead', () => {
     await Promise.all(running);
   });
 
+  it('rejects at once when 32 calls already wait', async () => {
+    const b = new Bulkhead();
+    const g = gate();
+    const running = Array.from({ length: 8 }, () => b.run(() => g.p));
+    const waiting = Array.from({ length: 32 }, () => b.run(async () => 'ran'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(b.queued).toBe(32);
+    await expect(b.run(async () => 'late')).rejects.toBeInstanceOf(BulkheadFullError);
+    expect(b.queued).toBe(32);
+    g.open();
+    await Promise.all([...running, ...waiting]);
+    expect(b.inFlight).toBe(0);
+  });
+
   it('leaves the queue when the caller aborts', async () => {
     const b = new Bulkhead({ limit: 1 });
     const g = gate();
