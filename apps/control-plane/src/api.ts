@@ -3,7 +3,9 @@ import type pg from 'pg';
 import { inviteRoutes } from './api-invites.js';
 import { keyRoutes } from './api-keys.js';
 import { userRoutes } from './api-users.js';
+import { serverRoutes } from './api-servers.js';
 import { sessionRoutes, sessionUser, sidFromCookie } from './api-session.js';
+import type { UrlCheck } from './ssrf.js';
 
 export type ApiOptions = {
   pool: pg.Pool;
@@ -13,6 +15,7 @@ export type ApiOptions = {
   kek: Buffer;
   gatewayUrl: string;
   version: string;
+  checkUrl?: UrlCheck;
 };
 
 // Registered on buildPublicApp's root, so every route here inherits the Origin check and the
@@ -27,4 +30,5 @@ export async function apiRoutes(scope: FastifyInstance, o: ApiOptions): Promise<
   inviteRoutes(scope, o);
   userRoutes(scope, o);
   keyRoutes(scope, o);
+  serverRoutes(scope, o);
 }
