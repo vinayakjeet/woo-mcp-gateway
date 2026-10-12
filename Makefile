@@ -1,4 +1,4 @@
-.PHONY: cluster images image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway store platform up e2e down
+.PHONY: cluster images image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway image-web store platform up e2e down
 
 CLUSTER ?= urumi
 IMAGE_TAG ?= dev
@@ -11,7 +11,7 @@ comma := ,
 cluster:
 	k3d cluster create --config deploy/k3d.yaml
 
-images: image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway
+images: image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway image-web
 
 # image-store-wordpress is the 856MB image: build the others by name when only they changed.
 image-store-wordpress:
@@ -33,6 +33,10 @@ image-control-plane:
 image-gateway:
 	docker build -t gateway:$(IMAGE_TAG) -f apps/gateway/Dockerfile .
 	k3d image import gateway:$(IMAGE_TAG) --cluster $(CLUSTER)
+
+image-web:
+	docker build -t web:$(IMAGE_TAG) -f apps/web/Dockerfile .
+	k3d image import web:$(IMAGE_TAG) --cluster $(CLUSTER)
 
 # The token file is created once and reused, so the platform release (seed) gets the same value.
 # Commas are escaped because helm --set splits on them.

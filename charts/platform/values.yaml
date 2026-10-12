@@ -9,6 +9,7 @@ images:
   controlPlane: control-plane
   gateway: gateway
   fxMcp: fx-mcp
+  web: web
   postgres: postgres:17-alpine
 
 ingress:

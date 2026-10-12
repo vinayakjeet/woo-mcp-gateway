@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    {{- include "platform.labels" (list . "web") | nindent 4 }}
+spec:
+  selector:
+    {{- include "platform.selectorLabels" (list . "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    {{- include "platform.labels" (list . "web") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" (list . "web") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # nginx-unprivileged runs as uid 101 and keeps its pid and temp files under /tmp.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: {{ include "platform.image" (list . .Values.images.web) }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            {{- include "platform.nodeContainerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

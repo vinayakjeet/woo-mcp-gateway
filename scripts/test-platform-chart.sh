@@ -166,7 +166,7 @@ lacks "$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')" "podSelector: 
 pass "no empty podSelector"
 
 # Every workload file: one probe pair per Deployment or StatefulSet, and the pod and container hardening.
-for f in postgres control-plane gateway fx-mcp; do
+for f in postgres control-plane gateway fx-mcp web; do
   y=$(show "$f.yaml")
   [ "$(grep -cE '^kind: (Deployment|StatefulSet)$' <<<"$y")" -eq 1 ] || fail "$f: expected one workload"
   [ "$(count "$y" 'readinessProbe:')" -eq 1 ] || fail "$f: readinessProbe count"
@@ -192,10 +192,25 @@ done
 [ "$(count "$cp" 'allowPrivilegeEscalation: false')" -eq 2 ] || fail "control-plane: migrate and main containers"
 pass "node containers read-only with /tmp"
 
+w=$(show web.yaml)
+for want in "image: web:dev" "name: web" "containerPort: 8080" "port: 8080" "targetPort: http" \
+  "runAsUser: 101" "runAsGroup: 101" "readOnlyRootFilesystem: true" "mountPath: /tmp" "emptyDir: {}" \
+  "automountServiceAccountToken: false" "cpu: 20m" "memory: 32Mi" "cpu: 200m" "memory: 128Mi" \
+  "app.kubernetes.io/component: web"; do
+  has "$w" "$want" web
+done
+[ "$(probe_port "$w" readinessProbe)" = "8080" ] || fail "web readiness port"
+[ "$(probe_port "$w" livenessProbe)" = "8080" ] || fail "web liveness port"
+# The probes use flow style (httpGet: { path: /, port: 8080 }), which helm template keeps as written.
+[ "$(count "$w" 'path: /, port: 8080')" -eq 2 ] || fail "web: probes must GET / on 8080"
+lacks "$w" "secretKeyRef" web
+pass "web"
+
 ig=$(show ingress-app.yaml)
-for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api" "name: control-plane" "number: 3000"; do
+for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api" "name: control-plane" "number: 3000" "name: web" "number: 8080"; do
   has "$ig" "$want" ingress
 done
+[ "$(count "$ig" 'path: /$')" -eq 1 ] || fail "ingress: one / rule for web"
 lacks "$ig" "tls:" ingress
 pass "ingress"
 im=$(show ingress-mcp.yaml)
