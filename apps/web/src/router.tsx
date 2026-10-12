@@ -3,6 +3,7 @@ import { AcceptInvitePage } from './pages/AcceptInvite';
 import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { MembersPage } from './pages/Members';
+import { ServersPage } from './pages/Servers';
 import { Shell } from './Shell';
 
 function NotFound() {
@@ -24,7 +25,8 @@ export const router = createBrowserRouter([
     element: <Shell />,
     errorElement: <NotFound />,
     children: [
-      { index: true, element: <Navigate to="/keys" replace /> },
+      { index: true, element: <Navigate to="/servers" replace /> },
+      { path: 'servers', element: <ServersPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'members', element: <MembersPage /> },
     ],
