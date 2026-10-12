@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
+import { auditRoutes } from './api-audit.js';
 import { inviteRoutes } from './api-invites.js';
 import { keyRoutes } from './api-keys.js';
 import { userRoutes } from './api-users.js';
@@ -31,4 +32,5 @@ export async function apiRoutes(scope: FastifyInstance, o: ApiOptions): Promise<
   userRoutes(scope, o);
   keyRoutes(scope, o);
   serverRoutes(scope, o);
+  auditRoutes(scope, o);
 }
