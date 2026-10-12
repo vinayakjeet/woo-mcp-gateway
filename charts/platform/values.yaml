@@ -10,6 +10,7 @@ images:
   gateway: gateway
   fxMcp: fx-mcp
   web: web
+  agent: agent
   postgres: postgres:17-alpine
 
 ingress:
@@ -21,6 +22,19 @@ ingress:
 gateway:
   # Browser origins allowed to call /mcp. Empty means <scheme>://app.<domain>.
   allowedOrigins: []
+
+agent:
+  # OpenAI-compatible chat completions. Each environment's values file sets these (SPEC 28).
+  # Keys come from Secret agent-llm: LLM_API_KEY for the primary, LLM_FALLBACK_API_KEY for the fallback.
+  # The agent exits at start, naming the missing variables, while baseUrl or model is empty.
+  llm:
+    baseUrl: ''
+    model: ''
+    # Empty turns the fallback off.
+    fallbackBaseUrl: ''
+    fallbackModel: ''
+    # Sent as reasoning_effort to both providers to keep thinking tokens small. Empty leaves it out.
+    reasoningEffort: low
 
 storage:
   className: local-path

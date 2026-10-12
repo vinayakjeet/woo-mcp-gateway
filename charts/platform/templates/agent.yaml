@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  labels:
+    {{- include "platform.labels" (list . "agent") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "agent") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" (list . "agent") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        {{- include "platform.nodePodSecurity" . | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "platform.image" (list . .Values.images.agent) }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3100
+          env:
+            - name: APP_ORIGIN
+              value: {{ include "platform.url" . | quote }}
+            - name: CONTROL_PLANE_INTERNAL_URL
+              value: {{ printf "http://control-plane-internal.%s.svc.cluster.local:3001" .Release.Namespace | quote }}
+            - name: GATEWAY_MCP_URL
+              value: {{ printf "http://gateway.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
+            - name: INTERNAL_SECRET
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: INTERNAL_SECRET } }
+            - name: LLM_BASE_URL
+              value: {{ .Values.agent.llm.baseUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.agent.llm.model | quote }}
+            - name: LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: agent-llm, key: LLM_API_KEY } }
+            {{- with .Values.agent.llm.fallbackBaseUrl }}
+            - name: LLM_FALLBACK_BASE_URL
+              value: {{ . | quote }}
+            - name: LLM_FALLBACK_MODEL
+              value: {{ $.Values.agent.llm.fallbackModel | quote }}
+            - name: LLM_FALLBACK_API_KEY
+              valueFrom: { secretKeyRef: { name: agent-llm, key: LLM_FALLBACK_API_KEY, optional: true } }
+            {{- end }}
+            {{- with .Values.agent.llm.reasoningEffort }}
+            - name: LLM_REASONING_EFFORT
+              value: {{ . | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3100 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3100 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            {{- include "platform.nodeContainerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  labels:
+    {{- include "platform.labels" (list . "agent") | nindent 4 }}
+spec:
+  selector:
+    {{- include "platform.selectorLabels" (list . "agent") | nindent 4 }}
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http

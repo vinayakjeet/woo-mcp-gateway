@@ -161,12 +161,24 @@ has "$np" "protocol: TCP" fx-mcp-netpol
 lacks "$np" "Ingress" fx-mcp-netpol
 pass "fx-mcp networkpolicy"
 
+na=$(show networkpolicy-agent.yaml)
+for want in "name: agent-egress" "app.kubernetes.io/name: agent" "- Egress" \
+  "kubernetes.io/metadata.name: kube-system" "port: 53" \
+  "app.kubernetes.io/name: gateway" "port: 8080" "app.kubernetes.io/name: control-plane" "port: 3001" \
+  "cidr: 0.0.0.0/0" "- 10.0.0.0/8" "- 172.16.0.0/12" "- 192.168.0.0/16" "- 169.254.0.0/16" \
+  "- 100.64.0.0/10" "port: 443"; do
+  has "$na" "$want" agent-netpol
+done
+lacks "$na" "Ingress" agent-netpol
+lacks "$na" "5432" agent-netpol
+pass "agent networkpolicy"
+
 # No policy selects every pod in the namespace (default-deny is M10).
 lacks "$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')" "podSelector: {}" "netpol"
 pass "no empty podSelector"
 
 # Every workload file: one probe pair per Deployment or StatefulSet, and the pod and container hardening.
-for f in postgres control-plane gateway fx-mcp web; do
+for f in postgres control-plane gateway fx-mcp web agent; do
   y=$(show "$f.yaml")
   [ "$(grep -cE '^kind: (Deployment|StatefulSet)$' <<<"$y")" -eq 1 ] || fail "$f: expected one workload"
   [ "$(count "$y" 'readinessProbe:')" -eq 1 ] || fail "$f: readinessProbe count"
@@ -181,7 +193,7 @@ for f in postgres control-plane gateway fx-mcp web; do
 done
 pass "workload hardening counts"
 
-for f in control-plane gateway fx-mcp; do
+for f in control-plane gateway fx-mcp agent; do
   y=$(show "$f.yaml")
   per=$(count "$y" 'allowPrivilegeEscalation: false')
   [ "$(count "$y" 'readOnlyRootFilesystem: true')" -eq "$per" ] || fail "$f: readOnlyRootFilesystem on every container"
@@ -206,8 +218,32 @@ done
 lacks "$w" "secretKeyRef" web
 pass "web"
 
+a=$(show agent.yaml)
+for want in "image: agent:dev" "name: agent" "containerPort: 3100" "port: 3100" "targetPort: http" \
+  "automountServiceAccountToken: false" "terminationGracePeriodSeconds: 10" \
+  "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 256Mi" "app.kubernetes.io/component: agent" \
+  'value: "http://app.127.0.0.1.nip.io"' \
+  'value: "http://control-plane-internal.platform.svc.cluster.local:3001"' \
+  'value: "http://gateway.platform.svc.cluster.local:8080/mcp"' \
+  'value: "https://generativelanguage.googleapis.com/v1beta/openai/"' 'value: "gemini-3.8-flash"' \
+  'value: "https://api.groq.com/openai/v1"' 'value: "openai/gpt-oss-120b"' 'value: "low"' \
+  "name: agent-llm, key: LLM_API_KEY" "name: agent-llm, key: LLM_FALLBACK_API_KEY, optional: true" \
+  "name: platform-crypto, key: INTERNAL_SECRET"; do
+  has "$a" "$want" agent
+done
+[ "$(count "$a" 'path: /readyz, port: 3100')" -eq 1 ] || fail "agent: readiness on 3100"
+[ "$(count "$a" 'path: /healthz, port: 3100')" -eq 1 ] || fail "agent: liveness on 3100"
+# SPEC 13: no database and no upstream credentials.
+for word in JWT_SIGNING_KEY DATABASE_URL API_KEY_PEPPER "key: KEK" platform-db serviceAccountName; do
+  lacks "$a" "$word" agent
+done
+nf=$(show agent.yaml --set agent.llm.fallbackBaseUrl= --set agent.llm.reasoningEffort=)
+lacks "$nf" "LLM_FALLBACK" agent-without-fallback
+lacks "$nf" "LLM_REASONING_EFFORT" agent-without-fallback
+pass "agent"
+
 ig=$(show ingress-app.yaml)
-for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api" "name: control-plane" "number: 3000" "name: web" "number: 8080"; do
+for want in "ingressClassName: traefik" "host: app.127.0.0.1.nip.io" "path: /api" "name: control-plane" "number: 3000" "name: web" "number: 8080" "path: /api/chat" "name: agent" "number: 3100"; do
   has "$ig" "$want" ingress
 done
 [ "$(count "$ig" 'path: /$')" -eq 1 ] || fail "ingress: one / rule for web"

@@ -20,6 +20,13 @@ spec:
     - host: app.{{ .Values.global.domain }}
       http:
         paths:
+          - path: /api/chat
+            pathType: Prefix
+            backend:
+              service:
+                name: agent
+                port:
+                  number: 3100
           - path: /api
             pathType: Prefix
             backend:
