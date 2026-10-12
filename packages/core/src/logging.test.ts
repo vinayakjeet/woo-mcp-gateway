@@ -30,6 +30,7 @@ describe('LOG_REDACT', () => {
       expect.arrayContaining([
         'req.headers.cookie',
         'req.headers.authorization',
+        'req.headers["x-internal-secret"]',
         'res.headers["set-cookie"]',
       ]),
     );

@@ -3,9 +3,18 @@ import pg from 'pg';
 import { apiRoutes } from './api.js';
 import { buildInternalApp, buildPublicApp } from './app.js';
 import { requireEnv } from './env.js';
+import { introspectRoutes } from './internal-introspect.js';
 import { pgDeps } from './repo.js';
 
-const env = requireEnv('DATABASE_URL', 'APP_ORIGIN', 'API_KEY_PEPPER', 'KEK', 'GATEWAY_URL');
+const env = requireEnv(
+  'DATABASE_URL',
+  'APP_ORIGIN',
+  'API_KEY_PEPPER',
+  'KEK',
+  'GATEWAY_URL',
+  'JWT_SIGNING_KEY',
+  'INTERNAL_SECRET',
+);
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 5 });
 const deps = pgDeps(pool);
 const logger = { redact: LOG_REDACT };
@@ -22,6 +31,13 @@ await pub.register(apiRoutes, {
   version: process.env.APP_VERSION ?? 'dev',
 });
 const internal = buildInternalApp(deps, logger);
+// The agent JWT audience is the gateway's public URL, the same GATEWAY_URL the gateway checks.
+await internal.register(introspectRoutes, {
+  pool,
+  internalSecret: env.INTERNAL_SECRET,
+  jwtKey: env.JWT_SIGNING_KEY,
+  gatewayUrl: env.GATEWAY_URL,
+});
 
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
 await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });

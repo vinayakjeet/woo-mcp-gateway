@@ -2,6 +2,7 @@
 export const LOG_REDACT = [
   'req.headers.cookie',
   'req.headers.authorization',
+  'req.headers["x-internal-secret"]',
   'res.headers["set-cookie"]',
 ];
 
