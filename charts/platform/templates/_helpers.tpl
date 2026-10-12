@@ -62,3 +62,7 @@ capabilities:
 {{- printf "%s://app.%s" .Values.global.scheme .Values.global.domain -}}
 {{- end -}}
 {{- end }}
+
+{{- define "platform.gatewayUrl" -}}
+{{ printf "%s://mcp.%s/mcp" .Values.global.scheme .Values.global.domain }}
+{{- end }}

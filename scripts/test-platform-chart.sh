@@ -109,9 +109,12 @@ for want in "kind: ServiceAccount" "name: control-plane" "name: control-plane-in
   "serviceAccountName: control-plane" "automountServiceAccountToken: false" \
   "path: /readyz" "path: /healthz" "containerPort: 3000" "containerPort: 3001" \
   "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 384Mi" "checksum/seed:" \
-  "app.kubernetes.io/name: control-plane" "app.kubernetes.io/component: control-plane"; do
+  "app.kubernetes.io/name: control-plane" "app.kubernetes.io/component: control-plane" \
+  "name: GATEWAY_URL" 'value: "http://mcp.127.0.0.1.nip.io/mcp"' "name: APP_VERSION"; do
   has "$cp" "$want" control-plane
 done
+# The migrate init container and the API (server secrets) both need the KEK.
+[ "$(count "$cp" 'key: KEK')" -eq 2 ] || fail "control-plane: KEK in migrate and main containers"
 # Probes target the internal port so the public listener stays free of health routes.
 probe_port() { grep -A2 "$2:" <<<"$1" | grep -o 'port: [0-9]*' | head -1 | cut -d' ' -f2; }
 [ "$(probe_port "$cp" readinessProbe)" = "3001" ] || fail "control-plane readiness port"

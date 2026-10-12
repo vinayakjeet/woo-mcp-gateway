@@ -104,6 +104,12 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-crypto, key: JWT_SIGNING_KEY } }
             - name: INTERNAL_SECRET
               valueFrom: { secretKeyRef: { name: platform-crypto, key: INTERNAL_SECRET } }
+            - name: KEK
+              valueFrom: { secretKeyRef: { name: platform-crypto, key: KEK } }
+            - name: GATEWAY_URL
+              value: {{ include "platform.gatewayUrl" . | quote }}
+            - name: APP_VERSION
+              value: {{ .Values.global.imageTag | quote }}
           readinessProbe:
             httpGet: { path: /readyz, port: 3001 }
             periodSeconds: 10

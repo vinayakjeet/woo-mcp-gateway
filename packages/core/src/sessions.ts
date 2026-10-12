@@ -19,3 +19,8 @@ export function sessionCookie(token: string, secure: boolean): string {
   const base = `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}`;
   return secure ? `${base}; Secure` : base;
 }
+
+export function clearSessionCookie(secure: boolean): string {
+  const base = 'sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+  return secure ? `${base}; Secure` : base;
+}

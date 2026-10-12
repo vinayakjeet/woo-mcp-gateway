@@ -37,7 +37,7 @@ spec:
             - name: JWT_SIGNING_KEY
               valueFrom: { secretKeyRef: { name: platform-crypto, key: JWT_SIGNING_KEY } }
             - name: GATEWAY_URL
-              value: {{ printf "%s://mcp.%s/mcp" .Values.global.scheme .Values.global.domain | quote }}
+              value: {{ include "platform.gatewayUrl" . | quote }}
             - name: ALLOWED_ORIGINS
               value: {{ include "platform.gatewayAllowedOrigins" . | quote }}
             - name: POD_NAME

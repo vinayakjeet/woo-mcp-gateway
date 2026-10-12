@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   SESSION_TTL_MS,
+  clearSessionCookie,
   generateSessionToken,
   sessionCookie,
   sessionExpiresAt,
@@ -22,6 +23,15 @@ describe('session tokens', () => {
     expect(sessionCookie('t', false)).toBe('sid=t; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200');
     expect(sessionCookie('t', true)).toBe(
       'sid=t; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200; Secure',
+    );
+  });
+});
+
+describe('clearSessionCookie', () => {
+  it('expires sid with the same attributes it was set with', () => {
+    expect(clearSessionCookie(false)).toBe('sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+    expect(clearSessionCookie(true)).toBe(
+      'sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure',
     );
   });
 });
