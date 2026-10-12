@@ -14,3 +14,8 @@ WooCommerce hosting on Kubernetes with a team MCP gateway. See `.notes/SPEC.md` 
 | MariaDB         | `mariadb:11.4.13`               |
 | Helm            | 4.3.0                           |
 | k3d             | 5.9.0                           |
+| React           | 19.3.0                          |
+| React Router    | 7.18.4                          |
+| TanStack Query  | 5.104.0                         |
+| Vite            | 8.3.1                           |
+| Tailwind CSS    | 4.3.3                           |
