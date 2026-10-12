@@ -1,9 +1,9 @@
 import { encryptSecret } from '@woo/core';
 import type { FastifyInstance } from 'fastify';
 import type { ApiOptions } from './api.js';
-import { requireAdmin, requireUser, type SessionUser } from './api-session.js';
+import { parseId, requireAdmin, requireUser, type SessionUser } from './api-session.js';
 import { notify, withTx } from './db.js';
-import { parseCreate } from './server-input.js';
+import { nextSecret, parseCreate, parsePatch } from './server-input.js';
 import { checkUpstreamUrl } from './ssrf.js';
 
 type ServerRow = {
@@ -89,6 +89,10 @@ export async function getServer(o: ApiOptions, id: string) {
   return serverView(row, t.rows);
 }
 
+// seed.ts rewrites every other column of a managed server on each control-plane start, so edits
+// to them would be lost silently.
+const MANAGED_EDITABLE = new Set(['enabled', 'timeoutMs']);
+
 export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
   const checkUrl = o.checkUrl ?? checkUpstreamUrl;
 
@@ -133,5 +137,86 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
     });
     if (!id) return reply.code(409).send({ error: 'slug_taken' });
     return reply.code(201).send({ server: await getServer(o, id) });
+  });
+
+  scope.patch('/api/servers/:id', { preHandler: requireAdmin }, async (req, reply) => {
+    const id = parseId(req.params);
+    if (!id) return reply.code(404).send({ error: 'not_found' });
+    const p = parsePatch(req.body);
+    if (!p.ok) return reply.code(400).send({ error: p.error });
+    const v = p.value;
+    if (v.url) {
+      const problem = await checkUrl(v.url);
+      if (problem) return reply.code(400).send({ error: 'url_rejected', reason: problem });
+    }
+    const secret = nextSecret(v.auth);
+    const out = await withTx(o.pool, async (c) => {
+      const cur = await c.query<{ slug: string; managed: boolean; hasSecret: boolean }>(
+        `select slug, managed, auth_secret_enc is not null as "hasSecret"
+         from mcp_servers where id = $1 for update`,
+        [id],
+      );
+      const s = cur.rows[0];
+      if (!s) return 'not_found' as const;
+      if (s.managed && Object.keys(v).some((k) => !MANAGED_EDITABLE.has(k))) {
+        return 'managed_server' as const;
+      }
+      // Bearer or header auth with nothing stored and nothing typed would send no credential.
+      if (v.auth && v.auth.type !== 'none' && secret === undefined && !s.hasSecret) {
+        return 'secret_required' as const;
+      }
+      await c.query(
+        `update mcp_servers set
+           name = coalesce($2, name),
+           url = coalesce($3, url),
+           timeout_ms = coalesce($4, timeout_ms),
+           protocol_mode = coalesce($5, protocol_mode),
+           enabled = coalesce($6, enabled),
+           auth_type = coalesce($7, auth_type),
+           auth_header_name = case when $7::auth_type is null then auth_header_name else $8 end,
+           auth_secret_enc = case when $9::boolean then $10 else auth_secret_enc end,
+           updated_at = now()
+         where id = $1`,
+        [
+          id,
+          v.name ?? null,
+          v.url ?? null,
+          v.timeoutMs ?? null,
+          v.protocolMode ?? null,
+          v.enabled ?? null,
+          v.auth?.type ?? null,
+          v.auth?.type === 'header' ? v.auth.headerName : null,
+          secret !== undefined,
+          secret ? encryptSecret(secret, o.kek, s.slug) : null,
+        ],
+      );
+      await notify(c, 'registry_changed', id);
+      return 'ok' as const;
+    });
+    if (out === 'not_found') return reply.code(404).send({ error: 'not_found' });
+    if (out === 'managed_server') return reply.code(409).send({ error: 'managed_server' });
+    if (out === 'secret_required') return reply.code(400).send({ error: 'secret_required' });
+    return { server: await getServer(o, id) };
+  });
+
+  scope.delete('/api/servers/:id', { preHandler: requireAdmin }, async (req, reply) => {
+    const id = parseId(req.params);
+    if (!id) return reply.code(404).send({ error: 'not_found' });
+    const out = await withTx(o.pool, async (c) => {
+      const cur = await c.query<{ managed: boolean }>(
+        'select managed from mcp_servers where id = $1 for update',
+        [id],
+      );
+      const s = cur.rows[0];
+      if (!s) return 'not_found' as const;
+      // Managed servers come back from the seed on the next start; they are disabled instead.
+      if (s.managed) return 'managed_server' as const;
+      await c.query('delete from mcp_servers where id = $1', [id]);
+      await notify(c, 'registry_changed', id);
+      return 'ok' as const;
+    });
+    if (out === 'not_found') return reply.code(404).send({ error: 'not_found' });
+    if (out === 'managed_server') return reply.code(409).send({ error: 'managed_server' });
+    return reply.code(204).send();
   });
 }
