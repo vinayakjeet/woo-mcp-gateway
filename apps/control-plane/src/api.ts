@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { inviteRoutes } from './api-invites.js';
+import { keyRoutes } from './api-keys.js';
 import { userRoutes } from './api-users.js';
 import { sessionRoutes, sessionUser, sidFromCookie } from './api-session.js';
 
@@ -25,4 +26,5 @@ export async function apiRoutes(scope: FastifyInstance, o: ApiOptions): Promise<
   sessionRoutes(scope, o);
   inviteRoutes(scope, o);
   userRoutes(scope, o);
+  keyRoutes(scope, o);
 }
