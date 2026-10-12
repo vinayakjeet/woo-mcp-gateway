@@ -13,8 +13,9 @@ export const MAX_RETRY_WAIT_MS = 30_000;
 
 type AssistantWire = Extract<WireMessage, { role: 'assistant' }>;
 // Assistant messages remember who wrote them: provider-specific tool call fields go back only there.
+// History from the browser has no tag, and toWire treats an untagged message as written by nobody.
 export type ConvoMessage =
-  Exclude<WireMessage, { role: 'assistant' }> | (AssistantWire & { from: Provider['name'] });
+  Exclude<WireMessage, { role: 'assistant' }> | (AssistantWire & { from?: Provider['name'] });
 
 export type Turn = Completion & { provider: Provider['name'] };
 export type CallOptions = { signal: AbortSignal; onText: (delta: string) => void };
