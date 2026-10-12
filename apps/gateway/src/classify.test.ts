@@ -46,10 +46,6 @@ describe('classifyError with real client failures', () => {
     expect(await failureOf(url)).toEqual({ kind: 'refused', message: 'connection refused' });
   });
 
-  it('classifies an unknown host as dns', async () => {
-    expect((await failureOf('http://gateway-test.invalid/mcp')).kind).toBe('dns');
-  });
-
   it.each([
     [401, 'http_401'],
     [403, 'http_403'],
@@ -82,6 +78,21 @@ describe('classifyError with real client failures', () => {
 });
 
 describe('classifyError with built errors', () => {
+  it('classifies an unknown host as dns', () => {
+    // Shape undici reports for a failed lookup: TypeError('fetch failed') with the getaddrinfo
+    // error as its cause. A real lookup would make this test depend on the resolver.
+    const cause = Object.assign(new Error('getaddrinfo ENOTFOUND gateway-test.invalid'), {
+      errno: -3008,
+      code: 'ENOTFOUND',
+      syscall: 'getaddrinfo',
+      hostname: 'gateway-test.invalid',
+    });
+    expect(classifyError(new TypeError('fetch failed', { cause }))).toEqual({
+      kind: 'dns',
+      message: 'DNS lookup failed',
+    });
+  });
+
   it('classifies a certificate failure as tls', () => {
     const cause = Object.assign(new Error('self signed'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' });
     expect(classifyError(new TypeError('fetch failed', { cause }))).toEqual({
