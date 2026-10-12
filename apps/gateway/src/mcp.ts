@@ -6,13 +6,19 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/server';
 import { errorCode } from '@woo/core';
-import { canonicalJson, sha256Hex } from './canonical.js';
+import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 import type { Router } from './registry.js';
 import type { AuditRow, AuditSink, Log, Principal } from './types.js';
 
 // Tool names come from the client: cap what is echoed back and stored.
 export const MAX_NAME_ECHO = 128;
 export const MAX_ERROR_MESSAGE = 500;
+export const MAX_ARGS_DEPTH = 64;
+export const MAX_VERSION_ECHO = 32;
+
+// The SDK already answers 400 to an unknown version, but the audit row should not rely on that.
+export const auditVersion = (raw: string | null | undefined): string | null =>
+  raw ? raw.slice(0, MAX_VERSION_ECHO) : null;
 export const LIST_CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const;
 
 export type GatewayServerOptions = {
@@ -50,15 +56,21 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       outcome: 'bad_request',
       durationMs: 0,
       errorMessage: null,
-      argsSha256: sha256Hex(canonicalJson(args ?? {})),
+      argsSha256: null,
       replica: o.replica,
-      protocolVersion: ctx.http?.req?.headers.get('mcp-protocol-version') ?? null,
+      protocolVersion: auditVersion(ctx.http?.req?.headers.get('mcp-protocol-version')),
     };
     const toolError = (message: string): CallToolResult => {
       row.errorMessage = message.slice(0, MAX_ERROR_MESSAGE);
       return { content: [{ type: 'text', text: message }], isError: true };
     };
     try {
+      // A tree deeper than the limit would overflow the recursive canonicalJson.
+      if (nestsDeeperThan(args, MAX_ARGS_DEPTH)) {
+        row.errorMessage = 'arguments nested too deeply';
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Arguments are nested too deeply');
+      }
+      row.argsSha256 = sha256Hex(canonicalJson(args ?? {}));
       if (!route) {
         row.errorMessage = 'unknown tool';
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);

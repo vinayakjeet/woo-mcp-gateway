@@ -1,7 +1,7 @@
 import { Client, InMemoryTransport, type Tool } from '@modelcontextprotocol/client';
 import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
-import { createGatewayServer } from './mcp.js';
+import { auditVersion, createGatewayServer } from './mcp.js';
 import type { Route, Router } from './registry.js';
 import { captureLog, quietLog } from './test-helpers.js';
 import type { AuditRow, CallOutcome, Log, Principal, ServerRecord } from './types.js';
@@ -197,5 +197,41 @@ describe('createGatewayServer', () => {
     expect(err.message).toContain(`Unknown tool: ${'x'.repeat(128)}`);
     expect(err.message).not.toContain('x'.repeat(129));
     expect(audit[0]?.exposedName).toHaveLength(128);
+  });
+
+  it('answers bad_request and still audits when the arguments nest too deep', async () => {
+    const call = vi.fn(okCall);
+    const { client, audit } = await connect({ fx__tool: route('fx', call) });
+    let deep: unknown = {};
+    for (let i = 0; i < 10_000; i++) deep = [deep];
+    await expect(client.callTool({ name: 'fx__tool', arguments: { deep } })).rejects.toMatchObject({
+      code: -32602,
+      message: expect.stringContaining('nested'),
+    });
+    expect(call).not.toHaveBeenCalled();
+    expect(audit).toEqual([
+      expect.objectContaining({
+        outcome: 'bad_request',
+        serverSlug: 'fx',
+        errorMessage: 'arguments nested too deeply',
+        argsSha256: null,
+      }),
+    ]);
+  });
+
+  it('accepts arguments nested exactly 64 levels deep', async () => {
+    const { client, audit } = await connect({ fx__tool: route('fx', okCall) });
+    let deep: unknown = 1;
+    for (let i = 0; i < 63; i++) deep = [deep];
+    await client.callTool({ name: 'fx__tool', arguments: { deep } });
+    expect(audit[0]).toMatchObject({ outcome: 'ok' });
+    expect(audit[0]?.argsSha256).toHaveLength(64);
+  });
+
+  it('cuts the protocol version stored in the audit row to 32 characters', () => {
+    expect(auditVersion('2025-11-25' + 'x'.repeat(5000))).toHaveLength(32);
+    expect(auditVersion('2025-11-25')).toBe('2025-11-25');
+    expect(auditVersion(null)).toBeNull();
+    expect(auditVersion('')).toBeNull();
   });
 });

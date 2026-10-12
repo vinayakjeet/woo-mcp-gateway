@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalJson, sha256Hex } from './canonical.js';
+import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 
 describe('canonicalJson', () => {
   it('sorts object keys at every depth', () => {
@@ -23,5 +23,22 @@ describe('sha256Hex', () => {
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(sha256Hex(canonicalJson({ y: 2, x: 1 }))).toBe(a);
     expect(sha256Hex(canonicalJson({ x: 1, y: 3 }))).not.toBe(a);
+  });
+});
+
+describe('nestsDeeperThan', () => {
+  const nest = (n: number) => {
+    let v: unknown = 1;
+    for (let i = 0; i < n; i++) v = [v];
+    return v;
+  };
+  it('counts containers, not scalars', () => {
+    expect(nestsDeeperThan(nest(3), 3)).toBe(false);
+    expect(nestsDeeperThan(nest(4), 3)).toBe(true);
+    expect(nestsDeeperThan({ a: { b: 1 } }, 2)).toBe(false);
+    expect(nestsDeeperThan(undefined, 1)).toBe(false);
+  });
+  it('does not recurse, so a very deep tree is safe', () => {
+    expect(nestsDeeperThan(nest(200_000), 64)).toBe(true);
   });
 });
