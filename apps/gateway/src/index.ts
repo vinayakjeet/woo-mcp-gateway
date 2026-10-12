@@ -1,3 +1,4 @@
+import { installGracefulShutdown } from '@woo/core';
 import { loadConfig, type GatewayConfig } from './config.js';
 import { startGateway } from './main.js';
 
@@ -11,8 +12,4 @@ try {
 
 const gateway = await startGateway(cfg);
 
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    void gateway.close().finally(() => process.exit(0));
-  });
-}
+installGracefulShutdown({ servers: gateway.servers, close: gateway.close });

@@ -1,4 +1,4 @@
-import { LOG_REDACT } from '@woo/core';
+import { installGracefulShutdown, LOG_REDACT } from '@woo/core';
 import pg from 'pg';
 import { buildInternalApp, buildPublicApp } from './app.js';
 import { requireEnv } from './env.js';
@@ -19,10 +19,10 @@ const internal = buildInternalApp(deps, logger);
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
 await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });
 
-for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    void Promise.all([pub.close(), internal.close()])
-      .then(() => pool.end())
-      .finally(() => process.exit(0));
-  });
-}
+installGracefulShutdown({
+  servers: [pub.server, internal.server],
+  close: async () => {
+    await Promise.all([pub.close(), internal.close()]);
+    await pool.end();
+  },
+});

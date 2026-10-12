@@ -58,6 +58,11 @@ export async function startMcpHttpServer(opts: {
   return {
     server,
     url: `http://127.0.0.1:${port}`,
+    // Unlike close, this leaves in-flight requests alone. installGracefulShutdown bounds the wait.
+    shutdown: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await handler.close();
+    },
     close: async () => {
       await handler.close();
       await new Promise<void>((resolve) => {

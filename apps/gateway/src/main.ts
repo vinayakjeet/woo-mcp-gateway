@@ -96,6 +96,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
   return {
     port: portOf(app.server),
     healthPort: portOf(health.server),
+    servers: [app.server, health.server],
     close: async () => {
       await app.close();
       await health.close();

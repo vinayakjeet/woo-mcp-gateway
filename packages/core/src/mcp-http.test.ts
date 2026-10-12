@@ -63,4 +63,22 @@ describe('startMcpHttpServer', () => {
     const url = await start(async () => true);
     expect((await fetch(`${url}/nope`)).status).toBe(404);
   });
+
+  it('shutdown stops accepting but lets an in-flight request finish', async () => {
+    const s = await startMcpHttpServer({
+      port: 0,
+      token: 't0ken',
+      ready: () => new Promise((r) => setTimeout(() => r(true), 300)),
+      createServer: () => new McpServer({ name: 't', version: '0.0.0' }),
+    });
+    close = s.close;
+    const inFlight = fetch(`${s.url}/readyz`);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const done = s.shutdown();
+
+    expect((await inFlight).status).toBe(200);
+    await done;
+    await expect(fetch(`${s.url}/healthz`)).rejects.toThrow();
+  });
 });
