@@ -101,8 +101,8 @@ describe('ChatModel', () => {
     expect(fallback.requests).toHaveLength(0);
   });
 
-  it('falls back on a 5xx without retrying the primary, and keeps the fallback for the turn', async () => {
-    const primary = await llm([{ status: 503, body: '{"error":{"message":"overloaded"}}' }]);
+  it('falls back on a 502 without retrying the primary, and keeps the fallback for the turn', async () => {
+    const primary = await llm([{ status: 502, body: '{"error":{"message":"bad gateway"}}' }]);
     const fallback = await llm([{ chunks: textChunks('from fallback') }]);
     const { m, waits } = model(primary.url, fallback.url);
     expect(await m.complete(hi, [], opts)).toMatchObject({
@@ -111,6 +111,32 @@ describe('ChatModel', () => {
     });
     await m.complete(hi, [], opts);
     expect([primary.requests.length, fallback.requests.length, waits]).toEqual([1, 2, []]);
+  });
+
+  it('retries a 503 from the primary once after 2 s and stays on the primary when that works', async () => {
+    const primary = await llm([
+      { status: 503, body: '{"error":{"message":"high demand"}}' },
+      { chunks: textChunks('from primary') },
+    ]);
+    const fallback = await llm([{ chunks: textChunks('unused') }]);
+    const { m, waits } = model(primary.url, fallback.url);
+    expect(await m.complete(hi, [], opts)).toMatchObject({
+      text: 'from primary',
+      provider: 'primary',
+    });
+    expect([primary.requests.length, fallback.requests.length, waits]).toEqual([2, 0, [2000]]);
+  });
+
+  it('falls back when the 503 comes twice, after one retry only', async () => {
+    const primary = await llm([{ status: 503, body: '{"error":{"message":"high demand"}}' }]);
+    const fallback = await llm([{ chunks: textChunks('from fallback') }]);
+    const { m, waits } = model(primary.url, fallback.url);
+    expect(await m.complete(hi, [], opts)).toMatchObject({
+      text: 'from fallback',
+      provider: 'fallback',
+    });
+    await m.complete(hi, [], opts);
+    expect([primary.requests.length, fallback.requests.length, waits]).toEqual([2, 2, [2000]]);
   });
 
   it('falls back when the primary is unreachable', async () => {

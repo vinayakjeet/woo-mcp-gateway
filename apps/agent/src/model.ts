@@ -10,6 +10,9 @@ import {
 import type { FunctionTool } from './tools.js';
 
 export const MAX_RETRY_WAIT_MS = 30_000;
+// Gemini answers 503 for a few seconds at a time when a model is overloaded, so one short retry
+// often succeeds where an immediate switch to the fallback would use up its smaller token quota.
+export const UNAVAILABLE_RETRY_MS = 2000;
 
 type AssistantWire = Extract<WireMessage, { role: 'assistant' }>;
 // Assistant messages remember who wrote them: provider-specific tool call fields go back only there.
@@ -58,7 +61,7 @@ export class ChatModel implements Completer {
   async complete(messages: ConvoMessage[], tools: FunctionTool[], o: CallOptions): Promise<Turn> {
     if (!this.onFallback) {
       try {
-        const answer = await this.fromPrimary(messages, tools, o);
+        const answer = await this.tryPrimary(messages, tools, o);
         if (answer) return answer;
       } catch (err) {
         // A 5xx, an unreachable host or a timeout is the provider's fault, so the other one may answer.
@@ -83,6 +86,21 @@ export class ChatModel implements Completer {
         );
       const ms = Math.min(err.waitMs, this.primaryWaitMs);
       throw new LlmError(`Both LLM providers are rate limited. Try again in ${seconds(ms)} s.`);
+    }
+  }
+
+  // A 503 gets one retry after a short wait. The second failure goes to the caller as it is.
+  private async tryPrimary(
+    messages: ConvoMessage[],
+    tools: FunctionTool[],
+    o: CallOptions,
+  ): Promise<Turn | null> {
+    try {
+      return await this.fromPrimary(messages, tools, o);
+    } catch (err) {
+      if (!(err instanceof LlmError && err.status === 503)) throw err;
+      await (this.o.wait ?? defaultWait)(UNAVAILABLE_RETRY_MS, o.signal);
+      return this.fromPrimary(messages, tools, o);
     }
   }
 

@@ -23,6 +23,7 @@ export class LlmError extends UserFacingError {
   constructor(
     message: string,
     readonly transient = false,
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -205,6 +206,7 @@ export async function streamCompletion(
       throw new LlmError(
         `The ${p.name} LLM provider answered ${res.status}${providerMessage(await errorBody(res))}`,
         res.status >= 500,
+        res.status,
       );
     return await readStream(p, res.body, (delta) => {
       streamed = true;
