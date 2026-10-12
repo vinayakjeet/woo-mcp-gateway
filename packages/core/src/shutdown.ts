@@ -47,7 +47,9 @@ export function installGracefulShutdown(opts: {
       drainServers(opts).then(
         () => exit(0),
         (err: unknown) => {
-          console.error(JSON.stringify({ level: 'error', msg: 'shutdown failed', code: errorCode(err) }));
+          console.error(
+            JSON.stringify({ level: 'error', msg: 'shutdown failed', code: errorCode(err) }),
+          );
           exit(1);
         },
       );
