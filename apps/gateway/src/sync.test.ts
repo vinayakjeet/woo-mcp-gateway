@@ -191,6 +191,31 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
       await sync.close();
     });
 
+    it('lowercases a key_revoked payload before purging', async () => {
+      const { auth, sync } = start();
+      await sync.start();
+      await notify('key_revoked', '00000000-0000-4000-8000-0000000000AB');
+      await vi.waitFor(() =>
+        expect(auth.purge).toHaveBeenCalledWith('00000000-0000-4000-8000-0000000000ab'),
+      );
+      await sync.close();
+    });
+
+    it('reloadAll applies only the servers whose record changed', async () => {
+      const { registry, sync } = start();
+      await sync.start();
+      const first = registry.applied.length;
+      await sync.reloadAll();
+      expect(registry.applied.length).toBe(first);
+      await db
+        .update(schema.mcpServers)
+        .set({ timeoutMs: 9000 })
+        .where(eq(schema.mcpServers.id, ids.hdr!));
+      await sync.reloadAll();
+      expect(registry.applied.slice(first).map((s) => s.record.slug)).toEqual(['hdr']);
+      await sync.close();
+    });
+
     it('reloads everything after the listen connection drops', async () => {
       const { registry, auth, sync } = start();
       await sync.start();

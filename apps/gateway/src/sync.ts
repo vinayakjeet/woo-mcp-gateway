@@ -1,10 +1,11 @@
 import { errorCode } from '@woo/core';
 import pg from 'pg';
 import type { Authenticator } from './auth.js';
-import { canonicalJson } from './canonical.js';
+import { canonicalJson, sha256Hex } from './canonical.js';
+import { PG_CONNECT_TIMEOUT_MS } from './pg-options.js';
 import type { Registry } from './registry.js';
 import { definitionHash, loadServers, upsertTools, type LoadedServer } from './registry-db.js';
-import { UUID_RE, type Db, type Log } from './types.js';
+import { UUID_RE, type Db, type Log, type ServerRecord } from './types.js';
 import { backoffMs, type Upstream } from './upstream.js';
 
 export type SyncOptions = {
@@ -24,9 +25,13 @@ function toolsKey(tools: ReadonlyArray<{ name: string; definitionHash: string }>
   return canonicalJson(sorted.map((t) => [t.name, t.definitionHash]));
 }
 
+const recordKey = (r: ServerRecord) => sha256Hex(canonicalJson(r));
+
 export class GatewaySync {
   loaded = false;
   private readonly persistedKeys = new Map<string, string>();
+  // Hash of the record each upstream was applied with. The record holds the decrypted credential, so no copy is kept.
+  private readonly appliedRecords = new Map<string, string>();
   private client: pg.Client | null = null;
   private queue: Promise<void> = Promise.resolve();
   private attempt = 0;
@@ -64,9 +69,20 @@ export class GatewaySync {
       for (const id of this.o.registry.ids()) {
         if (seen.has(id)) continue;
         this.persistedKeys.delete(id);
+        this.appliedRecords.delete(id);
         await this.o.registry.remove(id);
       }
-      for (const s of loaded) this.applyLoaded(s);
+      for (const s of loaded) {
+        // Rebuilding an upstream drops its connection and resets its breaker: only do it for a real change.
+        if (this.appliedRecords.get(s.record.id) === recordKey(s.record)) {
+          this.o.registry.setToolStates(
+            s.record.id,
+            new Map(s.tools.map((t) => [t.name, t.state])),
+          );
+        } else {
+          this.applyLoaded(s);
+        }
+      }
     });
   }
 
@@ -77,6 +93,7 @@ export class GatewaySync {
         this.applyLoaded(s);
       } else {
         this.persistedKeys.delete(id);
+        this.appliedRecords.delete(id);
         await this.o.registry.remove(id);
       }
     });
@@ -85,6 +102,7 @@ export class GatewaySync {
   // Remember what Postgres holds before the upstream connects, so an unchanged list writes nothing.
   private applyLoaded(s: LoadedServer): void {
     this.persistedKeys.set(s.record.id, toolsKey(s.tools.filter((t) => t.state !== 'removed')));
+    this.appliedRecords.set(s.record.id, recordKey(s.record));
     this.o.registry.apply(s.record, s.tools);
   }
 
@@ -110,6 +128,7 @@ export class GatewaySync {
     const c = new pg.Client({
       connectionString: this.o.databaseUrl,
       application_name: 'gateway-listen',
+      connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
     });
     c.on('notification', (n) => this.onNotify(n.channel, n.payload ?? ''));
     c.on('error', (err) => this.lost(c, err));
@@ -126,11 +145,13 @@ export class GatewaySync {
     this.attempt = 0;
   }
 
-  private onNotify(channel: string, payload: string): void {
-    if (!UUID_RE.test(payload)) {
+  private onNotify(channel: string, rawPayload: string): void {
+    if (!UUID_RE.test(rawPayload)) {
       this.o.log.warn({ channel }, 'notification payload is not a uuid');
       return;
     }
+    // Postgres prints uuids in lower case, and the caches compare ids as plain strings.
+    const payload = rawPayload.toLowerCase();
     if (channel === 'key_revoked') this.o.auth.purge(payload);
     else if (channel === 'registry_changed') void this.reloadServer(payload).catch(() => {});
   }

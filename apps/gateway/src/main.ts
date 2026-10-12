@@ -11,6 +11,7 @@ import { Authenticator } from './auth.js';
 import type { GatewayConfig } from './config.js';
 import { buildHealthApp } from './health.js';
 import { gatewayLogger } from './logger.js';
+import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
 import { Registry, type RegistryOptions } from './registry.js';
 import { StatusWriter } from './status.js';
 import { GatewaySync } from './sync.js';
@@ -25,7 +26,12 @@ export type StartOptions = {
 export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
   const host = o.host ?? '0.0.0.0';
   const logger = o.logger ?? gatewayLogger;
-  const pool = new pg.Pool({ connectionString: cfg.databaseUrl, max: 5 });
+  const pool = new pg.Pool({
+    connectionString: cfg.databaseUrl,
+    max: 5,
+    connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
+    query_timeout: PG_QUERY_TIMEOUT_MS,
+  });
   const db = drizzle(pool, { schema });
 
   const health = buildHealthApp(

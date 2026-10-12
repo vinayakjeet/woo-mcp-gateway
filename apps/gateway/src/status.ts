@@ -2,6 +2,7 @@ import { errorCode } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
+import { PG_CONNECT_TIMEOUT_MS } from './pg-options.js';
 import type { Db, Log } from './types.js';
 import type { UpstreamStatus } from './upstream.js';
 
@@ -72,6 +73,7 @@ export class StatusWriter {
         const c = new pg.Client({
           connectionString: this.o.databaseUrl,
           application_name: 'gateway-status-lock',
+          connectionTimeoutMillis: PG_CONNECT_TIMEOUT_MS,
         });
         c.on('error', (err) => this.lost(c, err));
         c.on('end', () => this.lost(c));
