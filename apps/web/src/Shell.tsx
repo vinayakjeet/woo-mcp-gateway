@@ -3,7 +3,9 @@ import { Navigate, NavLink, Outlet, useNavigate } from 'react-router';
 import { api, ApiError } from './api';
 import { useConfig, useMe } from './session';
 
-export const NAV: Array<{ to: string; label: string; admin: boolean }> = [];
+export const NAV: Array<{ to: string; label: string; admin: boolean }> = [
+  { to: '/keys', label: 'My keys', admin: false },
+];
 
 export function Shell() {
   const me = useMe();

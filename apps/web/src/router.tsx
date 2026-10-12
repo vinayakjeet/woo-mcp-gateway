@@ -1,5 +1,6 @@
 import { createBrowserRouter, Link, Navigate } from 'react-router';
 import { AcceptInvitePage } from './pages/AcceptInvite';
+import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { Shell } from './Shell';
 
@@ -21,6 +22,9 @@ export const router = createBrowserRouter([
     path: '/',
     element: <Shell />,
     errorElement: <NotFound />,
-    children: [{ index: true, element: <Navigate to="/keys" replace /> }],
+    children: [
+      { index: true, element: <Navigate to="/keys" replace /> },
+      { path: 'keys', element: <KeysPage /> },
+    ],
   },
 ]);

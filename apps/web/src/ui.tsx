@@ -1,9 +1,11 @@
-import type {
-  ButtonHTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
+import {
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  useState,
 } from 'react';
+import { copyText } from './clipboard';
 import { errorText } from './errors';
 import type { Tone } from './types';
 
@@ -146,3 +148,12 @@ export function CenteredCard({ title, children }: { title: string; children: Rea
 
 export const th = 'border-b border-line px-2 py-1.5 text-left text-xs font-medium text-muted';
 export const td = 'border-b border-line px-2 py-1.5 align-top';
+
+export function CopyButton({ text }: { text: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  return (
+    <Button onClick={async () => setState((await copyText(text)) ? 'copied' : 'failed')}>
+      {state === 'copied' ? 'Copied' : state === 'failed' ? 'Select and copy' : 'Copy'}
+    </Button>
+  );
+}
