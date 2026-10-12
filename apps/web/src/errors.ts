@@ -22,6 +22,7 @@ const MESSAGES: Record<string, string> = {
   url_rejected: 'That URL is not allowed.',
   bad_request: 'Some fields are invalid. Check them and try again.',
   internal_error: 'The server failed. Try again in a moment.',
+  session_check_failed: 'Could not check your session. Try again in a moment.',
 };
 
 export function errorText(err: unknown): string {

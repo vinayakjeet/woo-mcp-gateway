@@ -1,6 +1,7 @@
 import { createBrowserRouter, Link, Navigate } from 'react-router';
 import { AcceptInvitePage } from './pages/AcceptInvite';
 import { AuditPage } from './pages/Audit';
+import { ChatPage } from './pages/Chat';
 import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { MembersPage } from './pages/Members';
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/servers" replace /> },
       { path: 'servers', element: <ServersPage /> },
+      { path: 'chat', element: <ChatPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'members', element: <MembersPage /> },
