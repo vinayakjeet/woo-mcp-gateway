@@ -45,6 +45,7 @@ spec:
         checksum/token: {{ $token | sha256sum | trunc 16 }}
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

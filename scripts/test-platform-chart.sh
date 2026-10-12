@@ -213,5 +213,9 @@ pass "notes"
 { render --set global.imageTag=latest 2>&1 || true; } | grep -q "global.imageTag must not be latest" || fail "imageTag latest accepted"
 pass "imageTag latest rejected"
 
+for f in fx-mcp.yaml gateway.yaml control-plane.yaml; do
+  has "$(show "$f")" "terminationGracePeriodSeconds: 10" "$f"
+done
+pass "node services terminate within 10 s"
 
 echo "OK"

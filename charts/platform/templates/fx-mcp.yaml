@@ -29,6 +29,7 @@ spec:
         {{- include "platform.labels" (list . "fx-mcp") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
       securityContext:
         {{- include "platform.nodePodSecurity" . | nindent 8 }}
       containers:

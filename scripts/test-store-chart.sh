@@ -155,5 +155,7 @@ if helm template x charts/store -f deploy/store-values-local.yaml --set slug=mai
   fail "render without mcp.sharedToken must fail"
 fi
 pass "sharedToken required"
+has "$(show woo-mcp.yaml)" "terminationGracePeriodSeconds: 10" woo-mcp
+pass "woo-mcp terminates within 10 s"
 
 echo "OK"

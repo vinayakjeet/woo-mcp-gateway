@@ -55,6 +55,7 @@ spec:
       serviceAccountName: control-plane
       # Only the provisioner (M5) talks to the Kubernetes API, so the token is mounted when it is enabled.
       automountServiceAccountToken: {{ .Values.provisioner.enabled }}
+      terminationGracePeriodSeconds: 10
       securityContext:
         {{- include "platform.nodePodSecurity" . | nindent 8 }}
       initContainers:
