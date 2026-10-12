@@ -109,3 +109,12 @@ export async function listen(url: string, channel: 'key_revoked' | 'registry_cha
     close: () => c.end(),
   };
 }
+
+export async function rawKey(pool: pg.Pool, userId: string, revoked = false): Promise<string> {
+  const r = await pool.query<{ id: string }>(
+    `insert into api_keys (user_id, name, prefix, secret_hash, revoked_at)
+     values ($1, 'raw', $2, 'x', $3) returning id`,
+    [userId, randomBytes(4).toString('hex'), revoked ? new Date() : null],
+  );
+  return r.rows[0]!.id;
+}
