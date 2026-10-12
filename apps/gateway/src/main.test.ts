@@ -189,6 +189,48 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
     await c.close();
   });
 
+  it('rejects every cached key of a user disabled in the database within a second of key_revoked', async () => {
+    const [u] = await db
+      .insert(schema.users)
+      .values({ email: 'leaver@example.com', status: 'active' })
+      .returning({ id: schema.users.id });
+    const keys = [generateApiKey(PEPPER), generateApiKey(PEPPER)];
+    const rows = await db
+      .insert(schema.apiKeys)
+      .values(
+        keys.map((k, i) => ({
+          userId: u!.id,
+          name: `leaver-${i}`,
+          prefix: k.prefix,
+          secretHash: k.secretHash,
+        })),
+      )
+      .returning({ id: schema.apiKeys.id });
+    const status = async (k: string) =>
+      (
+        await fetch(mcpUrl, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${k}`,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+        })
+      ).status;
+    // One request each puts both keys in the gateway's cache.
+    for (const k of keys) expect(await status(k.key)).not.toBe(401);
+    // What PATCH /api/users/:id commits: the user disabled, keys left unrevoked, one NOTIFY per key.
+    await db.update(schema.users).set({ status: 'disabled' }).where(eq(schema.users.id, u!.id));
+    for (const r of rows) await pool.query("select pg_notify('key_revoked', $1)", [r.id]);
+    await vi.waitFor(
+      async () => {
+        for (const k of keys) expect(await status(k.key)).toBe(401);
+      },
+      { timeout: 1000, interval: 50 },
+    );
+  });
+
   it('rejects a key within a second of NOTIFY key_revoked', async () => {
     await db
       .update(schema.apiKeys)
