@@ -18,7 +18,15 @@ export type WireMessage =
 
 export type Completion = { text: string; toolCalls: WireToolCall[] };
 
-export class LlmError extends UserFacingError {}
+export class LlmError extends UserFacingError {
+  // Transient means the provider itself is down or slow, so the other provider may still answer.
+  constructor(
+    message: string,
+    readonly transient = false,
+  ) {
+    super(message);
+  }
+}
 
 export class RateLimitedError extends Error {
   constructor(
@@ -89,13 +97,16 @@ async function errorBody(res: Response): Promise<string> {
 }
 
 // The turn's own abort (client gone, deadline) passes through untouched so the caller can tell it apart.
-function asLlmError(p: Provider, err: unknown, turn: AbortSignal): unknown {
+// After text has reached the user, a switch to the other provider would repeat the answer, so the
+// error is not marked transient.
+function asLlmError(p: Provider, err: unknown, turn: AbortSignal, streamed: boolean): unknown {
   if (turn.aborted || err instanceof LlmError) return err;
   if (err instanceof Error && err.name === 'TimeoutError')
     return new LlmError(
       `The ${p.name} LLM provider did not answer within ${LLM_TIMEOUT_MS / 1000} s.`,
+      !streamed,
     );
-  return new LlmError(`Could not reach the ${p.name} LLM provider (${errorCode(err)}).`);
+  return new LlmError(`Could not reach the ${p.name} LLM provider (${errorCode(err)}).`, !streamed);
 }
 
 function mergeToolCall(calls: WireToolCall[], d: ToolCallDelta): void {
@@ -173,6 +184,7 @@ export async function streamCompletion(
   o: { signal: AbortSignal; onText: (delta: string) => void; fetch?: typeof fetch },
 ): Promise<Completion> {
   const signal = AbortSignal.any([o.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)]);
+  let streamed = false;
   try {
     const res = await (o.fetch ?? fetch)(`${p.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -192,10 +204,14 @@ export async function streamCompletion(
     if (!res.ok || !res.body)
       throw new LlmError(
         `The ${p.name} LLM provider answered ${res.status}${providerMessage(await errorBody(res))}`,
+        res.status >= 500,
       );
-    return await readStream(p, res.body, o.onText);
+    return await readStream(p, res.body, (delta) => {
+      streamed = true;
+      o.onText(delta);
+    });
   } catch (err) {
     if (err instanceof RateLimitedError) throw err;
-    throw asLlmError(p, err, o.signal);
+    throw asLlmError(p, err, o.signal, streamed);
   }
 }

@@ -92,13 +92,100 @@ describe('ChatModel', () => {
     );
   });
 
-  it('does not fall back on errors other than 429', async () => {
-    const primary = await llm([{ status: 503, body: '{"error":{"message":"overloaded"}}' }]);
+  it('does not fall back on a 400, which the other provider would reject too', async () => {
+    const primary = await llm([{ status: 400, body: '{"error":{"message":"bad tools"}}' }]);
     const fallback = await llm([{ chunks: textChunks('unused') }]);
     await expect(model(primary.url, fallback.url).m.complete(hi, [], opts)).rejects.toThrow(
-      'The primary LLM provider answered 503: overloaded',
+      'The primary LLM provider answered 400: bad tools',
     );
     expect(fallback.requests).toHaveLength(0);
+  });
+
+  it('falls back on a 5xx without retrying the primary, and keeps the fallback for the turn', async () => {
+    const primary = await llm([{ status: 503, body: '{"error":{"message":"overloaded"}}' }]);
+    const fallback = await llm([{ chunks: textChunks('from fallback') }]);
+    const { m, waits } = model(primary.url, fallback.url);
+    expect(await m.complete(hi, [], opts)).toMatchObject({
+      text: 'from fallback',
+      provider: 'fallback',
+    });
+    await m.complete(hi, [], opts);
+    expect([primary.requests.length, fallback.requests.length, waits]).toEqual([1, 2, []]);
+  });
+
+  it('falls back when the primary is unreachable', async () => {
+    const primary = await llm([]);
+    await primary.close();
+    const fallback = await llm([{ chunks: textChunks('ok') }]);
+    expect(await model(primary.url, fallback.url).m.complete(hi, [], opts)).toMatchObject({
+      provider: 'fallback',
+    });
+  });
+
+  it('falls back when the primary times out', async () => {
+    const fallback = await llm([{ chunks: textChunks('ok') }]);
+    const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    const m = new ChatModel({
+      primary: provider('primary', 'http://primary.invalid/v1'),
+      fallback: provider('fallback', fallback.url),
+      reasoningEffort: null,
+      fetch: (input, init) =>
+        String(input).startsWith('http://primary.invalid')
+          ? Promise.reject(timeout)
+          : fetch(input, init),
+    });
+    expect(await m.complete(hi, [], opts)).toMatchObject({ text: 'ok', provider: 'fallback' });
+  });
+
+  it('does not fall back once text has reached the user, to avoid a repeated answer', async () => {
+    const fallback = await llm([{ chunks: textChunks('unused') }]);
+    const cut = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    const m = new ChatModel({
+      primary: provider('primary', 'http://primary.invalid/v1'),
+      fallback: provider('fallback', fallback.url),
+      reasoningEffort: null,
+      fetch: (input, init) =>
+        String(input).startsWith('http://primary.invalid')
+          ? Promise.resolve(
+              new Response(
+                new ReadableStream({
+                  start(c) {
+                    c.enqueue(
+                      new TextEncoder().encode(
+                        'data: {"choices":[{"delta":{"content":"par"}}]}\n\n',
+                      ),
+                    );
+                  },
+                  // error() drops queued chunks, so fail on the read after the first one.
+                  pull(c) {
+                    c.error(cut);
+                  },
+                }),
+              ),
+            )
+          : fetch(input, init),
+    });
+    const seen: string[] = [];
+    await expect(m.complete(hi, [], { ...opts, onText: (d) => seen.push(d) })).rejects.toThrow(
+      'did not answer',
+    );
+    expect(seen).toEqual(['par']);
+    expect(fallback.requests).toHaveLength(0);
+  });
+
+  it('fails with the primary error when a 5xx has no fallback to go to', async () => {
+    const primary = await llm([{ status: 503, body: '{"error":{"message":"overloaded"}}' }]);
+    await expect(model(primary.url, null).m.complete(hi, [], opts)).rejects.toThrow(
+      'The primary LLM provider answered 503: overloaded',
+    );
+  });
+
+  it('says so when the primary failed and the fallback is rate limited', async () => {
+    const primary = await llm([{ status: 502, body: '{}' }]);
+    const fallback = await llm([rateLimited(9)]);
+    await expect(model(primary.url, fallback.url).m.complete(hi, [], opts)).rejects.toThrow(
+      'The primary LLM provider failed and the fallback is rate limited. Try again in 9 s.',
+    );
   });
 });
 

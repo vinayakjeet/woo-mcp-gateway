@@ -51,13 +51,21 @@ export function toWire(messages: ConvoMessage[], target: Provider['name']): Wire
 export class ChatModel implements Completer {
   private onFallback = false;
   private primaryWaitMs = 0;
+  private primaryDown = false;
 
   constructor(private readonly o: ChatModelOptions) {}
 
   async complete(messages: ConvoMessage[], tools: FunctionTool[], o: CallOptions): Promise<Turn> {
     if (!this.onFallback) {
-      const answer = await this.fromPrimary(messages, tools, o);
-      if (answer) return answer;
+      try {
+        const answer = await this.fromPrimary(messages, tools, o);
+        if (answer) return answer;
+      } catch (err) {
+        // A 5xx, an unreachable host or a timeout is the provider's fault, so the other one may answer.
+        // Other errors, such as a 400, would fail the same way there.
+        if (!(err instanceof LlmError && err.transient && this.o.fallback)) throw err;
+        this.primaryDown = true;
+      }
     }
     const fallback = this.o.fallback;
     if (!fallback)
@@ -69,6 +77,10 @@ export class ChatModel implements Completer {
       return await this.call(fallback, messages, tools, o);
     } catch (err) {
       if (!(err instanceof RateLimitedError)) throw err;
+      if (this.primaryDown)
+        throw new LlmError(
+          `The primary LLM provider failed and the fallback is rate limited. Try again in ${seconds(err.waitMs)} s.`,
+        );
       const ms = Math.min(err.waitMs, this.primaryWaitMs);
       throw new LlmError(`Both LLM providers are rate limited. Try again in ${seconds(ms)} s.`);
     }
