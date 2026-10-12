@@ -10,6 +10,6 @@ agent:
   llm:
     # Free tiers, checked 2026-10-12. scripts/llm-models.mjs confirms both names from inside the cluster.
     baseUrl: https://generativelanguage.googleapis.com/v1beta/openai/
-    model: gemini-3.8-flash
+    model: gemini-3.5-flash-lite
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b

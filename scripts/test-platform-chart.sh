@@ -225,7 +225,7 @@ for want in "image: agent:dev" "name: agent" "containerPort: 3100" "port: 3100" 
   'value: "http://app.127.0.0.1.nip.io"' \
   'value: "http://control-plane-internal.platform.svc.cluster.local:3001"' \
   'value: "http://gateway.platform.svc.cluster.local:8080/mcp"' \
-  'value: "https://generativelanguage.googleapis.com/v1beta/openai/"' 'value: "gemini-3.8-flash"' \
+  'value: "https://generativelanguage.googleapis.com/v1beta/openai/"' 'value: "gemini-3.5-flash-lite"' \
   'value: "https://api.groq.com/openai/v1"' 'value: "openai/gpt-oss-120b"' 'value: "low"' \
   "name: agent-llm, key: LLM_API_KEY" "name: agent-llm, key: LLM_FALLBACK_API_KEY, optional: true" \
   "name: platform-crypto, key: INTERNAL_SECRET"; do
