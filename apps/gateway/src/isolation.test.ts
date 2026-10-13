@@ -26,7 +26,7 @@ type Fake = Awaited<ReturnType<typeof startMcpHttpServer>>;
 function fakeUpstream(
   name: string,
   tool: string,
-  answer: (signal: AbortSignal) => Promise<string>,
+  answer: (signal: AbortSignal, tag: string) => Promise<string>,
 ): Promise<Fake> {
   return startMcpHttpServer({
     port: 0,
@@ -36,9 +36,9 @@ function fakeUpstream(
       const s = new McpServer({ name, version: '0.0.0' });
       s.registerTool(
         tool,
-        { description: `${tool} tool`, inputSchema: z.object({}) },
-        async (_args, ctx) => ({
-          content: [{ type: 'text', text: await answer(ctx.mcpReq.signal) }],
+        { description: `${tool} tool`, inputSchema: z.object({ tag: z.string().optional() }) },
+        async ({ tag }, ctx) => ({
+          content: [{ type: 'text', text: await answer(ctx.mcpReq.signal, tag ?? '') }],
         }),
       );
       return s;
@@ -63,7 +63,9 @@ function record(id: string, slug: string, base: string, timeoutMs: number): Serv
 
 describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (mode) => {
   const audit: AuditRow[] = [];
-  const silentAborts: number[] = [];
+  // Tagged, because the upstream aborts of earlier tests' timed-out calls can land late under load.
+  const silentStarts: string[] = [];
+  const silentAborts: { tag: string; at: number }[] = [];
   let fast: Fake;
   let silent: Fake;
   let registry: Registry;
@@ -75,18 +77,16 @@ describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (
       await sleep(50);
       return 'fast answer';
     });
-    // Never answers. Records when the gateway gives up, so cancellation can be checked.
-    silent = await fakeUpstream(
-      'silent',
-      'wait',
-      (signal) =>
-        new Promise<string>((_resolve, reject) => {
-          signal.addEventListener('abort', () => {
-            silentAborts.push(Date.now());
-            reject(new Error('aborted'));
-          });
-        }),
-    );
+    // Never answers. Records each call and when the gateway gives up on it, so cancellation can be checked.
+    silent = await fakeUpstream('silent', 'wait', (signal, tag) => {
+      silentStarts.push(tag);
+      return new Promise<string>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          silentAborts.push({ tag, at: Date.now() });
+          reject(new Error('aborted'));
+        });
+      });
+    });
     registry = new Registry({ log: quiet });
     registry.apply(record('00000000-0000-4000-8000-0000000000f1', 'fast', fast.url, 15_000));
     registry.apply(
@@ -190,7 +190,7 @@ describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (
   it.runIf(mode === 'legacy')(
     'aborts the upstream call when the client closes the stream',
     async () => {
-      const before = silentAborts.length;
+      const tag = 'cancel';
       const ac = new AbortController();
       const res = fetch(url, {
         method: 'POST',
@@ -205,25 +205,32 @@ describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (
           jsonrpc: '2.0',
           id: 7,
           method: 'tools/call',
-          params: { name: 'silent__wait', arguments: {} },
+          params: { name: 'silent__wait', arguments: { tag } },
         }),
       }).catch(() => undefined);
-      await sleep(200);
+      // Close only once the upstream holds the call; a fixed sleep can lose that race under load.
+      await vi.waitFor(() => expect(silentStarts).toContain(tag), { timeout: 3000, interval: 10 });
       const t0 = Date.now();
       ac.abort();
       await res;
-      await vi.waitFor(() => expect(silentAborts.length).toBe(before + 1), {
-        timeout: 900,
+      await vi.waitFor(() => expect(silentAborts.some((a) => a.tag === tag)).toBe(true), {
+        timeout: 3000,
         interval: 10,
       });
-      expect(silentAborts.at(-1)! - t0).toBeLessThan(SILENT_TIMEOUT_MS - 200);
+      // The gateway's own 1 s timeout would also abort the upstream; the time tells the two apart.
+      expect(silentAborts.find((a) => a.tag === tag)!.at - t0).toBeLessThan(
+        SILENT_TIMEOUT_MS - 200,
+      );
       await vi.waitFor(() =>
-        expect(audit.at(-1)).toMatchObject({
-          exposedName: 'silent__wait',
-          outcome: 'upstream_error',
-          errorMessage: 'cancelled by client',
-        }),
+        expect(audit).toContainEqual(
+          expect.objectContaining({
+            exposedName: 'silent__wait',
+            outcome: 'upstream_error',
+            errorMessage: 'cancelled by client',
+          }),
+        ),
       );
     },
+    10_000,
   );
 });
