@@ -13,6 +13,7 @@ import {
   type ChatEntry,
   type ToolChip,
 } from '../chat';
+import { ChatMarkdown } from '../ChatMarkdown';
 import type { Me } from '../types';
 import { Button, ErrorLine, PageHeader, Pill } from '../ui';
 
@@ -122,7 +123,12 @@ export function ChatPage() {
             {e.tools?.map((c, j) => (
               <Chip key={`${c.id}-${j}`} chip={c} />
             ))}
-            {e.content && <p className="whitespace-pre-wrap">{e.content}</p>}
+            {e.content &&
+              (e.role === 'assistant' ? (
+                <ChatMarkdown text={e.content} />
+              ) : (
+                <p className="whitespace-pre-wrap">{e.content}</p>
+              ))}
             {busy && i === entries.length - 1 && !e.content && !e.error && (
               <p className="text-muted">Working</p>
             )}
