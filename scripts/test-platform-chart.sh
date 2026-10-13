@@ -106,7 +106,7 @@ for want in "kind: ServiceAccount" "name: control-plane" "name: control-plane-in
   "name: migrate" "- node" "- dist/migrate.js" "key: SEED_SERVERS" "name: platform-seed" "key: KEK" "name: platform-crypto" \
   "key: ADMIN_EMAIL" "key: ADMIN_PASSWORD" "key: API_KEY_PEPPER" "key: JWT_SIGNING_KEY" "key: INTERNAL_SECRET" \
   "key: DATABASE_URL" "name: APP_ORIGIN" "value: \"http://app.127.0.0.1.nip.io\"" \
-  "serviceAccountName: control-plane" "automountServiceAccountToken: false" \
+  "serviceAccountName: control-plane" \
   "path: /readyz" "path: /healthz" "containerPort: 3000" "containerPort: 3001" \
   "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 384Mi" "checksum/seed:" \
   "app.kubernetes.io/name: control-plane" "app.kubernetes.io/component: control-plane" \
@@ -120,9 +120,27 @@ probe_port() { grep -A2 "$2:" <<<"$1" | grep -o 'port: [0-9]*' | head -1 | cut -
 [ "$(probe_port "$cp" readinessProbe)" = "3001" ] || fail "control-plane readiness port"
 [ "$(probe_port "$cp" livenessProbe)" = "3001" ] || fail "control-plane liveness port"
 lacks "$cp" "app.kubernetes.io/name: gateway" control-plane
-# The API token is mounted only once the provisioner (M5) needs the Kubernetes API.
-lacks "$cp" "automountServiceAccountToken: true" control-plane
-has "$(show control-plane.yaml --set provisioner.enabled=true)" "automountServiceAccountToken: true" "control-plane with provisioner"
+# values-local turns the provisioner on (M9), which mounts the API token.
+has "$cp" "automountServiceAccountToken: true" control-plane
+lacks "$(show control-plane.yaml --set provisioner.enabled=false)" "automountServiceAccountToken: true" "control-plane without provisioner"
+for want in "name: PROVISIONER_ENABLED" "value: \"true\"" "name: PROVISIONER_MAX_STORES_PER_USER" "value: \"3\"" \
+  "name: HOME" "value: /tmp" '\"domain\":\"127.0.0.1.nip.io\"' '\"imageTag\":\"dev\"' \
+  '\"className\":\"local-path\"' '\"mariadb\":\"2Gi\"' '\"environmentType\":\"local\"'; do
+  has "$cp" "$want" "control-plane provisioner env"
+done
+[ "$(grep -c 'name: PROVISIONER_STORE_VALUES' <<<"$cp")" -eq 2 ] || fail "PROVISIONER_STORE_VALUES must reach the migrate init container and the app"
+rb=$(show rbac-provisioner.yaml)
+for want in "kind: ClusterRole" "kind: ClusterRoleBinding" "name: control-plane" "namespace: platform" \
+  "- namespaces" "- deployments" "- statefulsets" "- services" "- configmaps" "- secrets" \
+  "- persistentvolumeclaims" "- jobs" "- ingresses" "- networkpolicies" "- resourcequotas" \
+  "- limitranges" "- pods" "- replicasets" "- events"; do
+  has "$rb" "$want" rbac
+done
+if grep -Eq -- '- persistentvolumes$' <<<"$rb"; then fail "rbac: persistentvolumes is not in SPEC 18"; fi
+lacks "$rb" "'*'" rbac
+if render --set provisioner.enabled=false --show-only templates/rbac-provisioner.yaml >/dev/null 2>&1; then
+  fail "rbac rendered with the provisioner off"
+fi
 pass "control-plane"
 
 gw=$(show gateway.yaml)
