@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyServerOptions, LightMyRequestResponse } fr
 import pg from 'pg';
 import { apiRoutes, type ApiOptions } from './api.js';
 import { buildPublicApp } from './app.js';
+import type { Channel } from './db.js';
 import { migrateAndSeed } from './migrate-run.js';
 import { pgDeps } from './repo.js';
 import { freshDatabase } from './test-db.js';
@@ -56,9 +57,14 @@ export function call(
   app: FastifyInstance,
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   url: string,
-  o: { cookie?: string; body?: unknown; origin?: string | null } = {},
+  o: {
+    cookie?: string;
+    body?: unknown;
+    origin?: string | null;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<LightMyRequestResponse> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...o.headers };
   if (o.cookie) headers.cookie = o.cookie;
   if (method !== 'GET' && o.origin !== null) headers.origin = o.origin ?? ORIGIN;
   if (o.body !== undefined) headers['content-type'] = 'application/json';
@@ -90,7 +96,7 @@ export async function userWithSession(
   return { id, cookie: `sid=${token}` };
 }
 
-export async function listen(url: string, channel: 'key_revoked' | 'registry_changed') {
+export async function listen(url: string, channel: Channel) {
   const c = new pg.Client({ connectionString: url });
   await c.connect();
   const got: string[] = [];

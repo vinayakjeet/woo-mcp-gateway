@@ -5,6 +5,7 @@ import { buildInternalApp, buildPublicApp } from './app.js';
 import { requireEnv } from './env.js';
 import { introspectRoutes } from './internal-introspect.js';
 import { pgDeps } from './repo.js';
+import { provisionerConfig } from './store-values.js';
 
 const env = requireEnv(
   'DATABASE_URL',
@@ -15,6 +16,8 @@ const env = requireEnv(
   'JWT_SIGNING_KEY',
   'INTERNAL_SECRET',
 );
+const kek = parseKek(env.KEK);
+const provisioner = provisionerConfig(process.env);
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 5 });
 const deps = pgDeps(pool);
 const logger = { redact: LOG_REDACT };
@@ -26,7 +29,8 @@ await pub.register(apiRoutes, {
   appOrigin: env.APP_ORIGIN,
   secureCookies,
   pepper: env.API_KEY_PEPPER,
-  kek: parseKek(env.KEK),
+  kek,
+  provisioner,
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
 });
