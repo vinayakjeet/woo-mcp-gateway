@@ -161,4 +161,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
       status_reason: 'Step install failed on attempt 1: aborted',
     });
   });
+
+  it('tears down deleting stores', async () => {
+    const d = deps();
+    const id = await add('bye', { status: 'deleting' });
+    kube.namespaces.set('store-bye', {});
+    const p = make(d, { tickMs: 20 });
+    await p.start();
+    await waitFor(async () => (await status(id)) === undefined);
+    expect(helm.calls).toContain('uninstall store-bye/store-bye');
+    expect(kube.calls).toContain('delete store-bye');
+  });
+
+  it('tears down a deleting store whose creation deadline is long past', async () => {
+    const d = deps();
+    const old = new Date(Date.now() - 3600_000);
+    const id = await add('bye-late', { status: 'deleting', deadlineAt: old });
+    kube.namespaces.set('store-bye-late', {});
+    const p = make(d, { tickMs: 20 });
+    await p.start();
+    await waitFor(async () => (await status(id)) === undefined);
+    expect(helm.calls).toEqual(['uninstall store-bye-late/store-bye-late']);
+  });
 });

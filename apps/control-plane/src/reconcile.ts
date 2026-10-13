@@ -249,3 +249,51 @@ export async function provisionStore(
     d.log.warn({ store: job.slug, step: job.lastStep, detail }, 'store step failed');
   }
 }
+
+export const NAMESPACE_WAIT_MS = 300_000;
+
+const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function waitGone(d: ReconcileDeps, ns: string): Promise<boolean> {
+  const poll = d.pollMs ?? 2000;
+  const polls = Math.ceil((d.namespaceWaitMs ?? NAMESPACE_WAIT_MS) / poll);
+  for (let i = 0; i < polls; i++) {
+    if (!(await d.kube.namespaceExists(ns))) return true;
+    await (d.sleep ?? pause)(poll);
+  }
+  return !(await d.kube.namespaceExists(ns));
+}
+
+// SPEC 18 delete, steps 2 and 3. The API already removed the server row (step 1). The 15 minute
+// deadline belongs to provisioning only: deadline_at keeps its creation value on a deleting row,
+// so nothing here may read it.
+export async function teardownStore(
+  d: ReconcileDeps,
+  job: StoreJob,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await setStep(d, job, 'uninstall');
+    await d.helm.uninstall(job.release, job.namespace, UNINSTALL_TIMEOUT_SEC, signal);
+    await setStep(d, job, 'namespace-delete');
+    await d.kube.deleteNamespace(job.namespace);
+    await setStep(d, job, 'namespace-wait');
+    // The namespace takes its PVCs with it; local-path volumes use reclaimPolicy Delete.
+    if (!(await waitGone(d, job.namespace))) {
+      await setReason(d, job, `Namespace ${job.namespace} still exists after 5 min. Retrying.`);
+      return;
+    }
+    await withTx(d.pool, async (c) => {
+      const r = await c.query(
+        "delete from stores where id = $1 and status = 'deleting' returning id",
+        [job.id],
+      );
+      if (r.rows[0]) await notify(c, 'stores_changed', job.id);
+    });
+    d.log.info({ store: job.slug }, 'store deleted');
+  } catch (err) {
+    const detail = failureDetail(err);
+    await setReason(d, job, `Step ${job.lastStep} failed: ${detail}`);
+    d.log.warn({ store: job.slug, step: job.lastStep, detail }, 'store teardown step failed');
+  }
+}

@@ -3,6 +3,7 @@ import pg from 'pg';
 import {
   JOB_SELECT,
   provisionStore,
+  teardownStore,
   type Log,
   type ReconcileDeps,
   type StoreJob,
@@ -84,7 +85,7 @@ export class Provisioner {
         this.again = false;
         if (this.inflight.size >= MAX_PARALLEL) break;
         const r = await this.o.deps.pool.query<StoreJob>(
-          `${JOB_SELECT} where status = 'provisioning' order by created_at`,
+          `${JOB_SELECT} where status in ('provisioning', 'deleting') order by created_at`,
         );
         for (const job of r.rows) {
           if (this.inflight.size >= MAX_PARALLEL || !this.leader) break;
@@ -103,7 +104,10 @@ export class Provisioner {
   private run(job: StoreJob): void {
     const ac = new AbortController();
     this.inflight.set(job.id, ac);
-    const p: Promise<void> = provisionStore(this.o.deps, job, ac.signal)
+    // Dispatch is by status only. A provisioning row is picked up whatever its deadline, so the
+    // pass can fail it once the deadline has gone (Task 12); deleting rows have no deadline.
+    const pass = job.status === 'deleting' ? teardownStore : provisionStore;
+    const p: Promise<void> = pass(this.o.deps, job, ac.signal)
       .catch((err: unknown) => {
         this.o.log.warn({ store: job.slug, code: errorCode(err) }, 'store reconcile failed');
       })

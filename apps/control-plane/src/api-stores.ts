@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { encryptSecret } from '@woo/core';
 import type { FastifyInstance } from 'fastify';
 import type { ApiOptions } from './api.js';
-import { requireUser, type SessionUser } from './api-session.js';
+import { parseId, requireUser, type SessionUser } from './api-session.js';
 import { notify, withTx } from './db.js';
 import {
   DEADLINE_MINUTES,
@@ -135,5 +135,41 @@ export function storeRoutes(scope: FastifyInstance, o: ApiOptions): void {
     if (out.kind === 'taken') return reply.code(409).send({ error: 'name_taken' });
     const store = await getStore(o, out.id, user);
     return reply.code(out.kind === 'created' ? 202 : 200).send({ store });
+  });
+
+  scope.delete('/api/stores/:id', { preHandler: requireUser }, async (req, reply) => {
+    if (!o.provisioner) return reply.code(503).send({ error: 'provisioner_disabled' });
+    const id = parseId(req.params);
+    if (!id) return reply.code(404).send({ error: 'not_found' });
+    const user = req.user as SessionUser;
+    const out = await withTx(o.pool, async (c) => {
+      const cur = await c.query<{ slug: string; status: string; ownerId: string }>(
+        'select slug, status, owner_user_id as "ownerId" from stores where id = $1 for update',
+        [id],
+      );
+      const s = cur.rows[0];
+      // A member learns nothing about another member's store, not even that it exists.
+      if (!s || (user.role !== 'admin' && s.ownerId !== user.id)) return 'not_found' as const;
+      if (RESERVED_SLUGS.has(s.slug)) return 'seeded_store' as const;
+      if (s.status === 'deleting') return 'ok' as const;
+      if (s.status === 'provisioning') return 'not_deletable' as const;
+      await c.query(
+        `update stores set status = 'deleting', last_step = 'queued', status_reason = null,
+           updated_at = now() where id = $1`,
+        [id],
+      );
+      // SPEC 18 step 1: the tools disappear before any helm work starts.
+      const m = await c.query<{ id: string }>(
+        'delete from mcp_servers where store_id = $1 returning id',
+        [id],
+      );
+      for (const row of m.rows) await notify(c, 'registry_changed', row.id);
+      await notify(c, 'stores_changed', id);
+      return 'ok' as const;
+    });
+    if (out === 'not_found') return reply.code(404).send({ error: 'not_found' });
+    if (out === 'seeded_store') return reply.code(409).send({ error: 'seeded_store' });
+    if (out === 'not_deletable') return reply.code(409).send({ error: 'not_deletable' });
+    return reply.code(202).send({ store: await getStore(o, id, user) });
   });
 }

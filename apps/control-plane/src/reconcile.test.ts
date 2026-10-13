@@ -2,8 +2,15 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { HelmError } from './helm.js';
 import { KubeError } from './kube.js';
-import { JOB_SELECT, provisionStore, type ReconcileDeps, type StoreJob } from './reconcile.js';
+import {
+  JOB_SELECT,
+  provisionStore,
+  teardownStore,
+  type ReconcileDeps,
+  type StoreJob,
+} from './reconcile.js';
 import { listen } from './test-app.js';
 import {
   FakeHelm,
@@ -218,5 +225,67 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('provisionStore (needs TEST_DATA
       status_reason: 'Step namespace failed on attempt 1: Kubernetes API answered 403 Forbidden',
     });
     expect(helm.calls).toEqual([]);
+  });
+
+  it('tears down: uninstall, namespace delete and wait, then the row goes', async () => {
+    const { helm, kube, d } = setup({ pollMs: 1000, namespaceWaitMs: 5000 });
+    kube.terminatingPolls = 2;
+    const id = await add('omega', { status: 'deleting' });
+    kube.namespaces.set('store-omega', {});
+    const l = await listen(db.url, 'stores_changed');
+    try {
+      await teardownStore(d, await job(id));
+      expect(helm.calls).toEqual(['uninstall store-omega/store-omega']);
+      expect(kube.calls.filter((c) => c.startsWith('delete'))).toEqual(['delete store-omega']);
+      expect(await row(id)).toBeUndefined();
+      expect(await l.waitFor(1)).toEqual([id]);
+    } finally {
+      await l.close();
+    }
+  });
+
+  it('keeps the row while the namespace stays, with a reason, and polls a bounded time', async () => {
+    const { kube, d } = setup({ pollMs: 1000, namespaceWaitMs: 5000 });
+    kube.terminatingPolls = Infinity;
+    const id = await add('stuck', { status: 'deleting' });
+    kube.namespaces.set('store-stuck', {});
+    await teardownStore(d, await job(id));
+    expect(await row(id)).toMatchObject({
+      status: 'deleting',
+      last_step: 'namespace-wait',
+      status_reason: 'Namespace store-stuck still exists after 5 min. Retrying.',
+    });
+    expect(kube.calls.filter((c) => c.startsWith('get'))).toHaveLength(6);
+  });
+
+  it('finishes a teardown whose namespace never existed', async () => {
+    const { d } = setup();
+    const id = await add('never', { status: 'deleting' });
+    await teardownStore(d, await job(id));
+    expect(await row(id)).toBeUndefined();
+  });
+
+  it('ignores the deadline of a store that is being deleted', async () => {
+    const { helm, d } = setup();
+    const id = await add('expired', {
+      status: 'deleting',
+      deadlineAt: new Date(Date.now() - 3600_000),
+    });
+    await teardownStore(d, await job(id));
+    expect(helm.calls).toEqual(['uninstall store-expired/store-expired']);
+    expect(await row(id)).toBeUndefined();
+  });
+
+  it('records a helm failure and keeps the row', async () => {
+    const { helm, d } = setup();
+    helm.uninstall = async () => {
+      throw new HelmError('uninstall', 'Error: uninstall: timed out');
+    };
+    const id = await add('sticky', { status: 'deleting' });
+    await teardownStore(d, await job(id));
+    expect(await row(id)).toMatchObject({
+      status: 'deleting',
+      status_reason: 'Step uninstall failed: Error: uninstall: timed out',
+    });
   });
 });
