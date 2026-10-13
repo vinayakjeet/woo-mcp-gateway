@@ -42,3 +42,20 @@ wooMcp:
     namespace: platform
     podLabels:
       app.kubernetes.io/name: gateway
+
+networkPolicy:
+  # Traefik in k3s (SPEC 16). Besides this store's woo-mcp, only these pods may open the storefront.
+  ingressController:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+
+# SPEC 18. Production stores use 2Gi + 2Gi volumes (a deliberate change from SPEC 28), which fits 8Gi.
+quota:
+  requestsCpu: '1'
+  requestsMemory: 1536Mi
+  limitsCpu: '3'
+  limitsMemory: 2Gi
+  persistentVolumeClaims: 3
+  requestsStorage: 8Gi
+  pods: 10
