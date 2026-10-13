@@ -6,21 +6,13 @@ import type pg from 'pg';
 import { notify, withTx } from './db.js';
 import { HelmError, type Helm } from './helm.js';
 import { KubeError, type Kube } from './kube.js';
-import type { StoreProbe } from './store-probe.js';
-import {
-  storeLabels,
-  storeMcpUrl,
-  storeUrl,
-  storeValues,
-  type StoreDefaults,
-} from './store-values.js';
+import { storeLabels, storeUrl, storeValues, type StoreDefaults } from './store-values.js';
 
 export const MAX_ATTEMPTS = 3;
 export const INSTALL_TIMEOUT_SEC = 600;
 export const UNINSTALL_TIMEOUT_SEC = 300;
-// 30 tries 2 s apart: the site is installed by the time helm returns, this only covers a slow pod.
-export const VERIFY_ATTEMPTS = 30;
 export const VERIFY_INTERVAL_MS = 2000;
+const DEADLINE_FALLBACK_MS = 15 * 60_000;
 
 export type Log = Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
 
@@ -45,7 +37,6 @@ export type ReconcileDeps = {
   kek: Buffer;
   kube: Kube;
   helm: Helm;
-  probe: StoreProbe;
   defaults: StoreDefaults;
   chartPath: string;
   workDir: string;
@@ -98,7 +89,14 @@ async function markFailed(
        where id = $1 and status = 'provisioning' returning id`,
       [job.id, reason, attempt],
     );
-    if (r.rows[0]) await notify(c, 'stores_changed', job.id);
+    if (!r.rows[0]) return;
+    // A failed store must not stay routable.
+    const m = await c.query<{ id: string }>(
+      'update mcp_servers set enabled = false, updated_at = now() where store_id = $1 and enabled returning id',
+      [job.id],
+    );
+    for (const s of m.rows) await notify(c, 'registry_changed', s.id);
+    await notify(c, 'stores_changed', job.id);
   });
   d.log.warn({ store: job.slug, reason }, 'store failed');
 }
@@ -111,15 +109,57 @@ async function markReady(d: ReconcileDeps, job: StoreJob): Promise<void> {
        where id = $1 and status = 'provisioning' returning id`,
       [job.id, storeUrl(d.defaults, job.slug)],
     );
-    if (!r.rows[0]) return;
+    if (r.rows[0]) await notify(c, 'stores_changed', job.id);
+  });
+  d.log.info({ store: job.slug }, 'store ready');
+}
+
+// The gateway loads the server on registry_changed, so a store is routable from here on.
+async function enableServer(d: ReconcileDeps, job: StoreJob): Promise<void> {
+  await withTx(d.pool, async (c) => {
     const m = await c.query<{ id: string }>(
-      'update mcp_servers set enabled = true, updated_at = now() where store_id = $1 returning id',
+      `update mcp_servers set enabled = true, updated_at = now()
+       where store_id = $1
+         and exists (select 1 from stores where id = $1 and status = 'provisioning')
+       returning id`,
       [job.id],
     );
     for (const s of m.rows) await notify(c, 'registry_changed', s.id);
-    await notify(c, 'stores_changed', job.id);
   });
-  d.log.info({ store: job.slug }, 'store ready');
+}
+
+// Helm returning proves the bootstrap hook Job ran. "Usable" is decided through the gateway, the only
+// caller SPEC 16 lets reach woo-mcp: its health check must see the server connected. Returns the
+// failure reason once the store deadline passes, or null when the server is connected.
+async function waitForGateway(
+  d: ReconcileDeps,
+  job: StoreJob,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const now = d.now ?? (() => new Date());
+  const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const limit = job.deadlineAt ?? new Date(now().getTime() + DEADLINE_FALLBACK_MS);
+  for (;;) {
+    const r = await d.pool.query<{
+      state: string | null;
+      kind: string | null;
+      message: string | null;
+    }>(
+      `select s.state, s.error_kind as kind, s.error_message as message
+       from mcp_servers m left join mcp_server_status s on s.server_id = m.id
+       where m.store_id = $1`,
+      [job.id],
+    );
+    const st = r.rows[0];
+    if (st?.state === 'connected') return null;
+    if (now() >= limit) {
+      if (!st?.kind) return 'The gateway did not report on the store before its deadline';
+      const detail = st.message ? `${st.kind}: ${st.message}` : st.kind;
+      return `The gateway could not connect to the store: ${detail}`.slice(0, 300);
+    }
+    signal?.throwIfAborted();
+    await sleep(VERIFY_INTERVAL_MS);
+  }
 }
 
 async function storeToken(d: ReconcileDeps, job: StoreJob): Promise<string> {
@@ -130,28 +170,6 @@ async function storeToken(d: ReconcileDeps, job: StoreJob): Promise<string> {
   const row = r.rows[0];
   if (!row?.enc) throw new ReconcileError('the store has no MCP server credential');
   return decryptSecret(row.enc, d.kek, row.slug);
-}
-
-// Helm returning means the release is ready and its bootstrap hook Job completed. That does not
-// prove the store works, so one real get_info call does. A store is usable only after it answers.
-async function verifyStore(d: ReconcileDeps, job: StoreJob, signal?: AbortSignal): Promise<void> {
-  const token = await storeToken(d, job);
-  const url = storeMcpUrl(job.slug);
-  const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  let last = '';
-  for (let i = 1; i <= VERIFY_ATTEMPTS; i++) {
-    try {
-      await d.probe(url, token, signal);
-      return;
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      last = (err instanceof Error ? err.message : String(err)).split(token).join('***');
-    }
-    if (i < VERIFY_ATTEMPTS) await sleep(VERIFY_INTERVAL_MS);
-  }
-  throw new ReconcileError(
-    `get_info did not answer after ${VERIFY_ATTEMPTS} tries: ${last.slice(0, 200)}`,
-  );
 }
 
 // SPEC 18: the values file lives in the emptyDir (/tmp) only while helm runs.
@@ -216,9 +234,14 @@ export async function provisionStore(
         }),
       );
     }
-    await setStep(d, job, 'verify');
-    await verifyStore(d, job, signal);
     await setStep(d, job, 'register');
+    await enableServer(d, job);
+    await setStep(d, job, 'verify');
+    const unusable = await waitForGateway(d, job, signal);
+    if (unusable) {
+      await markFailed(d, job, unusable, job.attempt);
+      return;
+    }
     await markReady(d, job);
   } catch (err) {
     const detail = failureDetail(err);

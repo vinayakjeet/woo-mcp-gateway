@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@fastify/rate-limit": "11.2.0",
-    "@modelcontextprotocol/client": "2.3.1",
     "@node-rs/argon2": "2.2.2",
     "@woo/core": "workspace:*",
     "drizzle-orm": "0.45.4",
@@ -22,7 +21,6 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
     "@types/pg": "8.23.1"
   }
 }

@@ -6,7 +6,6 @@ import { HelmError, type Helm, type InstallOptions, type ReleaseStatus } from '.
 import type { Kube } from './kube.js';
 import { migrateAndSeed } from './migrate-run.js';
 import type { Log } from './reconcile.js';
-import type { StoreProbe } from './store-probe.js';
 import { parseStoreDefaults, storeMcpUrl, type StoreDefaults } from './store-values.js';
 import { freshDatabase } from './test-db.js';
 
@@ -181,18 +180,29 @@ export class FakeKube implements Kube {
   }
 }
 
-export class FakeProbe {
-  readonly calls: Array<{ url: string; token: string }> = [];
-  failTimes = 0;
-  failWith = 'connection refused';
-  onCall: (() => Promise<void>) | null = null;
+// Stands in for the gateway's status writer: the state it reports for a store's MCP server.
+export async function reportStatus(
+  pool: pg.Pool,
+  storeId: string,
+  state: 'connected' | 'unreachable',
+  kind: string | null = null,
+  message: string | null = null,
+): Promise<void> {
+  await pool.query(
+    `insert into mcp_server_status (server_id, state, error_kind, error_message, checked_at)
+     select id, $2::server_state, $3, $4, now() from mcp_servers where store_id = $1
+     on conflict (server_id) do update set state = excluded.state,
+       error_kind = excluded.error_kind, error_message = excluded.error_message, checked_at = now()`,
+    [storeId, state, kind, message],
+  );
+}
 
-  readonly fn: StoreProbe = async (url, token) => {
-    this.calls.push({ url, token });
-    await this.onCall?.();
-    if (this.failTimes > 0) {
-      this.failTimes--;
-      throw new Error(this.failWith);
-    }
-  };
+// What the gateway does for every enabled store server once it has loaded and reached it.
+export async function connectAll(pool: pg.Pool): Promise<void> {
+  await pool.query(
+    `insert into mcp_server_status (server_id, state, checked_at)
+     select id, 'connected', now() from mcp_servers where store_id is not null and enabled
+     on conflict (server_id) do update set state = 'connected', error_kind = null,
+       error_message = null`,
+  );
 }

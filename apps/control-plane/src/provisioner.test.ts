@@ -6,9 +6,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Provisioner } from './provisioner.js';
 import type { ReconcileDeps } from './reconcile.js';
 import {
+  connectAll,
   FakeHelm,
   FakeKube,
-  FakeProbe,
   insertStore,
   quietLog,
   storeDb,
@@ -49,12 +49,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
       kek: db.kek,
       helm,
       kube,
-      probe: new FakeProbe().fn,
       defaults: testStoreDefaults(),
       chartPath: '/charts/store',
       workDir,
       log: quietLog,
-      sleep: async () => {},
+      sleep: async () => connectAll(db.pool),
       pollMs: 1,
       namespaceWaitMs: 10,
     };
