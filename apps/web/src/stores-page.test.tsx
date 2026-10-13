@@ -6,6 +6,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from './router';
 
 const me = { id: 'u1', email: 'admin@example.com', name: null, role: 'admin' };
+const store = (slug: string, over: Record<string, unknown> = {}) => ({
+  id: `id-${slug}`,
+  slug,
+  name: `Store ${slug}`,
+  status: 'ready',
+  statusReason: null,
+  lastStep: 'ready',
+  url: `http://${slug}.shop.test`,
+  attempt: 0,
+  createdAt: '2026-10-13T10:00:00Z',
+  readyAt: '2026-10-13T10:02:00Z',
+  deadlineAt: null,
+  owner: { id: 'u1', email: 'admin@example.com' },
+  deletable: true,
+  seeded: false,
+  ...over,
+});
 const answers: Record<string, unknown> = {
   '/api/me': { user: me },
   '/api/config': { gatewayUrl: 'http://mcp.test/mcp', version: 'test' },
@@ -46,5 +63,29 @@ describe('Stores page through the real routes', () => {
     expect(screen.getByLabelText('Name')).toBeTruthy();
     expect(screen.queryByText('Page not found.')).toBeNull();
     expect(router.state.location.pathname).toBe('/stores');
+  });
+
+  it('shows the seeded store a disabled Delete with a reason, and other stores an active one', async () => {
+    answers['/api/stores'] = {
+      stores: [store('main', { deletable: false, seeded: true }), store('shop-two')],
+    };
+    const router = createMemoryRouter(routes, { initialEntries: ['/stores'] });
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    const buttons = await screen.findAllByRole('button', { name: 'Delete' });
+    expect(buttons).toHaveLength(2);
+    const [main, other] = buttons as HTMLButtonElement[];
+    expect(main!.disabled).toBe(true);
+    expect(main!.title).toBe('The demo store can’t be deleted');
+    expect(other!.disabled).toBe(false);
+    const confirm = vi.spyOn(window, 'confirm');
+    fireEvent.click(main!);
+    expect(confirm).not.toHaveBeenCalled();
+    answers['/api/stores'] = { stores: [] };
   });
 });

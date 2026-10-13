@@ -80,4 +80,5 @@ export type Store = {
   deadlineAt: string | null;
   owner: { id: string; email: string };
   deletable: boolean;
+  seeded: boolean;
 };

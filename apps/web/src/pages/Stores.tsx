@@ -79,6 +79,11 @@ export function StoresPage() {
                 {admin && <td className={td}>{s.owner.email}</td>}
                 <td className={td}>{ago(s.createdAt)}</td>
                 <td className={`${td} whitespace-nowrap text-right`}>
+                  {s.seeded && (
+                    <Button tone="danger" disabled title="The demo store can’t be deleted">
+                      Delete
+                    </Button>
+                  )}
                   {s.deletable && (
                     <Button
                       tone="danger"
