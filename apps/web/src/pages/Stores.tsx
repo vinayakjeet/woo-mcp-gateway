@@ -18,6 +18,10 @@ export function StoresPage() {
   });
   const [creating, setCreating] = useState(false);
   const refresh = () => void qc.invalidateQueries({ queryKey: ['stores'] });
+  const remove = useMutation({
+    mutationFn: (s: Store) => api(`/api/stores/${s.id}`, { method: 'DELETE' }),
+    onSuccess: refresh,
+  });
   const headers = [
     'Status',
     'Name',
@@ -35,7 +39,7 @@ export function StoresPage() {
           Create store
         </Button>
       </PageHeader>
-      <ErrorLine error={stores.error} />
+      <ErrorLine error={stores.error ?? remove.error} />
       <table className="w-full border-collapse rounded border border-line bg-panel">
         <thead>
           <tr>
@@ -74,7 +78,21 @@ export function StoresPage() {
                 </td>
                 {admin && <td className={td}>{s.owner.email}</td>}
                 <td className={td}>{ago(s.createdAt)}</td>
-                <td className={`${td} whitespace-nowrap text-right`} />
+                <td className={`${td} whitespace-nowrap text-right`}>
+                  {s.deletable && (
+                    <Button
+                      tone="danger"
+                      disabled={remove.isPending}
+                      onClick={() =>
+                        window.confirm(
+                          `Delete ${s.name}? Its database, files and namespace are removed and its tools disappear from every client. This cannot be undone.`,
+                        ) && remove.mutate(s)
+                      }
+                    >
+                      Delete
+                    </Button>
+                  )}
+                </td>
               </tr>
             );
           })}
