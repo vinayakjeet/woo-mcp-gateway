@@ -44,4 +44,16 @@ describe('api', () => {
     );
     expect([err.status, err.code]).toEqual([502, 'http_error']);
   });
+  it('sends extra headers with the JSON content type', async () => {
+    const { f, calls } = fakeFetch(202, '{"store":{}}');
+    await api(
+      '/api/stores',
+      { method: 'POST', body: { name: 'x' }, headers: { 'idempotency-key': 'k1' } },
+      f,
+    );
+    expect(calls[0]!.init.headers).toEqual({
+      'idempotency-key': 'k1',
+      'content-type': 'application/json',
+    });
+  });
 });

@@ -2,6 +2,16 @@ import { ApiError } from './api';
 
 const MESSAGES: Record<string, string> = {
   invalid_credentials: 'Wrong email or password.',
+  invalid_name:
+    'Name: 1 to 60 characters, starting with a letter, giving an address of 3 to 20 letters and digits.',
+  slug_reserved: 'That name gives the address main, which belongs to the platform store.',
+  name_taken: 'A store or server already uses that address. Pick another name.',
+  store_limit: 'You reached your store limit. Delete a store first.',
+  invalid_idempotency_key:
+    'The request carried a bad Idempotency-Key. Reload the page and try again.',
+  provisioner_disabled: 'Store creation is turned off on this platform.',
+  not_deletable: 'A store can be deleted once it is ready or has failed.',
+  seeded_store: 'The main store is installed with the platform and cannot be deleted here.',
   rate_limited: 'Too many attempts. Wait a minute and try again.',
   bad_origin: 'The request came from an unexpected origin. Reload the page.',
   unauthenticated: 'Your session ended. Sign in again.',
