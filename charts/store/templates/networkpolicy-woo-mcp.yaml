@@ -1,5 +1,4 @@
-# SPEC 16: only the gateway may call woo-mcp, plus the control-plane for the provisioner's readiness call (M9).
-# Exists from M2, before the default-deny policies of M10.
+# SPEC 16: only the gateway may call woo-mcp. Exists from M2, before the default-deny policies of M10.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,12 +16,6 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml .Values.wooMcp.gateway.podLabels | nindent 14 }}
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.wooMcp.controlPlane.namespace }}
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.wooMcp.controlPlane.podLabels | nindent 14 }}
       ports:
         - port: 8080
           protocol: TCP
