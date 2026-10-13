@@ -8,6 +8,7 @@ import type { ReconcileDeps } from './reconcile.js';
 import {
   FakeHelm,
   FakeKube,
+  FakeProbe,
   insertStore,
   quietLog,
   storeDb,
@@ -48,6 +49,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
       kek: db.kek,
       helm,
       kube,
+      probe: new FakeProbe().fn,
       defaults: testStoreDefaults(),
       chartPath: '/charts/store',
       workDir,

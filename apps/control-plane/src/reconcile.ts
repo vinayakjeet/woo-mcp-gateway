@@ -6,11 +6,21 @@ import type pg from 'pg';
 import { notify, withTx } from './db.js';
 import { HelmError, type Helm } from './helm.js';
 import { KubeError, type Kube } from './kube.js';
-import { storeLabels, storeUrl, storeValues, type StoreDefaults } from './store-values.js';
+import type { StoreProbe } from './store-probe.js';
+import {
+  storeLabels,
+  storeMcpUrl,
+  storeUrl,
+  storeValues,
+  type StoreDefaults,
+} from './store-values.js';
 
 export const MAX_ATTEMPTS = 3;
 export const INSTALL_TIMEOUT_SEC = 600;
 export const UNINSTALL_TIMEOUT_SEC = 300;
+// 30 tries 2 s apart: the site is installed by the time helm returns, this only covers a slow pod.
+export const VERIFY_ATTEMPTS = 30;
+export const VERIFY_INTERVAL_MS = 2000;
 
 export type Log = Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
 
@@ -35,6 +45,7 @@ export type ReconcileDeps = {
   kek: Buffer;
   kube: Kube;
   helm: Helm;
+  probe: StoreProbe;
   defaults: StoreDefaults;
   chartPath: string;
   workDir: string;
@@ -121,6 +132,28 @@ async function storeToken(d: ReconcileDeps, job: StoreJob): Promise<string> {
   return decryptSecret(row.enc, d.kek, row.slug);
 }
 
+// Helm returning means the release is ready and its bootstrap hook Job completed. That does not
+// prove the store works, so one real get_info call does. A store is usable only after it answers.
+async function verifyStore(d: ReconcileDeps, job: StoreJob, signal?: AbortSignal): Promise<void> {
+  const token = await storeToken(d, job);
+  const url = storeMcpUrl(job.slug);
+  const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last = '';
+  for (let i = 1; i <= VERIFY_ATTEMPTS; i++) {
+    try {
+      await d.probe(url, token, signal);
+      return;
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      last = (err instanceof Error ? err.message : String(err)).split(token).join('***');
+    }
+    if (i < VERIFY_ATTEMPTS) await sleep(VERIFY_INTERVAL_MS);
+  }
+  throw new ReconcileError(
+    `get_info did not answer after ${VERIFY_ATTEMPTS} tries: ${last.slice(0, 200)}`,
+  );
+}
+
 // SPEC 18: the values file lives in the emptyDir (/tmp) only while helm runs.
 async function withValuesFile<T>(
   dir: string,
@@ -183,6 +216,8 @@ export async function provisionStore(
         }),
       );
     }
+    await setStep(d, job, 'verify');
+    await verifyStore(d, job, signal);
     await setStep(d, job, 'register');
     await markReady(d, job);
   } catch (err) {

@@ -9,6 +9,7 @@ import { introspectRoutes } from './internal-introspect.js';
 import { inClusterKube } from './kube.js';
 import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
+import { getInfoProbe } from './store-probe.js';
 import { provisionerConfig } from './store-values.js';
 
 const env = requireEnv(
@@ -57,6 +58,7 @@ const stores = provisioner
         kek,
         kube: await inClusterKube(),
         helm: helmCli(),
+        probe: getInfoProbe,
         defaults: provisioner.storeDefaults,
         // Baked into the image (SPEC 18). Overridable for running outside the image.
         chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',

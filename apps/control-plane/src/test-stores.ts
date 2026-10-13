@@ -6,6 +6,7 @@ import { HelmError, type Helm, type InstallOptions, type ReleaseStatus } from '.
 import type { Kube } from './kube.js';
 import { migrateAndSeed } from './migrate-run.js';
 import type { Log } from './reconcile.js';
+import type { StoreProbe } from './store-probe.js';
 import { parseStoreDefaults, storeMcpUrl, type StoreDefaults } from './store-values.js';
 import { freshDatabase } from './test-db.js';
 
@@ -178,4 +179,20 @@ export class FakeKube implements Kube {
       this.deleting.set(name, this.terminatingPolls);
     }
   }
+}
+
+export class FakeProbe {
+  readonly calls: Array<{ url: string; token: string }> = [];
+  failTimes = 0;
+  failWith = 'connection refused';
+  onCall: (() => Promise<void>) | null = null;
+
+  readonly fn: StoreProbe = async (url, token) => {
+    this.calls.push({ url, token });
+    await this.onCall?.();
+    if (this.failTimes > 0) {
+      this.failTimes--;
+      throw new Error(this.failWith);
+    }
+  };
 }
