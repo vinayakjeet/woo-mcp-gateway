@@ -1,9 +1,10 @@
 import { hash } from '@node-rs/argon2';
 import { encryptSecret, isValidSlug } from '@woo/core';
 import { schema } from '@woo/core/db';
-import { count } from 'drizzle-orm';
+import { count, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
+import { storeNamespace, storeUrl, type StoreDefaults } from './store-values.js';
 
 const auth = z.discriminatedUnion('type', [
   z.object({ type: z.literal('none') }),
@@ -77,4 +78,27 @@ export async function seedAdmin(db: Db, email: string, password: string): Promis
     passwordHash: await hash(password),
   });
   return true;
+}
+
+// make store installs store-main before the provisioner exists. Each seeded store server gets a
+// ready stores row so the Stores page lists it. The reconcile loop reads only provisioning and
+// deleting rows, so it never reinstalls an adopted store.
+export async function adoptSeededStores(
+  db: Db,
+  servers: SeedServer[],
+  d: StoreDefaults | null,
+): Promise<void> {
+  if (!d) return;
+  for (const s of servers.filter((x) => x.kind === 'store')) {
+    await db.execute(sql`
+      insert into stores (slug, name, owner_user_id, status, namespace, release, url, last_step, ready_at)
+      select ${s.slug}, ${s.name}, u.id, 'ready'::store_status, ${storeNamespace(s.slug)},
+             ${storeNamespace(s.slug)}, ${storeUrl(d, s.slug)}, 'adopted', now()
+      from users u where u.role = 'admin' and u.status = 'active'
+      order by u.created_at limit 1
+      on conflict (slug) do nothing`);
+    await db.execute(sql`
+      update mcp_servers m set store_id = st.id from stores st
+      where st.slug = ${s.slug} and m.slug = ${s.slug} and m.store_id is distinct from st.id`);
+  }
 }
