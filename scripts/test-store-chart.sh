@@ -148,6 +148,10 @@ has "$n" "kind: NetworkPolicy" netpol
 has "$n" "policyTypes:" netpol
 has "$n" "kubernetes.io/metadata.name: platform" netpol
 has "$n" "app.kubernetes.io/name: gateway" netpol
+# The control-plane makes the provisioner's one get_info call before it marks a store ready.
+has "$n" "app.kubernetes.io/name: control-plane" netpol
+[ "$(grep -c 'kubernetes.io/metadata.name: platform' <<<"$n")" -eq 2 ] || fail "netpol: gateway and control-plane peers"
+[ "$(grep -c 'port: ' <<<"$n")" -eq 1 ] || fail "netpol: only port 8080"
 has "$n" "port: 8080" netpol
 pass "woo-mcp networkpolicy"
 

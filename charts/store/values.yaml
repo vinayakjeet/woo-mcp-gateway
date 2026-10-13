@@ -42,6 +42,11 @@ wooMcp:
     namespace: platform
     podLabels:
       app.kubernetes.io/name: gateway
+  # The provisioner calls get_info once before it marks a store ready (M9).
+  controlPlane:
+    namespace: platform
+    podLabels:
+      app.kubernetes.io/name: control-plane
 
 networkPolicy:
   # Traefik in k3s (SPEC 16). Besides this store's woo-mcp, only these pods may open the storefront.
