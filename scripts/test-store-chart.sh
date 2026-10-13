@@ -158,4 +158,17 @@ pass "sharedToken required"
 has "$(show woo-mcp.yaml)" "terminationGracePeriodSeconds: 10" woo-mcp
 pass "woo-mcp terminates within 10 s"
 
+# The bootstrap Job writes STORE_NAME into blogname on every install and upgrade, so the name
+# survives a reinstall only if every installer path feeds it the right value.
+# WSL exports NAME as the machine name, so only NAME on the make command line may rename a store.
+n=$(NAME=SOME-HOSTNAME make -s -n store SLUG=main)
+has "$n" 'storeName="Main Store"' "make store"
+n=$(make -s -n store SLUG=main NAME="Shop Two")
+has "$n" 'storeName="Shop Two"' "make store"
+pass "make store takes NAME only from the command line"
+d=$(helm template store-main charts/store --namespace store-main -f deploy/store-values-local.yaml \
+  --set slug=main --set mcp.sharedToken=test-token --show-only templates/bootstrap-job.yaml)
+has "$d" 'value: "Main Store"' "chart default storeName"
+pass "a release installed without storeName still gives the bootstrap Main Store"
+
 echo "OK"

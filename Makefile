@@ -3,7 +3,10 @@
 CLUSTER ?= urumi
 IMAGE_TAG ?= dev
 SLUG ?= main
-NAME ?= Main Store
+# WSL and some login shells export NAME (the machine name), and ?= would rename the store to it.
+ifneq ($(origin NAME),command line)
+NAME := Main Store
+endif
 STORE_SECRETS := deploy/secrets/store-$(SLUG).yaml
 HELM_FLAGS ?= --wait --rollback-on-failure --timeout 15m
 comma := ,
