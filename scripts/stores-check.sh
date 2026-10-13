@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Live checks for the store provisioner (SPEC 18) against the running cluster.
 #   S=<dir> scripts/stores-check.sh create <slug> "<name>"
+#   S=<dir> scripts/stores-check.sh delete <slug>
 # Needs kubectl, curl, jq and pnpm. Keys and cookies go to files under $S (mode 600), never stdout.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -133,6 +134,48 @@ phase_ready() { # SLUG NAME
   store_mem "$1"
 }
 
+phase_guards() {
+  local id r
+  id=$(store_json main | jq -r .id)
+  r=$(req admin.jar DELETE "/api/stores/$id")
+  [ "$(code "$r")" = 409 ] && [ "$(body "$r" | jq -r .error)" = seeded_store ] ||
+    fail "deleting main gave $(code "$r")"
+  pass "main cannot be deleted through the API (409 seeded_store)"
+}
+
+phase_delete() { # SLUG
+  local id r t0 left out
+  id=$(store_json "$1" | jq -r .id)
+  [ -n "$id" ] || fail "$1 is not listed"
+  r=$(req admin.jar DELETE "/api/stores/$id")
+  [ "$(code "$r")" = 202 ] && [ "$(body "$r" | jq -r .store.status)" = deleting ] ||
+    fail "delete $1 gave $(code "$r")"
+  [ "$(code "$(req admin.jar DELETE "/api/stores/$id")")" = 202 ] || fail "a second delete of $1 must answer 202"
+  pass "delete $1: 202 deleting, and 202 again"
+  t0=$(now)
+  # A failing tools/list must not pass as "no tools", so its output is captured first.
+  until out=$(tools) && [ "$(grep -c "^${1}__" <<<"$out" || true)" = 0 ]; do
+    [ $(($(now) - t0)) -lt 10 ] || fail "$1 tools still listed 10 s after the delete"
+    sleep 1
+  done
+  pass "$1 tools are gone from tools/list after $(($(now) - t0)) s"
+  while [ -n "$(store_json "$1")" ]; do
+    [ $(($(now) - t0)) -lt 420 ] ||
+      fail "$1 still listed after 7 min: $(store_json "$1" | jq -r '.lastStep + ": " + (.statusReason // "")')"
+    sleep 5
+  done
+  pass "$1 row removed $(($(now) - t0)) s after the delete"
+  # local-path removes a released volume shortly after its claim goes.
+  until left=$(kubectl get ns,pvc,pv -A --no-headers 2>/dev/null | grep -c -- "$1" || true); [ "$left" = 0 ]; do
+    [ $(($(now) - t0)) -lt 480 ] || fail "objects left for $1: $(kubectl get ns,pvc,pv -A --no-headers | grep -- "$1")"
+    sleep 5
+  done
+  pass "kubectl get ns,pvc,pv -A | grep $1 prints nothing"
+  [ "$(body "$(req admin.jar GET /api/servers)" | jq --arg s "$1" '[.servers[] | select(.slug == $s)] | length')" = 0 ] ||
+    fail "server row for $1 is left"
+  pass "$1 server row is gone"
+}
+
 admin_login admin.jar
 key_setup
 case ${1:-} in
@@ -142,8 +185,13 @@ case ${1:-} in
     phase_create "$2" "$3"
     phase_ready "$2" "$3"
     ;;
+  delete)
+    [ $# -eq 2 ] || fail "usage: delete <slug>"
+    phase_guards
+    phase_delete "$2"
+    ;;
   *)
-    echo "usage: S=<dir> $0 create <slug> <name>" >&2
+    echo "usage: S=<dir> $0 create <slug> <name> | delete <slug>" >&2
     exit 2
     ;;
 esac
