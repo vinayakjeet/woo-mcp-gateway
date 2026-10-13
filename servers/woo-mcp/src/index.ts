@@ -1,19 +1,6 @@
 import { installGracefulShutdown } from '@woo/core';
-import { startMcpHttpServer } from '@woo/core/mcp-http';
-import { loadConfig } from './config.js';
-import { buildWooServer } from './tools.js';
-import { WooClient } from './woo-client.js';
+import { startWooMcp } from './start.js';
 
-const cfg = loadConfig(process.env);
-const woo = new WooClient(cfg.woo);
-const { url, server, shutdown } = await startMcpHttpServer({
-  port: cfg.port,
-  token: cfg.token,
-  createServer: buildWooServer({ woo }),
-  ready: async () => {
-    await woo.index();
-    return true;
-  },
-});
+const { url, server, shutdown } = await startWooMcp(process.env);
 console.log(JSON.stringify({ level: 'info', msg: 'woo-mcp listening', url }));
 installGracefulShutdown({ servers: [server], close: shutdown });
