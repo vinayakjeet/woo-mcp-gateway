@@ -70,8 +70,9 @@ platform:
 up:
 	@echo "not yet"
 
+# S is a private scratch directory for keys and cookies: make e2e S=/path
 e2e:
-	@echo "not yet"
+	S="$(S)" scripts/e2e.sh
 
 down:
 	@echo "not yet"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Live checks for the dashboard API against the cluster: login, keys, a revoked key rejected
-# within 1 s, server disable and enable, invites, member audit scoping and the Origin check.
+# Live checks against the cluster: login, keys, a revoked key rejected within 1 s, server disable
+# and enable, the store name, a dead upstream (fx-mcp at zero), woo-mcp reachable only from the
+# gateway, invites, audit attribution and member scoping, disabling a member, and one agent turn.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,29 +12,9 @@ MCP=${MCP:-http://mcp.127.0.0.1.nip.io/mcp}
 umask 077
 mkdir -p "$S"
 run=e2e-$(date +%s)
+# shellcheck source=scripts/api-lib.sh
+source scripts/api-lib.sh
 
-fail() {
-  echo "FAIL: $*" >&2
-  exit 1
-}
-pass() { echo "PASS: $*"; }
-ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
-
-# req JAR METHOD PATH [JSON]: the body, then the status code on its own last line.
-req() {
-  local args=(-s -b "$S/$1" -c "$S/$1" -H "origin: $APP" -X "$2" -w '\n%{http_code}')
-  if [ $# -ge 4 ]; then args+=(-H 'content-type: application/json' --data-binary "$4"); fi
-  curl "${args[@]}" "$APP$3"
-}
-body() { sed '$d' <<<"$1"; }
-code() { tail -n1 <<<"$1"; }
-
-# The bare key goes to $S/NAME and a curl header file to $S/NAME.hdr. printf is a builtin, so the
-# key never shows up in a process list here.
-save_key() {
-  jq -r '.secret' <<<"$1" >"$S/$2"
-  printf 'authorization: Bearer %s\n' "$(cat "$S/$2")" >"$S/$2.hdr"
-}
 mcp_status() {
   curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP" -H @"$S/$1.hdr" \
     -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
@@ -46,14 +27,13 @@ count_prefix() {
   grep -c "^${2}__" <<<"$out" || true
 }
 
-# Admin login: the password goes from the Secret into a body file, never into argv or stdout.
-kubectl -n platform get secret platform-bootstrap -o json |
-  jq '{email: (.data.ADMIN_EMAIL | @base64d), password: (.data.ADMIN_PASSWORD | @base64d)}' >"$S/admin-login.json"
-r=$(curl -s -c "$S/admin.jar" -H "origin: $APP" -H 'content-type: application/json' \
-  --data-binary @"$S/admin-login.json" -w '\n%{http_code}' "$APP/api/auth/login")
-rm -f "$S/admin-login.json"
-[ "$(code "$r")" = 200 ] || fail "admin login gave $(code "$r")"
-[ "$(body "$(req admin.jar GET /api/me)" | jq -r .user.role)" = admin ] || fail "/api/me"
+admin_login admin.jar
+me=$(body "$(req admin.jar GET /api/me)")
+[ "$(jq -r .user.role <<<"$me")" = admin ] || fail "/api/me"
+admin_id=$(jq -r .user.id <<<"$me")
+admin_email=$(jq -r .user.email <<<"$me")
+# The attribution checks below look only at audit rows from this run.
+since=$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)
 pass "admin login and /api/me"
 
 nr=$(curl -s -o /dev/null -w '%{http_code}' -b "$S/admin.jar" -X POST -H 'content-type: application/json' \
@@ -102,6 +82,69 @@ until [ "$(count_prefix k2 fx)" -ge 1 ]; do
 done
 pass "enabled fx: its tools are back"
 
+r=$(tools k2 main__get_info) || fail "admin call main__get_info"
+grep -q '"name": "Main Store"' <<<"$r" || fail "main__get_info does not say Main Store"
+pass "main__get_info names Main Store"
+
+# Dead upstream: fx-mcp at zero. Only fx calls fail, and fast; main keeps answering and the list
+# stays under 1 s. The EXIT trap brings fx back even when a check fails or the run is stopped.
+restore_fx() { kubectl -n platform scale deploy/fx-mcp --replicas=1 >/dev/null 2>&1 || true; }
+trap 'exit 130' INT TERM
+trap restore_fx EXIT
+kubectl -n platform scale deploy/fx-mcp --replicas=0 >/dev/null
+t0=$(date +%s%N)
+until [ -z "$(kubectl -n platform get pods -l app.kubernetes.io/name=fx-mcp -o name)" ]; do
+  [ "$(ms_since "$t0")" -lt 60000 ] || fail "fx-mcp pods still running 60 s after scaling to zero"
+  sleep 0.5
+done
+r=$(rpc k2 '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fx__get_info","arguments":{}}}')
+t=$(tail -n1 <<<"$r")
+[ "$(sed '$d' <<<"$r" | jq -r '.result.isError')" = true ] || fail "fx call did not fail with fx-mcp at zero"
+under "$t" 2 || fail "fx call took $t s to fail"
+pass "fx call fails in $t s with fx-mcp at zero"
+r=$(rpc k2 '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"main__get_info","arguments":{}}}')
+[ "$(sed '$d' <<<"$r" | jq -r '.result.structuredContent.name // "none"')" = 'Main Store' ] ||
+  fail "main call failed while fx is down"
+pass "main keeps answering while fx is down"
+t0=$(date +%s%N)
+until [ "$(body "$(req admin.jar GET /api/servers)" | jq -r '.servers[] | select(.slug == "fx") | .status.state')" = unreachable ]; do
+  [ "$(ms_since "$t0")" -lt 35000 ] || fail "fx not shown unreachable 35 s after it went down"
+  sleep 0.5
+done
+r=$(rpc k2 '{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}')
+t=$(tail -n1 <<<"$r")
+under "$t" 1 || fail "tools/list took $t s with fx down"
+names=$(sed '$d' <<<"$r" | jq -r '.result.tools[].name') || fail "tools/list gave no result"
+grep -q '^main__get_info$' <<<"$names" || fail "main tools missing from the list while fx is down"
+! grep -q '^fx__' <<<"$names" || fail "fx tools still listed while fx is down"
+pass "fx shown unreachable; tools/list took $t s with main tools and no fx tools"
+restore_fx
+kubectl -n platform rollout status deploy/fx-mcp --timeout=120s >/dev/null
+t0=$(date +%s%N)
+until tools k2 fx__get_info >/dev/null 2>&1; do
+  [ "$(ms_since "$t0")" -lt 60000 ] || fail "fx not answering 60 s after scaling back"
+  sleep 1
+done
+trap - EXIT INT TERM
+pass "fx answers again $(ms_since "$t0") ms after its pod was ready"
+
+# SPEC 16: only the gateway reaches woo-mcp. The gateway connecting first proves the probe and the
+# host name work, so "blocked" from the other pods means the NetworkPolicy, not a typo.
+woo_probe_node() {
+  kubectl -n platform exec "deploy/$1" -c "$1" -- node -e '
+    const s = require("node:net").connect(8080, "woo-mcp.store-main.svc.cluster.local");
+    s.setTimeout(3000, () => { console.log("blocked timeout"); process.exit(0); });
+    s.on("connect", () => { console.log("open"); process.exit(0); });
+    s.on("error", (e) => { console.log("blocked " + e.code); process.exit(0); });'
+}
+[ "$(woo_probe_node gateway)" = open ] || fail "the gateway cannot open a connection to woo-mcp"
+p=$(woo_probe_node control-plane)
+[[ $p == blocked* ]] || fail "control-plane reached woo-mcp ($p)"
+p=$(kubectl -n store-main exec deploy/wordpress -c wordpress -- \
+  php -r '$s = @fsockopen("woo-mcp", 8080, $n, $m, 3); echo $s ? "open" : "blocked";')
+[ "$p" = blocked ] || fail "the WordPress pod reached woo-mcp ($p)"
+pass "woo-mcp accepts the gateway and refuses control-plane and WordPress"
+
 # Invite a member and accept once.
 r=$(req admin.jar POST /api/invites "{\"email\":\"$run@example.com\",\"role\":\"member\"}")
 [ "$(code "$r")" = 201 ] || fail "invite"
@@ -134,12 +177,30 @@ until body "$(req member.jar GET /api/audit)" |
   sleep 0.2
 done
 pass "the member sees only their own audit rows"
+body "$(req member.jar GET "/api/audit?user=$admin_id")" |
+  jq -e --arg e "$run@example.com" '(.items | length) > 0 and all(.items[]; .userEmail == $e)' >/dev/null ||
+  fail "a member asking for the admin's rows saw someone else's"
+pass "a member asking for the admin's rows still gets only their own"
 body "$(req admin.jar GET "/api/audit?user=$member_id")" | jq -e '.items[0].exposedName == "fx__get_info"' >/dev/null ||
   fail "admin view of the member's rows"
 body "$(req admin.jar GET '/api/audit?server=fx')" |
   jq -e --arg e "$run@example.com" '[.items[].userEmail] | (index($e) != null) and any(.[]; . != $e)' >/dev/null ||
   fail "admin sees every user's rows"
 pass "the admin sees every user's rows and can filter by user"
+
+# Narrow queries: one page holds 50 rows, and the fx reconnect loop above can add many fx rows.
+rows=$(body "$(req admin.jar GET "/api/audit?user=$admin_id&server=main&from=$since")")
+jq -e --arg a "$admin_email" '[.items[] | select(.userEmail == $a and .via == "api_key"
+  and .exposedName == "main__get_info" and .outcome == "ok")] | length >= 2' <<<"$rows" >/dev/null ||
+  fail "the admin's main calls are not audited to $admin_email via api_key"
+rows=$(body "$(req admin.jar GET "/api/audit?user=$admin_id&server=fx&from=$since")")
+jq -e --arg a "$admin_email" 'all(.items[]; .userEmail == $a and .via == "api_key")
+  and any(.items[]; .outcome == "ok") and any(.items[]; .outcome != "ok")' <<<"$rows" >/dev/null ||
+  fail "the admin's fx calls, ok and failed, are not audited to $admin_email via api_key"
+rows=$(body "$(req admin.jar GET "/api/audit?user=$member_id&from=$since")")
+jq -e --arg e "$run@example.com" '(.items | length) > 0 and all(.items[]; .userEmail == $e and .via == "api_key")' \
+  <<<"$rows" >/dev/null || fail "the member's calls are not audited to the member via api_key"
+pass "audit attributes each key call to its user, via api_key, failures included"
 
 # Disabling the member ends their session and drops both of their cached keys in the gateway at once.
 for k in k3 k4; do [ "$(mcp_status "$k")" != 401 ] || fail "member key $k rejected before disable"; done
@@ -152,6 +213,33 @@ done
 pass "both keys of the disabled member get 401 after $(ms_since "$t0") ms"
 [ "$(code "$(req member.jar GET /api/me)")" = 401 ] || fail "disabled member's session still works"
 pass "disabled member's session is gone"
+
+# One agent turn as the admin. Free-tier LLMs can be rate limited; that skips only this check.
+since_chat=$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)
+prompt=$(jq -nc --arg p 'Call the main__get_info tool and tell me the store name in one sentence.' \
+  '{messages: [{role: "user", content: $p}]}')
+out=$(curl -s -N --max-time 250 -b "$S/admin.jar" -H "origin: $APP" -H 'content-type: application/json' \
+  --data-binary "$prompt" "$APP/api/chat")
+last=$(grep '^event: ' <<<"$out" | tail -n1 || true)
+err=$(grep -A1 '^event: error$' <<<"$out" | sed -n 's/^data: //p' || true)
+if [ "$last" = 'event: error' ] && chat_rate_limited "$out"; then
+  echo "SKIP: agent turn: $(jq -r .message <<<"$err")"
+else
+  [ "$last" = 'event: done' ] || fail "agent turn ended with '${last:-no events}' $err"
+  grep -q '"name":"main__get_info"' <<<"$out" || fail "the agent did not call main__get_info"
+  results=$(grep -A1 '^event: tool_result$' <<<"$out" || true)
+  grep -q '"ok":true' <<<"$results" || fail "the agent's tool call failed"
+  answer=$(awk '/^event: text$/ { getline; sub(/^data: /, ""); print }' <<<"$out" | jq -rj .delta)
+  grep -qi 'main store' <<<"$answer" || fail "the agent's answer does not name the store: $answer"
+  t0=$(date +%s%N)
+  until body "$(req admin.jar GET "/api/audit?server=main&from=$since_chat")" |
+    jq -e --arg a "$admin_email" 'any(.items[]; .via == "agent" and .userEmail == $a
+      and .exposedName == "main__get_info" and .outcome == "ok")' >/dev/null; do
+    [ "$(ms_since "$t0")" -lt 3000 ] || fail "no via=agent audit row for the agent's call"
+    sleep 0.2
+  done
+  pass "the agent answered one tool-calling turn, audited via agent to $admin_email"
+fi
 
 for id in "$k2_id" "$k3_id" "$k4_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
 rm -f "$S"/k[1-4] "$S"/k[1-4].hdr "$S"/admin.jar "$S"/member.jar
