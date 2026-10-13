@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BUSY_POLL_MS,
   elapsed,
@@ -66,6 +66,15 @@ describe('storeProgress', () => {
 describe('elapsed and keys', () => {
   it('never goes negative', () => {
     expect(elapsed('2026-10-13T10:00:10Z', Date.parse('2026-10-13T10:00:00Z'))).toBe('0 min 00 s');
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  // The local dashboard is plain http (app.127.0.0.1.nip.io), a non-secure context: there
+  // crypto.randomUUID is undefined and Create store crashed the page.
+  it('still makes a version 4 UUID where crypto.randomUUID is missing', () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    const a = newIdempotencyKey();
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(newIdempotencyKey()).not.toBe(a);
   });
   it('makes a new UUID each time', () => {
     const a = newIdempotencyKey();

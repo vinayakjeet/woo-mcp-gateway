@@ -1,4 +1,4 @@
-import { createBrowserRouter, Link, Navigate } from 'react-router';
+import { createBrowserRouter, Link, Navigate, type RouteObject } from 'react-router';
 import { AcceptInvitePage } from './pages/AcceptInvite';
 import { AuditPage } from './pages/Audit';
 import { ChatPage } from './pages/Chat';
@@ -20,7 +20,8 @@ function NotFound() {
   );
 }
 
-export const router = createBrowserRouter([
+// Exported so a test can run the real route tree in a memory router.
+export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
   { path: '/invite/:token', element: <AcceptInvitePage /> },
   {
@@ -37,4 +38,6 @@ export const router = createBrowserRouter([
       { path: 'members', element: <MembersPage /> },
     ],
   },
-]);
+];
+
+export const router = createBrowserRouter(routes);
