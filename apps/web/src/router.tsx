@@ -6,6 +6,7 @@ import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { MembersPage } from './pages/Members';
 import { ServersPage } from './pages/Servers';
+import { StoresPage } from './pages/Stores';
 import { Shell } from './Shell';
 
 function NotFound() {
@@ -29,6 +30,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/servers" replace /> },
       { path: 'servers', element: <ServersPage /> },
+      { path: 'stores', element: <StoresPage /> },
       { path: 'chat', element: <ChatPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'audit', element: <AuditPage /> },
