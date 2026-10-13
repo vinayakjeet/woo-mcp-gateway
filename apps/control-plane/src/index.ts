@@ -1,9 +1,13 @@
+import { tmpdir } from 'node:os';
 import { installGracefulShutdown, LOG_REDACT, parseKek } from '@woo/core';
 import pg from 'pg';
 import { apiRoutes } from './api.js';
 import { buildInternalApp, buildPublicApp } from './app.js';
 import { requireEnv } from './env.js';
+import { helmCli } from './helm.js';
 import { introspectRoutes } from './internal-introspect.js';
+import { inClusterKube } from './kube.js';
+import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
 import { provisionerConfig } from './store-values.js';
 
@@ -43,12 +47,33 @@ await internal.register(introspectRoutes, {
   gatewayUrl: env.GATEWAY_URL,
 });
 
+const provisionerLog = pub.log.child({ component: 'provisioner' });
+const stores = provisioner
+  ? new Provisioner({
+      databaseUrl: env.DATABASE_URL,
+      log: provisionerLog,
+      deps: {
+        pool,
+        kek,
+        kube: await inClusterKube(),
+        helm: helmCli(),
+        defaults: provisioner.storeDefaults,
+        // Baked into the image (SPEC 18). Overridable for running outside the image.
+        chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',
+        workDir: tmpdir(),
+        log: provisionerLog,
+      },
+    })
+  : null;
+await stores?.start();
+
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
 await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });
 
 installGracefulShutdown({
   servers: [pub.server, internal.server],
   close: async () => {
+    await stores?.close();
     await Promise.all([pub.close(), internal.close()]);
     await pool.end();
   },
