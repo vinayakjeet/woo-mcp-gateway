@@ -129,8 +129,15 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
 });
 
 describe.skipIf(!base)('migrateAndSeed failures (needs TEST_DATABASE_URL)', () => {
+  const db = { fail: '', lock: '', kill: '' };
+  // CREATE DATABASE competes with every other test file doing the same. Under full-suite load it
+  // took up to 4 s, which left too little of a test's 5 s for the migration run under test.
+  beforeAll(async () => {
+    for (const k of ['fail', 'lock', 'kill'] as const)
+      db[k] = await freshDatabase(base!, `woo_migrate_${k}_test`);
+  }, 30_000);
   it('reports the step and the SQLSTATE, never the query params', async () => {
-    url = await freshDatabase(base!, 'woo_migrate_fail_test');
+    url = db.fail;
     const bad = servers('tok-1');
     // A NUL byte is rejected by Postgres, so the failing insert carries LEAKMARKER in its params.
     bad[0]!.name = 'LEAKMARKER\u0000';
@@ -144,7 +151,7 @@ describe.skipIf(!base)('migrateAndSeed failures (needs TEST_DATABASE_URL)', () =
   });
 
   it('times out waiting for the lock, closes its connection and works again once the lock is free', async () => {
-    url = await freshDatabase(base!, 'woo_migrate_lock_test');
+    url = db.lock;
     const holder = new pg.Client({ connectionString: url });
     await holder.connect();
     await holder.query('select pg_advisory_lock($1)', [MIGRATION_LOCK]);
@@ -166,7 +173,7 @@ describe.skipIf(!base)('migrateAndSeed failures (needs TEST_DATABASE_URL)', () =
   });
 
   it('survives the connection being killed while it waits for the lock', async () => {
-    url = await freshDatabase(base!, 'woo_migrate_kill_test');
+    url = db.kill;
     const holder = new pg.Client({ connectionString: url });
     await holder.connect();
     await holder.query('select pg_advisory_lock($1)', [MIGRATION_LOCK]);
