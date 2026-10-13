@@ -65,6 +65,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       const m = await add(admin.id, 'main', 'ready');
       const rm = await del(m, admin.cookie);
       expect([rm.statusCode, rm.json()]).toEqual([409, { error: 'seeded_store' }]);
+      // The page needs this flag to tell the demo store from a store that is only not ready yet.
+      const list = (await call(t.app, 'GET', '/api/stores', { cookie: admin.cookie })).json()
+        .stores;
+      const bySlug = (slug: string) => list.find((x: { slug: string }) => x.slug === slug);
+      expect(bySlug('main')).toMatchObject({ seeded: true, deletable: false });
+      expect(bySlug('busy')).toMatchObject({ seeded: false, deletable: false });
     });
 
     it("hides other members' stores and unknown ids", async () => {

@@ -53,6 +53,8 @@ export function storeView(r: StoreRow, user: SessionUser) {
     readyAt: r.readyAt,
     deadlineAt: r.deadlineAt,
     owner: { id: r.ownerId, email: r.ownerEmail },
+    // Installed with the platform: the page shows its Delete button disabled, not missing.
+    seeded: RESERVED_SLUGS.has(r.slug),
     deletable:
       mine && (r.status === 'ready' || r.status === 'failed') && !RESERVED_SLUGS.has(r.slug),
   };
