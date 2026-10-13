@@ -1,4 +1,12 @@
-import { createBrowserRouter, Link, Navigate, type RouteObject } from 'react-router';
+import { useEffect } from 'react';
+import {
+  createBrowserRouter,
+  isRouteErrorResponse,
+  Link,
+  Navigate,
+  useRouteError,
+  type RouteObject,
+} from 'react-router';
 import { AcceptInvitePage } from './pages/AcceptInvite';
 import { AuditPage } from './pages/Audit';
 import { ChatPage } from './pages/Chat';
@@ -20,6 +28,25 @@ function NotFound() {
   );
 }
 
+// An unknown URL is a 404 response. Anything else is a bug in a page, and hiding it as "not found"
+// cost a debugging round once, so it says so and goes to the console.
+export function RouteError() {
+  const error = useRouteError();
+  const notFound = isRouteErrorResponse(error) && error.status === 404;
+  useEffect(() => {
+    if (!notFound) console.error(error);
+  }, [error, notFound]);
+  if (notFound) return <NotFound />;
+  return (
+    <div className="p-6">
+      <p className="mb-2">Something went wrong.</p>
+      <Link to="/" className="text-accent hover:underline">
+        Back to dashboard
+      </Link>
+    </div>
+  );
+}
+
 // Exported so a test can run the real route tree in a memory router.
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -27,7 +54,7 @@ export const routes: RouteObject[] = [
   {
     path: '/',
     element: <Shell />,
-    errorElement: <NotFound />,
+    errorElement: <RouteError />,
     children: [
       { index: true, element: <Navigate to="/servers" replace /> },
       { path: 'servers', element: <ServersPage /> },
