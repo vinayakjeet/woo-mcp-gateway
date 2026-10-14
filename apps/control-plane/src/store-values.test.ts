@@ -39,7 +39,7 @@ describe('parseStoreDefaults', () => {
 
 describe('store names and generated values', () => {
   const d = testStoreDefaults();
-  it('builds the namespace, URLs and labels', () => {
+  it('builds the namespace and URLs, and labels the namespace to enforce and warn restricted', () => {
     expect(storeNamespace('second-store')).toBe('store-second-store');
     expect(storeUrl(d, 'second-store')).toBe('http://second-store.shop.127.0.0.1.nip.io');
     expect(storeMcpUrl('second-store')).toBe(
@@ -48,7 +48,8 @@ describe('store names and generated values', () => {
     expect(storeLabels('second-store')).toEqual({
       'urumi.io/store': 'second-store',
       'urumi.io/managed': 'true',
-      'pod-security.kubernetes.io/enforce': 'baseline',
+      'pod-security.kubernetes.io/enforce': 'restricted',
+      'pod-security.kubernetes.io/warn': 'restricted',
     });
   });
   it('writes JSON values that keep any store name intact', () => {

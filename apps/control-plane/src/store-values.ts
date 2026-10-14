@@ -60,12 +60,14 @@ export const storeUrl = (d: StoreDefaults, slug: string): string =>
 export const storeMcpUrl = (slug: string): string =>
   `http://woo-mcp.store-${slug}.svc.cluster.local:8080/mcp`;
 
-// The labels make store sets (SPEC 15). M10 moves enforce to restricted.
+// SPEC 15. Enforce refuses pods that break restricted; warn also makes helm print violations in
+// pod templates, such as the bootstrap Job, which enforce only sees when its pod is created.
 export function storeLabels(slug: string): Record<string, string> {
   return {
     'urumi.io/store': slug,
     'urumi.io/managed': 'true',
-    'pod-security.kubernetes.io/enforce': 'baseline',
+    'pod-security.kubernetes.io/enforce': 'restricted',
+    'pod-security.kubernetes.io/warn': 'restricted',
   };
 }
 
