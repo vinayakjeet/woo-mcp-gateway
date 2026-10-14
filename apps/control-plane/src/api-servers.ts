@@ -126,8 +126,8 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
     const id = await withTx(o.pool, async (c) => {
       const r = await c.query<{ id: string }>(
         `insert into mcp_servers (slug, name, url, kind, managed, auth_type, auth_header_name,
-           auth_secret_enc, timeout_ms, protocol_mode, created_by)
-         values ($1, $2, $3, 'external', false, $4, $5, $6, $7, $8, $9)
+           auth_secret_enc, timeout_ms, protocol_mode, approval, created_by)
+         values ($1, $2, $3, 'external', false, $4, $5, $6, $7, $8, 'pending', $9)
          on conflict (slug) do nothing returning id`,
         [
           v.slug,
@@ -179,6 +179,7 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
         `update mcp_servers set
            name = coalesce($2, name),
            url = coalesce($3, url),
+           approval = case when $3::text is not null and $3 <> url then 'pending'::approval else approval end,
            timeout_ms = coalesce($4, timeout_ms),
            protocol_mode = coalesce($5, protocol_mode),
            enabled = coalesce($6, enabled),

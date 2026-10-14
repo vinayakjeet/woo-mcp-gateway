@@ -46,6 +46,30 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       (await t.pool.query('select auth_secret_enc from mcp_servers where id = $1', [id])).rows[0]
         .auth_secret_enc as Buffer | null;
 
+    it('creates an external server as pending approval', async () => {
+      const r = await call(t.app, 'POST', '/api/servers', {
+        cookie: admin.cookie,
+        body: {
+          name: 'New',
+          slug: 'newpend',
+          url: 'http://newpend.example/mcp',
+          auth: { type: 'none' },
+        },
+      });
+      expect(r.statusCode).toBe(201);
+      expect(r.json().server).toMatchObject({ kind: 'external', approval: 'pending' });
+    });
+
+    it('sets an approved server back to pending when its url changes, not when its name does', async () => {
+      const id = await create('repoint');
+      await t.pool.query("update mcp_servers set approval = 'approved' where id = $1", [id]);
+      expect((await patch(id, { name: 'Renamed' })).json().server.approval).toBe('approved');
+      const same = await patch(id, { url: 'http://repoint.example/mcp' });
+      expect(same.json().server.approval).toBe('approved');
+      const moved = await patch(id, { url: 'http://elsewhere.example/mcp' });
+      expect(moved.json().server.approval).toBe('pending');
+    });
+
     it('disables and re-enables with a notify each time', async () => {
       const id = await create('tog');
       const l = await listen(t.url, 'registry_changed');
