@@ -19,7 +19,8 @@ pass() { echo "PASS: $*"; }
 # probe NS LABELS URL: prints "<http code> exit=<curl exit>". Exit 28 is a timeout, 7 a refusal.
 # The pod passes PodSecurity restricted. The image's user is a name (curl_user), which runAsNonRoot
 # cannot verify, so the uid is set. --overrides replaces the containers list, so it carries the
-# whole container.
+# whole container, including small limits: the store quota caps limits.cpu and the LimitRange
+# default would give each probe 500m.
 probe() {
   local pod=probe-$$-$RANDOM labels=() script overrides
   [ "$2" = - ] || labels=(--labels "$2")
@@ -27,7 +28,8 @@ probe() {
   overrides=$(jq -cn --arg name "$pod" --arg image "$IMAGE" --arg script "$script" '{spec: {
     securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 101, seccompProfile: {type: "RuntimeDefault"}},
     containers: [{name: $name, image: $image, command: ["sh", "-c", $script],
-      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}]}}')
+      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}},
+      resources: {requests: {cpu: "10m", memory: "16Mi"}, limits: {cpu: "100m", memory: "64Mi"}}}]}}')
   kubectl -n "$1" run "$pod" --restart=Never --image="$IMAGE" "${labels[@]}" --overrides="$overrides" >/dev/null
   kubectl -n "$1" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=90s >/dev/null ||
     fail "probe pod $1/$pod did not finish"
