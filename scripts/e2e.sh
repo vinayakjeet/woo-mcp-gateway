@@ -146,6 +146,20 @@ p=$(kubectl -n store-main exec deploy/wordpress -c wordpress -- \
 [ "$p" = blocked ] || fail "the WordPress pod reached woo-mcp ($p)"
 pass "woo-mcp accepts the gateway and refuses control-plane and WordPress"
 
+# WordPress cannot run wp-cron itself (its loopback goes to 127.0.0.1 inside the pod), so the
+# wp-cron CronJob must have run in the last 3 minutes and nothing may be more than 5 minutes overdue.
+last=$(kubectl -n store-main get cronjob wp-cron -o jsonpath='{.status.lastSuccessfulTime}')
+[ -n "$last" ] || fail "the wp-cron CronJob has never succeeded"
+age=$(($(date +%s) - $(date -d "$last" +%s)))
+[ "$age" -lt 180 ] || fail "the wp-cron CronJob last succeeded ${age}s ago"
+overdue=$(kubectl -n store-main exec deploy/wordpress -c wordpress -- wp --path=/var/www/html eval '
+  global $wpdb;
+  echo (int) $wpdb->get_var("select count(*) from {$wpdb->prefix}actionscheduler_actions
+    where status = \"pending\" and scheduled_date_gmt < UTC_TIMESTAMP() - interval 5 minute")
+  + count(array_filter(_get_cron_array(), fn($t) => $t < time() - 300, ARRAY_FILTER_USE_KEY));')
+[ "$overdue" = 0 ] || fail "store-main has $overdue cron events or Action Scheduler actions overdue by more than 5 minutes"
+pass "wp-cron ran ${age}s ago and nothing is overdue"
+
 # Invite a member and accept once.
 r=$(req admin.jar POST /api/invites "{\"email\":\"$run@example.com\",\"role\":\"member\"}")
 [ "$(code "$r")" = 201 ] || fail "invite"

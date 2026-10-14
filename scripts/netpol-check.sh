@@ -126,6 +126,13 @@ r=$(probe "store-$A" app.kubernetes.io/name=woo-mcp,app.kubernetes.io/component=
 blocked "$r" || fail "a store-$A pod labeled woo-mcp reached MariaDB: $r"
 r=$(probe "store-$A" - "$wp")
 blocked "$r" || fail "an unlabeled store-$A pod reached WordPress: $r"
+r=$(probe "store-$A" app.kubernetes.io/component=cron "$db")
+opened "$r" || fail "a store-$A pod labeled cron cannot reach MariaDB: $r"
+for target in "$wp" https://example.com; do
+  r=$(probe "store-$A" app.kubernetes.io/component=cron "$target")
+  blocked "$r" || fail "a store-$A pod labeled cron reached $target: $r"
+done
+pass "store-$A wp-cron pod: MariaDB only"
 pass "store-$A egress: no public address for woo-mcp and WordPress, no MariaDB for woo-mcp, nothing for unlabeled pods"
 
 if [ -n "$B" ]; then
