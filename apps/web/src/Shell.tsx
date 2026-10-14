@@ -7,6 +7,7 @@ export const NAV: Array<{ to: string; label: string; admin: boolean }> = [
   { to: '/servers', label: 'Servers', admin: false },
   { to: '/stores', label: 'Stores', admin: false },
   { to: '/chat', label: 'Chat', admin: false },
+  { to: '/policies', label: 'Policies', admin: false },
   { to: '/members', label: 'Members', admin: true },
   { to: '/keys', label: 'My keys', admin: false },
   { to: '/audit', label: 'Audit log', admin: false },

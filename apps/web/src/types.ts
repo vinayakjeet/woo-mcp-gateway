@@ -25,7 +25,20 @@ export type Tool = {
   exposedName: string;
   title: string | null;
   description: string | null;
+  // An upstream hint, shown only. Policy never reads it.
   readOnly: boolean;
+  state: 'active' | 'changed';
+  // The roles whose policy rules allow this tool, computed by the API with the gateway's evaluator.
+  roles: Role[];
+};
+export type Policy = {
+  id: string;
+  role: Role;
+  serverPattern: string;
+  toolPattern: string;
+  effect: 'allow' | 'deny';
+  priority: number;
+  createdAt: string;
 };
 export type Server = {
   id: string;

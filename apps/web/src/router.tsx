@@ -13,6 +13,7 @@ import { ChatPage } from './pages/Chat';
 import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { MembersPage } from './pages/Members';
+import { PoliciesPage } from './pages/Policies';
 import { ServersPage } from './pages/Servers';
 import { StoresPage } from './pages/Stores';
 import { Shell } from './Shell';
@@ -60,6 +61,7 @@ export const routes: RouteObject[] = [
       { path: 'servers', element: <ServersPage /> },
       { path: 'stores', element: <StoresPage /> },
       { path: 'chat', element: <ChatPage /> },
+      { path: 'policies', element: <PoliciesPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'members', element: <MembersPage /> },
