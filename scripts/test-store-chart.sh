@@ -245,6 +245,10 @@ pass "solver rule follows ingress.tls.enabled"
 for f in wordpress.yaml bootstrap-job.yaml cronjob.yaml; do
   has "$(show "$f")" "define('DISABLE_WP_CRON', true);" "$f"
 done
+# Default deny leaves WordPress no route to wordpress.org, so block those calls at once.
+for f in wordpress.yaml bootstrap-job.yaml cronjob.yaml; do
+  has "$(show "$f")" "define('WP_HTTP_BLOCK_EXTERNAL', true);" "$f block external"
+done
 c=$(show cronjob.yaml)
 for want in "kind: CronJob" "name: wp-cron" 'schedule: "* * * * *"' "concurrencyPolicy: Forbid" \
   "startingDeadlineSeconds: 60" "activeDeadlineSeconds: 120" "app.kubernetes.io/component: cron" \

@@ -72,6 +72,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
     define('FS_METHOD', 'direct');
     // The loopback to the public name reaches 127.0.0.1 inside the pod, so the CronJob runs the events.
     define('DISABLE_WP_CRON', true);
+    // Egress is denied, so update checks can never succeed. Fail them at once instead of waiting for a timeout.
+    define('WP_HTTP_BLOCK_EXTERNAL', true);
     define('DISALLOW_FILE_EDIT', true);
     define('WP_ENVIRONMENT_TYPE', '{{ .Values.wordpress.environmentType }}');
 {{- end }}
