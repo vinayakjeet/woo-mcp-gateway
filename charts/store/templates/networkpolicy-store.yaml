@@ -1,5 +1,6 @@
 # SPEC 16 inside one store. A peer that names no namespace means this namespace only, so pods of
-# another store match no rule. Default deny and egress rules arrive in M10.
+# another store match no rule. Default deny and egress rules are in networkpolicy-defaults.yaml and
+# networkpolicy-egress.yaml.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

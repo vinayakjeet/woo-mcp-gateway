@@ -202,4 +202,42 @@ done
 [ "$(grep -c namespaceSelector <<<"$db")" -eq 0 ] || fail "mariadb policy: no other namespace may connect"
 pass "store networkpolicies"
 
+# SPEC 16 default deny inside the store namespace, then DNS, then one egress rule per pair.
+nets=$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}')
+npdoc() { awk -v n="  name: $1" 'BEGIN{RS="---\n"} index($0, n "\n") && /kind: NetworkPolicy/' <<<"$nets"; }
+d=$(npdoc default-deny)
+[ -n "$d" ] || fail "no default-deny"
+for want in "podSelector: {}" "- Ingress" "- Egress"; do has "$d" "$want" default-deny; done
+lacks "$d" "ingress:" default-deny
+lacks "$d" "egress:" default-deny
+a=$(npdoc allow-dns)
+[ -n "$a" ] || fail "no allow-dns"
+has "$a" "podSelector: {}" allow-dns
+has "$a" "kubernetes.io/metadata.name: kube-system" allow-dns
+[ "$(grep -c 'port: 53' <<<"$a")" -eq 2 ] || fail "allow-dns: port 53 for UDP and TCP"
+[ "$(grep -c 'podSelector: {}' <<<"$nets")" -eq 2 ] || fail "only default-deny and allow-dns select every pod"
+pass "default deny and DNS"
+
+e=$(npdoc woo-mcp-egress)
+[ -n "$e" ] || fail "no woo-mcp-egress"
+for want in "policyTypes: [Egress]" "app.kubernetes.io/name: woo-mcp" "app.kubernetes.io/component: wordpress" "port: 8080"; do
+  has "$e" "$want" woo-mcp-egress
+done
+lacks "$e" "3306" woo-mcp-egress
+e=$(npdoc db-clients-egress)
+[ -n "$e" ] || fail "no db-clients-egress"
+for want in "policyTypes: [Egress]" "values: [wordpress, bootstrap]" "app.kubernetes.io/component: mariadb" "port: 3306"; do
+  has "$e" "$want" db-clients-egress
+done
+# No rule in this chart may name an address or another namespace for egress: a store reaches nothing else.
+lacks "$nets" "ipBlock" "store netpols"
+[ "$(grep -c 'namespaceSelector' <<<"$nets")" -eq 3 ] || fail "store netpols: only kube-system (DNS) and Traefik may be named"
+pass "store egress policies"
+
+lacks "$nets" "http01-solver" "solver rule without tls"
+tls=$(render --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=x | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')
+has "$tls" "acme.cert-manager.io/http01-solver" "solver rule with tls"
+has "$tls" "port: 8089" "solver rule with tls"
+pass "solver rule follows ingress.tls.enabled"
+
 echo "OK"
