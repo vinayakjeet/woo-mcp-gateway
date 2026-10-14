@@ -17,11 +17,18 @@ fail() {
 pass() { echo "PASS: $*"; }
 
 # probe NS LABELS URL: prints "<http code> exit=<curl exit>". Exit 28 is a timeout, 7 a refusal.
+# The pod passes PodSecurity restricted. The image's user is a name (curl_user), which runAsNonRoot
+# cannot verify, so the uid is set. --overrides replaces the containers list, so it carries the
+# whole container.
 probe() {
-  local pod=probe-$$-$RANDOM labels=()
+  local pod=probe-$$-$RANDOM labels=() script overrides
   [ "$2" = - ] || labels=(--labels "$2")
-  kubectl -n "$1" run "$pod" --restart=Never --image="$IMAGE" "${labels[@]}" --command -- \
-    sh -c "sleep 5; c=\$(curl -m 5 -s -o /dev/null -w '%{http_code}' '$3'); echo \"\$c exit=\$?\"" >/dev/null
+  script="sleep 5; c=\$(curl -m 5 -s -o /dev/null -w '%{http_code}' '$3'); echo \"\$c exit=\$?\""
+  overrides=$(jq -cn --arg name "$pod" --arg image "$IMAGE" --arg script "$script" '{spec: {
+    securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 101, seccompProfile: {type: "RuntimeDefault"}},
+    containers: [{name: $name, image: $image, command: ["sh", "-c", $script],
+      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}}]}}')
+  kubectl -n "$1" run "$pod" --restart=Never --image="$IMAGE" "${labels[@]}" --overrides="$overrides" >/dev/null
   kubectl -n "$1" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=90s >/dev/null ||
     fail "probe pod $1/$pod did not finish"
   kubectl -n "$1" logs "$pod"
@@ -109,6 +116,17 @@ pass "store-$A MariaDB: open to its WordPress, closed to the default namespace"
 r=$(probe default - "$mcp")
 blocked "$r" || fail "the default namespace reached store-$A woo-mcp: $r"
 pass "store-$A woo-mcp: closed to the default namespace"
+
+# Default deny leaves a store no way out: no public address, no other pod in the namespace.
+for labels in app.kubernetes.io/name=woo-mcp,app.kubernetes.io/component=woo-mcp app.kubernetes.io/component=wordpress; do
+  r=$(probe "store-$A" "$labels" https://example.com)
+  blocked "$r" || fail "a store-$A pod labeled $labels reached https://example.com: $r"
+done
+r=$(probe "store-$A" app.kubernetes.io/name=woo-mcp,app.kubernetes.io/component=woo-mcp "$db")
+blocked "$r" || fail "a store-$A pod labeled woo-mcp reached MariaDB: $r"
+r=$(probe "store-$A" - "$wp")
+blocked "$r" || fail "an unlabeled store-$A pod reached WordPress: $r"
+pass "store-$A egress: no public address for woo-mcp and WordPress, no MariaDB for woo-mcp, nothing for unlabeled pods"
 
 if [ -n "$B" ]; then
   r=$(probe "store-$B" app.kubernetes.io/name=woo-mcp "$wp")
