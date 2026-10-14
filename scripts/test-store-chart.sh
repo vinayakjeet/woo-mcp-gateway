@@ -250,7 +250,7 @@ for want in "kind: CronJob" "name: wp-cron" 'schedule: "* * * * *"' "concurrency
   "startingDeadlineSeconds: 60" "activeDeadlineSeconds: 120" "app.kubernetes.io/component: cron" \
   "automountServiceAccountToken: false" "runAsNonRoot: true" "runAsUser: 33" "type: RuntimeDefault" \
   "allowPrivilegeEscalation: false" "- ALL" "claimName: wordpress-html" "image: store-wordpress:dev" \
-  "healthz.php" "core is-installed" "cron event run --due-now" "cpu: 50m" "memory: 64Mi" "cpu: 500m" "memory: 256Mi" \
+  "healthz.php" "core is-installed" "cron event run --due-now" "cpu: 50m" "memory: 64Mi" "cpu: 250m" "memory: 256Mi" \
   "kubernetes.io/hostname" "restartPolicy: Never"; do
   has "$c" "$want" cronjob
 done
