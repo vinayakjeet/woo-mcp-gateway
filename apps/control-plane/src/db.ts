@@ -1,6 +1,6 @@
 import type pg from 'pg';
 
-export type Channel = 'key_revoked' | 'registry_changed' | 'stores_changed';
+export type Channel = 'key_revoked' | 'registry_changed' | 'stores_changed' | 'policies_changed';
 
 export async function withTx<T>(pool: pg.Pool, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();

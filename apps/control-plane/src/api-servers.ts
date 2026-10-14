@@ -1,6 +1,7 @@
-import { encryptSecret } from '@woo/core';
+import { encryptSecret, evaluatePolicy, type PolicyRole, type PolicyRule } from '@woo/core';
 import type { FastifyInstance } from 'fastify';
 import type { ApiOptions } from './api.js';
+import { loadRules } from './api-policies.js';
 import { parseId, requireAdmin, requireUser, type SessionUser } from './api-session.js';
 import { notify, withTx } from './db.js';
 import { nextSecret, parseCreate, parsePatch } from './server-input.js';
@@ -29,6 +30,8 @@ type ServerRow = {
 };
 type ToolRow = {
   serverId: string;
+  name: string;
+  state: string;
   exposedName: string;
   title: string | null;
   description: string | null;
@@ -42,11 +45,13 @@ const SERVER_SELECT = `select s.id, s.slug, s.name, s.url, s.kind, s.managed, s.
     st.state, st.tool_count as "toolCount", st.error_kind as "errorKind",
     st.error_message as "errorMessage", st.checked_at as "checkedAt", st.last_ok_at as "lastOkAt"
   from mcp_servers s left join mcp_server_status st on st.server_id = s.id`;
-const TOOL_SELECT = `select server_id as "serverId", exposed_name as "exposedName", title, description,
+const TOOL_SELECT = `select server_id as "serverId", name, state, exposed_name as "exposedName", title, description,
     coalesce(annotations->'readOnlyHint' = 'true'::jsonb, false) as "readOnly"
   from mcp_tools where state <> 'removed'`;
 
-function serverView(r: ServerRow, tools: ToolRow[]) {
+const ROLES: PolicyRole[] = ['admin', 'member'];
+
+function serverView(r: ServerRow, tools: ToolRow[], rules: PolicyRule[]) {
   return {
     id: r.id,
     slug: r.slug,
@@ -70,11 +75,15 @@ function serverView(r: ServerRow, tools: ToolRow[]) {
             checkedAt: r.checkedAt,
             lastOkAt: r.lastOkAt,
           },
-    tools: tools.map(({ exposedName, title, description, readOnly }) => ({
+    // roles come from the same evaluator the gateway uses, so this column cannot disagree with
+    // what a member's tools/list shows. readOnly is a hint from the upstream, never enforced.
+    tools: tools.map(({ name, state, exposedName, title, description, readOnly }) => ({
       exposedName,
       title,
       description,
       readOnly,
+      state,
+      roles: ROLES.filter((role) => evaluatePolicy(rules, role, r.slug, name)),
     })),
   };
 }
@@ -86,7 +95,7 @@ export async function getServer(o: ApiOptions, id: string) {
   const t = await o.pool.query<ToolRow>(`${TOOL_SELECT} and server_id = $1 order by exposed_name`, [
     id,
   ]);
-  return serverView(row, t.rows);
+  return serverView(row, t.rows, await loadRules(o.pool));
 }
 
 // seed.ts rewrites every other column of a managed server on each control-plane start, so edits
@@ -102,7 +111,8 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
     const byServer = new Map<string, ToolRow[]>();
     for (const tool of t.rows)
       byServer.set(tool.serverId, [...(byServer.get(tool.serverId) ?? []), tool]);
-    return { servers: s.rows.map((r) => serverView(r, byServer.get(r.id) ?? [])) };
+    const rules = await loadRules(o.pool);
+    return { servers: s.rows.map((r) => serverView(r, byServer.get(r.id) ?? [], rules)) };
   });
 
   scope.post('/api/servers', { preHandler: requireAdmin }, async (req, reply) => {
