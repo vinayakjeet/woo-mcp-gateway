@@ -156,6 +156,16 @@ done
 [ "$(probe_port "$gw" livenessProbe)" = "9090" ] || fail "gateway liveness port"
 has "$(show gateway.yaml --set 'gateway.allowedOrigins={https://a.example,https://b.example}')" \
   'value: "https://a.example,https://b.example"' "gateway origins override"
+# The gateway connects and the control-plane validates: both must read the one value.
+for f in gateway.yaml control-plane.yaml; do
+  has "$(show "$f")" 'name: ALLOW_INSECURE_UPSTREAMS' "$f insecure upstreams env"
+  [ "$(show "$f" | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"false"' ] ||
+    fail "$f: ALLOW_INSECURE_UPSTREAMS is not false by default"
+  [ "$(show "$f" --set gateway.allowInsecureUpstreams=true | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"true"' ] ||
+    fail "$f: gateway.allowInsecureUpstreams=true does not reach ALLOW_INSECURE_UPSTREAMS"
+done
+[ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -c '"true"')" = 0 ] ||
+  fail "values-local.yaml turns on insecure upstreams"
 pass "gateway"
 
 fx=$(show fx-mcp.yaml)

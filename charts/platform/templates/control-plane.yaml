@@ -111,6 +111,8 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-crypto, key: KEK } }
             - name: GATEWAY_URL
               value: {{ include "platform.gatewayUrl" . | quote }}
+            - name: ALLOW_INSECURE_UPSTREAMS
+              value: {{ .Values.gateway.allowInsecureUpstreams | default false | toString | quote }}
             - name: APP_VERSION
               value: {{ .Values.global.imageTag | quote }}
             - name: PROVISIONER_ENABLED

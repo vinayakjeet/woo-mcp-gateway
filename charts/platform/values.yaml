@@ -22,6 +22,10 @@ ingress:
 gateway:
   # Browser origins allowed to call /mcp. Empty means <scheme>://app.<domain>.
   allowedOrigins: []
+  # Lets an admin add http:// MCP servers (SPEC 22.1). The control-plane check and the gateway's
+  # connect-time check read the same value. Private, loopback, link-local and cluster addresses
+  # stay refused either way. Keep false in production.
+  allowInsecureUpstreams: false
 
 agent:
   # OpenAI-compatible chat completions. Each environment's values file sets these (SPEC 28).

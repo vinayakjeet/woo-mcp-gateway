@@ -40,6 +40,8 @@ spec:
               value: {{ include "platform.gatewayUrl" . | quote }}
             - name: ALLOWED_ORIGINS
               value: {{ include "platform.gatewayAllowedOrigins" . | quote }}
+            - name: ALLOW_INSECURE_UPSTREAMS
+              value: {{ .Values.gateway.allowInsecureUpstreams | default false | toString | quote }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           readinessProbe:
