@@ -215,6 +215,60 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('provisionStore (needs TEST_DATA
     expect((await server(id)).enabled).toBe(false);
   });
 
+  it('fails a store past its deadline without helm, naming the last step', async () => {
+    const { helm, kube, d } = setup();
+    const id = await add('late', { deadlineAt: new Date(Date.now() - 1000), lastStep: 'install' });
+    await provisionStore(d, await job(id));
+    expect(await row(id)).toMatchObject({
+      status: 'failed',
+      status_reason: 'Timed out after 15 min at step install',
+    });
+    expect([helm.calls, kube.calls]).toEqual([[], []]);
+    expect((await server(id)).enabled).toBe(false);
+  });
+
+  it('keeps the partial release of a store that timed out, for inspection', async () => {
+    const { helm, d } = setup();
+    helm.releases.set('store-half/store-half', 'pending-install');
+    const id = await add('half', { deadlineAt: new Date(Date.now() - 1000), lastStep: 'verify' });
+    await provisionStore(d, await job(id));
+    expect((await row(id)).status).toBe('failed');
+    expect(helm.calls).toEqual([]);
+    expect(helm.releases.get('store-half/store-half')).toBe('pending-install');
+  });
+
+  it('caps the helm timeout at the time left, 30 s at least', async () => {
+    const at = new Date('2026-10-13T10:00:00Z');
+    const { helm, d } = setup({ now: () => at });
+    const a = await add('tight', { deadlineAt: new Date(at.getTime() + 125_000) });
+    await provisionStore(d, await job(a));
+    const b = await add('tighter', { deadlineAt: new Date(at.getTime() + 10_000) });
+    await provisionStore(d, await job(b));
+    expect(helm.calls.filter((c) => c.startsWith('install'))).toEqual([
+      'install store-tight/store-tight timeout=125',
+      'install store-tighter/store-tighter timeout=30',
+    ]);
+  });
+
+  it.each([
+    ['pending-install', 'rec-pinstall'],
+    ['pending-upgrade', 'rec-pupgrade'],
+    ['pending-rollback', 'rec-prollback'],
+    ['uninstalling', 'rec-uninstalling'],
+  ] as const)('recovers a release left %s by an earlier run', async (st, slug) => {
+    const { helm, d } = setup();
+    const rel = `store-${slug}/store-${slug}`;
+    helm.releases.set(rel, st);
+    const id = await add(slug);
+    await provisionStore(d, await job(id));
+    expect(helm.calls).toEqual([`status ${rel}`, `uninstall ${rel}`, `install ${rel} timeout=600`]);
+    expect(await row(id)).toMatchObject({
+      status: 'ready',
+      attempt: 0,
+      status_reason: `Recovered from ${st} left by an earlier run`,
+    });
+  });
+
   it('records a Kubernetes refusal and stays provisioning', async () => {
     const { kube, helm, d } = setup();
     kube.applyError = new KubeError(403, 'Forbidden');

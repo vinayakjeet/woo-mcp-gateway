@@ -4,8 +4,9 @@ import { decryptSecret, errorCode } from '@woo/core';
 import type { FastifyBaseLogger } from 'fastify';
 import type pg from 'pg';
 import { notify, withTx } from './db.js';
-import { HelmError, type Helm } from './helm.js';
+import { HelmError, type Helm, type ReleaseStatus } from './helm.js';
 import { KubeError, type Kube } from './kube.js';
+import { DEADLINE_MINUTES } from './store-input.js';
 import { storeLabels, storeUrl, storeValues, type StoreDefaults } from './store-values.js';
 
 export const MAX_ATTEMPTS = 3;
@@ -13,6 +14,15 @@ export const INSTALL_TIMEOUT_SEC = 600;
 export const UNINSTALL_TIMEOUT_SEC = 300;
 export const VERIFY_INTERVAL_MS = 2000;
 const DEADLINE_FALLBACK_MS = 15 * 60_000;
+export const MIN_INSTALL_TIMEOUT_SEC = 30;
+
+// A control-plane that died mid-operation leaves the release locked in one of these (SPEC 18).
+const RECOVERABLE: ReadonlySet<ReleaseStatus> = new Set([
+  'pending-install',
+  'pending-upgrade',
+  'pending-rollback',
+  'uninstalling',
+]);
 
 export type Log = Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>;
 
@@ -193,12 +203,27 @@ export async function provisionStore(
   job: StoreJob,
   signal?: AbortSignal,
 ): Promise<void> {
+  const clock = () => (d.now ?? (() => new Date()))().getTime();
+  // SPEC 18 step 1. Resources stay for inspection; the owner can delete the failed store.
+  if (job.deadlineAt && clock() >= job.deadlineAt.getTime()) {
+    await markFailed(
+      d,
+      job,
+      `Timed out after ${DEADLINE_MINUTES} min at step ${job.lastStep ?? 'queued'}`,
+      job.attempt,
+    );
+    return;
+  }
   try {
     await setStep(d, job, 'namespace');
     await d.kube.applyNamespace(job.namespace, storeLabels(job.slug));
     await setStep(d, job, 'helm-status');
     const st = await d.helm.status(job.release, job.namespace, signal);
-    if (st === 'failed') {
+    if (RECOVERABLE.has(st)) {
+      await setStep(d, job, 'recover');
+      await d.helm.uninstall(job.release, job.namespace, UNINSTALL_TIMEOUT_SEC, signal);
+      await setReason(d, job, `Recovered from ${st} left by an earlier run`);
+    } else if (st === 'failed') {
       const attempt = job.attempt + 1;
       if (attempt >= MAX_ATTEMPTS) {
         await markFailed(
@@ -222,13 +247,18 @@ export async function provisionStore(
     if (st !== 'deployed') {
       await setStep(d, job, 'install');
       const token = await storeToken(d, job);
+      // Capped by the deadline, so an install started late cannot outlive it by 10 minutes.
+      const left = job.deadlineAt
+        ? Math.floor((job.deadlineAt.getTime() - clock()) / 1000)
+        : INSTALL_TIMEOUT_SEC;
+      const timeoutSec = Math.max(MIN_INSTALL_TIMEOUT_SEC, Math.min(INSTALL_TIMEOUT_SEC, left));
       await withValuesFile(d.workDir, storeValues(d.defaults, job, token), (valuesFile) =>
         d.helm.upgradeInstall({
           release: job.release,
           ns: job.namespace,
           chart: d.chartPath,
           valuesFile,
-          timeoutSec: INSTALL_TIMEOUT_SEC,
+          timeoutSec,
           redact: [token],
           signal,
         }),
