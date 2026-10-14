@@ -143,6 +143,27 @@ if render --set provisioner.enabled=false --show-only templates/rbac-provisioner
 fi
 pass "control-plane"
 
+# SPEC 18: the ClusterRole is wide because Helm's --wait lists and watches everything, so this policy is
+# the wall that keeps the control-plane to store-* and mcp-hosted.
+vap=$(show admission-policy.yaml)
+for want in "kind: ValidatingAdmissionPolicy" "kind: ValidatingAdmissionPolicyBinding" \
+  "name: control-plane-namespaces" "policyName: control-plane-namespaces" "failurePolicy: Fail" \
+  "request.userInfo.username == 'system:serviceaccount:platform:control-plane'" \
+  "startsWith('store-')" "'mcp-hosted'" "oldObject.metadata.name" "- CREATE" "- UPDATE" "- DELETE"; do
+  has "$vap" "$want" "admission policy"
+done
+[ "$(grep -c 'kind: ValidatingAdmissionPolicyBinding' <<<"$vap")" -eq 1 ] || fail "admission policy: one binding"
+bind=$(awk 'BEGIN{RS="---\n"} /kind: ValidatingAdmissionPolicyBinding/' <<<"$vap")
+has "$bind" "- Deny" "binding actions"
+lacks "$bind" "- Warn" "binding actions"
+lacks "$bind" "- Audit" "binding actions"
+other=$(show admission-policy.yaml --namespace other-ns 2>&1 || true)
+has "$other" "system:serviceaccount:other-ns:control-plane" "admission policy follows the release namespace"
+if render --set provisioner.enabled=false --show-only templates/admission-policy.yaml >/dev/null 2>&1; then
+  fail "admission policy rendered with the provisioner off"
+fi
+pass "admission policy"
+
 gw=$(show gateway.yaml)
 for want in "app.kubernetes.io/name: gateway" "containerPort: 9090" "containerPort: 8080" "path: /readyz" "path: /healthz" \
   "automountServiceAccountToken: false" "name: POD_NAME" "fieldPath: metadata.name" "key: DATABASE_URL" \
