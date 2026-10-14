@@ -92,7 +92,13 @@ export async function seedPolicies(db: Db): Promise<void> {
       .onConflictDoNothing()
       .returning({ key: schema.platformSettings.key });
     if (flagged.length === 0) return;
-    await tx.insert(schema.toolPolicies).values(SEED_POLICIES.map((r) => ({ ...r })));
+    const rows = await tx
+      .insert(schema.toolPolicies)
+      .values(SEED_POLICIES.map((r) => ({ ...r })))
+      .returning({ id: schema.toolPolicies.id });
+    // A gateway can finish its first load between the migration and this seed and then hold an
+    // empty rule list, which hides every tool from members. The payload only has to be a uuid.
+    await tx.execute(sql`select pg_notify('policies_changed', ${rows[0]!.id})`);
   });
 }
 

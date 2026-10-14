@@ -6,7 +6,7 @@ import { migrationsFolder, schema } from '@woo/core/db';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { seedPolicies } from './seed.js';
 import { freshDatabase } from './test-db.js';
 
@@ -14,10 +14,11 @@ const base = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!base)('seedPolicies (needs TEST_DATABASE_URL)', () => {
   let client: pg.Client;
+  let dbUrl: string;
   let db: NodePgDatabase<typeof schema>;
   beforeAll(async () => {
-    const url = await freshDatabase(base!, 'woo_seed_policies_test');
-    client = new pg.Client({ connectionString: url });
+    dbUrl = await freshDatabase(base!, 'woo_seed_policies_test');
+    client = new pg.Client({ connectionString: dbUrl });
     await client.connect();
     db = drizzle(client, { schema });
     await migrate(db, { migrationsFolder });
@@ -28,6 +29,25 @@ describe.skipIf(!base)('seedPolicies (needs TEST_DATABASE_URL)', () => {
 
   const rows = async () =>
     (await client.query('select id from tool_policies order by id')).rows.length;
+
+  it('sends NOTIFY policies_changed when it inserts, and not on a rerun', async () => {
+    const l = new pg.Client({ connectionString: dbUrl });
+    await l.connect();
+    const got: string[] = [];
+    l.on('notification', (n) => got.push(n.payload ?? ''));
+    await l.query('LISTEN policies_changed');
+    try {
+      await seedPolicies(db);
+      await vi.waitFor(() => expect(got).toHaveLength(1));
+      await seedPolicies(db);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(got).toHaveLength(1);
+    } finally {
+      await l.end();
+    }
+    await client.query('delete from tool_policies');
+    await client.query("delete from platform_settings where key = 'policies_seeded'");
+  });
 
   it('inserts the SPEC 8 rules once', async () => {
     await seedPolicies(db);
