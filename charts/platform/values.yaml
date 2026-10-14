@@ -73,3 +73,10 @@ provisioner:
 fxMcp:
   slug: fx
   name: Currency
+
+networkPolicy:
+  # Traefik in k3s (SPEC 16). The same shape as the store chart.
+  ingressController:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik

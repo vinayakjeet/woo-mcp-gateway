@@ -201,9 +201,90 @@ lacks "$na" "Ingress" agent-netpol
 lacks "$na" "5432" agent-netpol
 pass "agent networkpolicy"
 
-# No policy selects every pod in the namespace (default-deny is M10).
-lacks "$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')" "podSelector: {}" "netpol"
-pass "no empty podSelector"
+# SPEC 16 default deny: one default-deny and one allow-dns in platform and in mcp-hosted (decision E).
+netpols=$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}')
+npdoc() { awk -v n="  name: $1" 'BEGIN{RS="---\n"} index($0, n "\n") && /kind: NetworkPolicy/' <<<"${2:-$netpols}"; }
+for ns in platform mcp-hosted; do
+  d=$(awk -v ns="  namespace: $ns" 'BEGIN{RS="---\n"} index($0, "name: default-deny\n") && index($0, ns "\n")' <<<"$netpols")
+  [ -n "$d" ] || fail "no default-deny in $ns"
+  has "$d" "podSelector: {}" "default-deny $ns"
+  has "$d" "- Ingress" "default-deny $ns"
+  has "$d" "- Egress" "default-deny $ns"
+  lacks "$d" "ingress:" "default-deny $ns"
+  lacks "$d" "egress:" "default-deny $ns"
+  a=$(awk -v ns="  namespace: $ns" 'BEGIN{RS="---\n"} index($0, "name: allow-dns\n") && index($0, ns "\n")' <<<"$netpols")
+  [ -n "$a" ] || fail "no allow-dns in $ns"
+  has "$a" "kubernetes.io/metadata.name: kube-system" "allow-dns $ns"
+  [ "$(count "$a" 'port: 53')" -eq 2 ] || fail "allow-dns $ns: port 53 for UDP and TCP"
+done
+[ "$(count "$netpols" 'podSelector: {}')" -eq 4 ] || fail "only default-deny and allow-dns select every pod"
+pass "default deny in platform and mcp-hosted"
+
+# One policy per workload and direction. Ports are pod ports (kube-router matches after the Service DNAT).
+traefik="kubernetes.io/metadata.name: kube-system"
+ingress_policy() { # name, selected pod label, port line
+  local d
+  d=$(npdoc "$1")
+  [ -n "$d" ] || fail "missing NetworkPolicy $1"
+  has "$d" "- Ingress" "$1"
+  lacks "$d" "- Egress" "$1"
+  has "$d" "$2" "$1"
+  has "$d" "$3" "$1"
+}
+ingress_policy web-ingress "app.kubernetes.io/name: web" "port: 8080"
+ingress_policy control-plane-ingress "app.kubernetes.io/name: control-plane" "port: 3000"
+ingress_policy agent-ingress "app.kubernetes.io/name: agent" "port: 3100"
+ingress_policy gateway-ingress "app.kubernetes.io/name: gateway" "port: 8080"
+ingress_policy fx-mcp-ingress "app.kubernetes.io/name: fx-mcp" "port: 8080"
+ingress_policy postgres-ingress "app.kubernetes.io/name: postgres" "port: 5432"
+for n in web-ingress control-plane-ingress agent-ingress gateway-ingress; do
+  d=$(npdoc "$n")
+  has "$d" "$traefik" "$n"
+  has "$d" "app.kubernetes.io/name: traefik" "$n"
+done
+has "$(npdoc control-plane-ingress)" "port: 3001" control-plane-ingress
+has "$(npdoc control-plane-ingress)" "app.kubernetes.io/name: agent" control-plane-ingress
+has "$(npdoc gateway-ingress)" "app.kubernetes.io/name: agent" gateway-ingress
+has "$(npdoc fx-mcp-ingress)" "app.kubernetes.io/name: gateway" fx-mcp-ingress
+d=$(npdoc postgres-ingress)
+has "$d" "app.kubernetes.io/name: control-plane" postgres-ingress
+has "$d" "app.kubernetes.io/name: gateway" postgres-ingress
+lacks "$d" "app.kubernetes.io/name: agent" postgres-ingress
+lacks "$d" "app.kubernetes.io/name: web" postgres-ingress
+pass "platform ingress policies"
+
+d=$(npdoc gateway-egress)
+for want in "- Egress" "app.kubernetes.io/name: postgres" "port: 5432" "app.kubernetes.io/name: fx-mcp" "port: 8080" \
+  "urumi.io/managed: \"true\"" "app.kubernetes.io/name: woo-mcp" "kubernetes.io/metadata.name: mcp-hosted" \
+  "cidr: 0.0.0.0/0" "port: 443"; do
+  has "$d" "$want" gateway-egress
+done
+lacks "$d" "- Ingress" gateway-egress
+d=$(npdoc control-plane-egress)
+for want in "- Egress" "app.kubernetes.io/name: postgres" "port: 5432" "cidr: 0.0.0.0/0" "port: 6443" "port: 443"; do
+  has "$d" "$want" control-plane-egress
+done
+lacks "$d" "- Ingress" control-plane-egress
+lacks "$d" "app.kubernetes.io/name: gateway" control-plane-egress
+pass "platform egress policies"
+
+# The public 443 rule must exclude the five private ranges, in every policy that opens it.
+for n in gateway-egress agent-egress fx-mcp-egress; do
+  d=$(npdoc "$n")
+  for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+    has "$d" "- $r" "$n public 443"
+  done
+done
+# The control-plane may reach the API server on any address, so it has no except list.
+lacks "$(npdoc control-plane-egress)" "except:" control-plane-egress
+pass "public 443 rules exclude the private ranges"
+
+# cert-manager HTTP-01 solver pods are created in the Ingress namespace and need Traefik to reach them.
+lacks "$netpols" "http01-solver" "solver rule without tls"
+tls=$(render --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=x | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')
+has "$tls" "acme.cert-manager.io/http01-solver" "solver rule with tls"
+has "$tls" "port: 8089" "solver rule with tls"
+pass "solver rule follows ingress.tls.enabled"
 
 # Every workload file: one probe pair per Deployment or StatefulSet, and the pod and container hardening.
 for f in postgres control-plane gateway fx-mcp web agent; do

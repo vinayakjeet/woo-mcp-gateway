@@ -1,4 +1,4 @@
-# SPEC 16: fx-mcp reaches the public internet on 443 and DNS, nothing else. Inbound traffic stays open until M10.
+# SPEC 16: fx-mcp reaches the public internet on 443 and DNS, nothing else. Inbound rules are in networkpolicy-ingress.yaml.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
