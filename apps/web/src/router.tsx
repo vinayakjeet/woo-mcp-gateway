@@ -16,6 +16,7 @@ import { MembersPage } from './pages/Members';
 import { PoliciesPage } from './pages/Policies';
 import { ServersPage } from './pages/Servers';
 import { StoresPage } from './pages/Stores';
+import { ToolApprovalsPage } from './pages/ToolApprovals';
 import { Shell } from './Shell';
 
 function NotFound() {
@@ -62,6 +63,7 @@ export const routes: RouteObject[] = [
       { path: 'stores', element: <StoresPage /> },
       { path: 'chat', element: <ChatPage /> },
       { path: 'policies', element: <PoliciesPage /> },
+      { path: 'approvals', element: <ToolApprovalsPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'members', element: <MembersPage /> },
