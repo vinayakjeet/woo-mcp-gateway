@@ -2,6 +2,7 @@
 # Live checks for the store provisioner (SPEC 18) against the running cluster.
 #   S=<dir> scripts/stores-check.sh create <slug> "<name>"
 #   S=<dir> scripts/stores-check.sh delete <slug>
+#   S=<dir> scripts/stores-check.sh all
 # Needs kubectl, curl, jq and pnpm. Keys and cookies go to files under $S (mode 600), never stdout.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -176,8 +177,93 @@ phase_delete() { # SLUG
   pass "$1 server row is gone"
 }
 
+rel_status() {
+  kubectl -n "store-$1" get secret -l "owner=helm,name=store-$1" \
+    -o jsonpath='{.items[-1:].metadata.labels.status}' 2>/dev/null || true
+}
+
+# main_snapshot: helm revision and pod identity of store-main, to prove the kill leaves it alone.
+main_snapshot() {
+  {
+    kubectl -n store-main get secret -l owner=helm,name=store-main --no-headers -o custom-columns='N:.metadata.name,S:.metadata.labels.status'
+    kubectl -n store-main get pods --no-headers -o custom-columns='P:.metadata.name,U:.metadata.uid,R:.status.containerStatuses[*].restartCount'
+  } | sort
+}
+
+# phase_kill SLUG...: once every release is pending-install, delete the control-plane pod.
+phase_kill() {
+  local s t0 old st b
+  t0=$(now)
+  for s in "$@"; do
+    until [ "$(rel_status "$s")" = pending-install ]; do
+      [ $(($(now) - t0)) -lt 180 ] || fail "store-$s never reached pending-install"
+      sleep 2
+    done
+  done
+  # helm now creates resources and waits for them: the window SPEC 18's demo kills in.
+  sleep 20
+  for s in "$@"; do
+    st=$(rel_status "$s")
+    [ "$st" = pending-install ] || fail "store-$s is $st before the kill: too fast to interrupt, rerun"
+  done
+  old=$(kubectl -n platform get pod -l app.kubernetes.io/name=control-plane -o name)
+  if b=$(kubectl -n platform exec "$old" -c control-plane -- cat /sys/fs/cgroup/memory.peak 2>/dev/null); then
+    echo "MEM: old control-plane peak while $* installed $((b / 1048576)) Mi of a 384 Mi limit"
+  fi
+  kill_at=$(now)
+  kubectl -n platform delete $old --wait=false >/dev/null
+  pass "deleted $old while $* were pending-install"
+}
+
+# phase_releases SLUG...: one release per store, none pending, and the new pod holds the lock.
+phase_releases() {
+  local out s n bad
+  out=$(kubectl get secret -A -l owner=helm --no-headers \
+    -o custom-columns='NS:.metadata.namespace,R:.metadata.labels.name,V:.metadata.labels.version,S:.metadata.labels.status')
+  bad=$(awk '$4 ~ /pending|uninstalling/' <<<"$out")
+  [ -z "$bad" ] || fail "stuck helm releases: $bad"
+  for s in "$@"; do
+    n=$(awk -v r="store-$s" '$2 == r' <<<"$out" | wc -l)
+    [ "$(awk -v r="store-$s" '$2 == r && $4 == "deployed"' <<<"$out" | wc -l)" = 1 ] ||
+      fail "store-$s has no single deployed release: $(awk -v r="store-$s" '$2 == r' <<<"$out" | tr '\n' ';')"
+    [ "$(kubectl get ns -o name | grep -c "namespace/store-$s$")" = 1 ] || fail "namespace of store-$s"
+    echo "  store-$s: $n helm secret(s), one deployed"
+  done
+  [ "$(awk '$2 ~ /^store-/ && $4 == "deployed"' <<<"$out" | awk '{print $2}' | sort | uniq -d | wc -l)" = 0 ] ||
+    fail "duplicate deployed releases"
+  pass "no duplicate helm releases and none pending-install, pending-upgrade or uninstalling"
+}
+
+phase_lock() {
+  local pod n
+  pod=$(kubectl -n platform get pod -l app.kubernetes.io/name=control-plane -o name)
+  n=$(kubectl -n platform logs "$pod" -c control-plane | grep -c 'store provisioner elected' || true)
+  [ "$n" = 1 ] || fail "$pod logged $n provisioner elections"
+  pass "the new pod ${pod#pod/} took the provisioner lock (1 election)"
+}
+
+phase_recovered() { # SLUG NAME
+  local reason
+  phase_ready "$1" "$2"
+  reason=$(store_json "$1" | jq -r .statusReason)
+  [ "$reason" = "Recovered from pending-install left by an earlier run" ] || fail "$1 statusReason: $reason"
+  pass "$1 recovered from the killed install"
+}
+
+phase_limit() {
+  local r n
+  n=$(body "$(req admin.jar GET /api/stores)" | jq --arg me "$admin_id" '[.stores[] | select(.owner.id == $me)] | length')
+  [ "$n" = 3 ] || fail "the limit check needs the admin at 3 stores, found $n"
+  r=$(post_store "Check Three" "stores-check-check-three")
+  [ "$(code "$r")" = 409 ] && [ "$(body "$r" | jq -r .error)" = store_limit ] ||
+    fail "a fourth store gave $(code "$r")"
+  if kubectl get ns store-check-three >/dev/null 2>&1; then fail "a refused store got a namespace"; fi
+  pass "a fourth store for the admin is refused with store_limit and nothing is created"
+}
+
 admin_login admin.jar
 key_setup
+admin_id=$(body "$(req admin.jar GET /api/me)" | jq -r .user.id)
 case ${1:-} in
   create)
     [ $# -eq 3 ] || fail "usage: create <slug> <name>"
@@ -190,8 +276,29 @@ case ${1:-} in
     phase_guards
     phase_delete "$2"
     ;;
+  all)
+    phase_adopted
+    main_before=$(main_snapshot)
+    t_all=$(now)
+    phase_create check-one "Check One"
+    phase_create check-two "Check Two"
+    phase_kill check-one check-two
+    phase_recovered check-one "Check One"
+    phase_recovered check-two "Check Two"
+    echo "TIME: both stores ready $(($(now) - kill_at)) s after the kill, $(($(now) - t_all)) s after create"
+    phase_lock
+    phase_releases check-one check-two
+    [ "$(main_snapshot)" = "$main_before" ] || fail "store-main changed during the run"
+    pass "store-main is untouched: same helm revision, same pods, same restart counts"
+    cp_peak
+    scripts/netpol-check.sh check-one check-two
+    phase_limit
+    phase_guards
+    phase_delete check-one
+    phase_delete check-two
+    ;;
   *)
-    echo "usage: S=<dir> $0 create <slug> <name> | delete <slug>" >&2
+    echo "usage: S=<dir> $0 create <slug> <name> | delete <slug> | all" >&2
     exit 2
     ;;
 esac
