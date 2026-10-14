@@ -38,6 +38,8 @@ export async function testApi(
     kek,
     gatewayUrl: 'http://mcp.127.0.0.1.nip.io/mcp',
     version: 'test',
+    // The tests use made-up hosts, so DNS and range checks are off unless a test brings its own.
+    checkUrl: async () => null,
     ...over,
   });
   await app.ready();

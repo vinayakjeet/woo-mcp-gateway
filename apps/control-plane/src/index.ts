@@ -9,6 +9,7 @@ import { introspectRoutes } from './internal-introspect.js';
 import { inClusterKube } from './kube.js';
 import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
+import { urlCheckFromEnv } from './ssrf.js';
 import { provisionerConfig } from './store-values.js';
 
 const env = requireEnv(
@@ -35,6 +36,7 @@ await pub.register(apiRoutes, {
   pepper: env.API_KEY_PEPPER,
   kek,
   provisioner,
+  checkUrl: urlCheckFromEnv(process.env),
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
 });

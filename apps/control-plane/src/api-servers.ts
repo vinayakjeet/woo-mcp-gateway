@@ -5,7 +5,7 @@ import { loadRules } from './api-policies.js';
 import { parseId, requireAdmin, requireUser, type SessionUser } from './api-session.js';
 import { notify, withTx } from './db.js';
 import { nextSecret, parseCreate, parsePatch } from './server-input.js';
-import { checkUpstreamUrl } from './ssrf.js';
+import { urlCheck } from './ssrf.js';
 
 type ServerRow = {
   id: string;
@@ -103,7 +103,7 @@ export async function getServer(o: ApiOptions, id: string) {
 const MANAGED_EDITABLE = new Set(['enabled', 'timeoutMs']);
 
 export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
-  const checkUrl = o.checkUrl ?? checkUpstreamUrl;
+  const checkUrl = o.checkUrl ?? urlCheck(false);
 
   scope.get('/api/servers', { preHandler: requireUser }, async () => {
     const s = await o.pool.query<ServerRow>(`${SERVER_SELECT} order by s.name`);

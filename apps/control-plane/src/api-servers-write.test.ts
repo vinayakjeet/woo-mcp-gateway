@@ -1,5 +1,6 @@
 import { decryptSecret } from '@woo/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { urlCheck } from './ssrf.js';
 import { call, listen, testApi, userWithSession } from './test-app.js';
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)(
@@ -45,6 +46,39 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     const stored = async (id: string) =>
       (await t.pool.query('select auth_secret_enc from mcp_servers where id = $1', [id])).rows[0]
         .auth_secret_enc as Buffer | null;
+
+    it('refuses unsafe upstream URLs on create and on edit with the real check', async () => {
+      const strict = await testApi('woo_api_servers_ssrf_test', {
+        checkUrl: urlCheck(false, async () => ['140.82.112.3']),
+      });
+      try {
+        const root = await userWithSession(strict.pool, 'root@example.com', 'admin');
+        const post = (url: string) =>
+          call(strict.app, 'POST', '/api/servers', {
+            cookie: root.cookie,
+            body: { name: 'S', slug: 'ssrf', url, auth: { type: 'none' } },
+          });
+        for (const url of [
+          'https://169.254.169.254/',
+          'https://10.0.0.1/mcp',
+          'http://fx-mcp.platform.svc.cluster.local:8080/mcp',
+        ]) {
+          const r = await post(url);
+          expect(r.statusCode, url).toBe(400);
+          expect(r.json()).toMatchObject({ error: 'url_rejected', reason: expect.any(String) });
+        }
+        const ok = await post('https://api.example.com/mcp');
+        expect(ok.statusCode).toBe(201);
+        const bad = await call(strict.app, 'PATCH', `/api/servers/${ok.json().server.id}`, {
+          cookie: root.cookie,
+          body: { url: 'https://10.0.0.1/mcp' },
+        });
+        expect(bad.statusCode).toBe(400);
+        expect(bad.json().error).toBe('url_rejected');
+      } finally {
+        await strict.close();
+      }
+    });
 
     it('creates an external server as pending approval', async () => {
       const r = await call(t.app, 'POST', '/api/servers', {
