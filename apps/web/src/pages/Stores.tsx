@@ -19,8 +19,14 @@ export function StoresPage() {
   const [creating, setCreating] = useState(false);
   const refresh = () => void qc.invalidateQueries({ queryKey: ['stores'] });
   const remove = useMutation({
-    mutationFn: (s: Store) => api(`/api/stores/${s.id}`, { method: 'DELETE' }),
-    onSuccess: refresh,
+    mutationFn: (s: Store) => api<{ store: Store }>(`/api/stores/${s.id}`, { method: 'DELETE' }),
+    onSuccess: ({ store }) => {
+      // The row turns to Deleting at once. It stays until a list answer no longer holds it.
+      qc.setQueryData<Store[]>(['stores'], (list) =>
+        list?.map((s) => (s.id === store.id ? store : s)),
+      );
+      refresh();
+    },
   });
   const headers = [
     'Status',

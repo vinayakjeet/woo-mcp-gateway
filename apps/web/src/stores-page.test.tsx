@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from './router';
@@ -87,5 +87,33 @@ describe('Stores page through the real routes', () => {
     fireEvent.click(main!);
     expect(confirm).not.toHaveBeenCalled();
     answers['/api/stores'] = { stores: [] };
+  });
+  it('keeps a deleted store visible as Deleting until the API stops listing it', async () => {
+    let listed = [store('abc')];
+    const f = vi.fn(async (url: string, init?: { method?: string }) => {
+      if (url === '/api/stores/id-abc' && init?.method === 'DELETE') {
+        listed = [store('abc', { status: 'deleting', lastStep: 'queued', deletable: false })];
+        return new Response(JSON.stringify({ store: listed[0] }), { status: 202 });
+      }
+      const body = url === '/api/stores' ? { stores: listed } : (answers[url] ?? {});
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal('fetch', f);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const router = createMemoryRouter(routes, { initialEntries: ['/stores'] });
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(await screen.findByText('Deleting')).toBeTruthy();
+    expect(screen.getByText('Store abc')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    // Teardown done: the next list answer drops the row.
+    listed = [];
+    await waitFor(() => expect(screen.queryByText('Store abc')).toBeNull(), { timeout: 4000 });
   });
 });
