@@ -70,7 +70,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
           slug: 'fx',
           name: 'FX',
           url: fx.url,
-          kind: 'external',
+          kind: 'system',
           authType: 'bearer',
           authSecretEnc: encryptSecret('fx-token', kek, 'fx'),
         },

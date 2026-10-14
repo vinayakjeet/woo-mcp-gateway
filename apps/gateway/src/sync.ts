@@ -55,12 +55,12 @@ export class GatewaySync {
 
   // onTools fires on any change to the in-memory list; mcp_tools is written only when a definition hash changes.
   persistTools(u: Pick<Upstream, 'record' | 'tools'>): void {
-    const { id, slug } = u.record;
+    const { id, slug, kind } = u.record;
     const tools = u.tools();
     const key = toolsKey(tools.map((t) => ({ name: t.name, definitionHash: definitionHash(t) })));
     if (this.persistedKeys.get(id) === key) return;
     this.persistedKeys.set(id, key);
-    void upsertTools(this.o.db, id, slug, tools)
+    void upsertTools(this.o.db, id, slug, kind, tools)
       .then((states) => this.o.registry.setToolStates(id, states))
       .catch((err: unknown) => {
         this.persistedKeys.delete(id);
@@ -80,14 +80,8 @@ export class GatewaySync {
       }
       for (const s of loaded) {
         // Rebuilding an upstream drops its connection and resets its breaker: only do it for a real change.
-        if (this.appliedRecords.get(s.record.id) === recordKey(s.record)) {
-          this.o.registry.setToolStates(
-            s.record.id,
-            new Map(s.tools.map((t) => [t.name, t.state])),
-          );
-        } else {
-          this.applyLoaded(s);
-        }
+        if (this.appliedRecords.get(s.record.id) === recordKey(s.record)) this.swapStates(s);
+        else this.applyLoaded(s);
       }
     });
   }
@@ -116,13 +110,19 @@ export class GatewaySync {
     return this.enqueue(async () => {
       const [s] = await loadServers(this.o.db, this.o.kek, id);
       if (s) {
-        this.applyLoaded(s);
+        // An approval changes tool states only: keep the connection and the breaker.
+        if (this.appliedRecords.get(id) === recordKey(s.record)) this.swapStates(s);
+        else this.applyLoaded(s);
       } else {
         this.persistedKeys.delete(id);
         this.appliedRecords.delete(id);
         await this.o.registry.remove(id);
       }
     });
+  }
+
+  private swapStates(s: LoadedServer): void {
+    this.o.registry.setToolStates(s.record.id, new Map(s.tools.map((t) => [t.name, t.state])));
   }
 
   // Remember what Postgres holds before the upstream connects, so an unchanged list writes nothing.
