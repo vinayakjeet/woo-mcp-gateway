@@ -132,7 +132,7 @@ done
 rb=$(show rbac-provisioner.yaml)
 for want in "kind: ClusterRole" "kind: ClusterRoleBinding" "name: control-plane" "namespace: platform" \
   "- namespaces" "- deployments" "- statefulsets" "- services" "- configmaps" "- secrets" \
-  "- persistentvolumeclaims" "- jobs" "- ingresses" "- networkpolicies" "- resourcequotas" \
+  "- persistentvolumeclaims" "- jobs" "- cronjobs" "- ingresses" "- networkpolicies" "- resourcequotas" \
   "- limitranges" "- pods" "- replicasets" "- events"; do
   has "$rb" "$want" rbac
 done
