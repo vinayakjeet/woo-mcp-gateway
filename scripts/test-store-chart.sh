@@ -194,7 +194,7 @@ for want in "app.kubernetes.io/component: wordpress" "policyTypes: [Ingress]" \
 done
 db=$(awk 'BEGIN{RS="---\n"} /name: mariadb-ingress/' <<<"$np")
 for want in "app.kubernetes.io/component: mariadb" "policyTypes: [Ingress]" \
-  "values: [wordpress, bootstrap]" "port: 3306"; do
+  "values: [wordpress, bootstrap, cron]" "port: 3306"; do
   has "$db" "$want" "mariadb policy"
 done
 # A peer without a namespaceSelector is this namespace only, which is what keeps stores apart.
@@ -226,7 +226,7 @@ done
 lacks "$e" "3306" woo-mcp-egress
 e=$(npdoc db-clients-egress)
 [ -n "$e" ] || fail "no db-clients-egress"
-for want in "policyTypes: [Egress]" "values: [wordpress, bootstrap]" "app.kubernetes.io/component: mariadb" "port: 3306"; do
+for want in "policyTypes: [Egress]" "values: [wordpress, bootstrap, cron]" "app.kubernetes.io/component: mariadb" "port: 3306"; do
   has "$e" "$want" db-clients-egress
 done
 # No rule in this chart may name an address or another namespace for egress: a store reaches nothing else.
@@ -239,5 +239,23 @@ tls=$(render --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=x | 
 has "$tls" "acme.cert-manager.io/http01-solver" "solver rule with tls"
 has "$tls" "port: 8089" "solver rule with tls"
 pass "solver rule follows ingress.tls.enabled"
+
+# WordPress cannot call its own wp-cron.php: the public name resolves to 127.0.0.1 in the pod and
+# Apache listens on 8080. A CronJob runs the due events instead (M4 bug, found in M10).
+for f in wordpress.yaml bootstrap-job.yaml cronjob.yaml; do
+  has "$(show "$f")" "define('DISABLE_WP_CRON', true);" "$f"
+done
+c=$(show cronjob.yaml)
+for want in "kind: CronJob" "name: wp-cron" 'schedule: "* * * * *"' "concurrencyPolicy: Forbid" \
+  "startingDeadlineSeconds: 60" "activeDeadlineSeconds: 120" "app.kubernetes.io/component: cron" \
+  "automountServiceAccountToken: false" "runAsNonRoot: true" "runAsUser: 33" "type: RuntimeDefault" \
+  "allowPrivilegeEscalation: false" "- ALL" "claimName: wordpress-html" "image: store-wordpress:dev" \
+  "healthz.php" "core is-installed" "cron event run --due-now" "cpu: 50m" "memory: 64Mi" "cpu: 500m" "memory: 256Mi" \
+  "kubernetes.io/hostname" "restartPolicy: Never"; do
+  has "$c" "$want" cronjob
+done
+lacks "$c" ":latest" cronjob
+lacks "$c" "test-token" cronjob
+pass "wp-cron CronJob"
 
 echo "OK"

@@ -45,7 +45,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
-                values: [wordpress, bootstrap]
+                values: [wordpress, bootstrap, cron]
       ports:
         - port: 3306
           protocol: TCP
