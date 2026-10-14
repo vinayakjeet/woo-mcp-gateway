@@ -1,5 +1,5 @@
 import { hash } from '@node-rs/argon2';
-import { encryptSecret, isValidSlug } from '@woo/core';
+import { SEED_POLICIES, encryptSecret, isValidSlug } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { count, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -78,6 +78,22 @@ export async function seedAdmin(db: Db, email: string, password: string): Promis
     passwordHash: await hash(password),
   });
   return true;
+}
+
+const POLICIES_SEEDED = 'policies_seeded';
+
+// The flag, not the table, decides. A rule an admin deletes (or an empty table after they delete
+// all of them) must stay that way across restarts.
+export async function seedPolicies(db: Db): Promise<void> {
+  await db.transaction(async (tx) => {
+    const flagged = await tx
+      .insert(schema.platformSettings)
+      .values({ key: POLICIES_SEEDED, value: true })
+      .onConflictDoNothing()
+      .returning({ key: schema.platformSettings.key });
+    if (flagged.length === 0) return;
+    await tx.insert(schema.toolPolicies).values(SEED_POLICIES.map((r) => ({ ...r })));
+  });
 }
 
 // make store installs store-main before the provisioner exists. Each seeded store server gets a

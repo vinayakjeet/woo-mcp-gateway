@@ -3,7 +3,13 @@ import { SCHEMA_VERSION, migrationsFolder, schema } from '@woo/core/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
-import { adoptSeededStores, seedAdmin, seedServers, type SeedServer } from './seed.js';
+import {
+  adoptSeededStores,
+  seedAdmin,
+  seedPolicies,
+  seedServers,
+  type SeedServer,
+} from './seed.js';
 import type { StoreDefaults } from './store-values.js';
 
 export const MIGRATION_LOCK = 4241;
@@ -78,6 +84,7 @@ export async function migrateAndSeed(
     const adminCreated = await inStep('seed-admin', () =>
       seedAdmin(db, o.adminEmail, o.adminPassword),
     );
+    await inStep('seed-policies', () => seedPolicies(db));
     await inStep('adopt-stores', () =>
       adoptSeededStores(db, o.seedServers, o.storeDefaults ?? null),
     );
