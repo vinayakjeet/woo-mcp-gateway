@@ -11,6 +11,8 @@ export type GatewayConfig = {
   allowedOrigins: string[];
   port: number;
   healthPort: number;
+  // Lets external upstreams use http. Off unless the chart sets it to the string "true".
+  allowInsecureUpstreams: boolean;
 };
 
 const REQUIRED = [
@@ -38,5 +40,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
       .filter(Boolean),
     port: Number(env.PORT ?? 8080),
     healthPort: Number(env.HEALTH_PORT ?? 9090),
+    allowInsecureUpstreams: env.ALLOW_INSECURE_UPSTREAMS === 'true',
   };
 }

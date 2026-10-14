@@ -12,6 +12,7 @@ import type { GatewayConfig } from './config.js';
 import { buildHealthApp } from './health.js';
 import { gatewayLogger } from './logger.js';
 import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
+import { pinnedFetch } from './pinned-fetch.js';
 import { PolicyStore } from './policies.js';
 import { Registry, type RegistryOptions } from './registry.js';
 import { StatusWriter } from './status.js';
@@ -58,7 +59,10 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
       );
   const registry = new Registry({
     log,
-    upstream: o.upstream,
+    upstream: {
+      externalFetch: pinnedFetch({ allowInsecure: cfg.allowInsecureUpstreams }),
+      ...o.upstream,
+    },
     onTools: (u) => sync.persistTools(u),
     onStatus: writeStatus,
   });

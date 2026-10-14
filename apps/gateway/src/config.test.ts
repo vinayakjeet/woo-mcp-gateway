@@ -37,4 +37,14 @@ describe('loadConfig', () => {
     expect(c.kek).toHaveLength(32);
     expect(loadConfig(full).allowedOrigins).toEqual([]);
   });
+
+  it('keeps http upstreams off unless ALLOW_INSECURE_UPSTREAMS is exactly "true"', () => {
+    expect(loadConfig(full).allowInsecureUpstreams).toBe(false);
+    expect(loadConfig({ ...full, ALLOW_INSECURE_UPSTREAMS: 'yes' }).allowInsecureUpstreams).toBe(
+      false,
+    );
+    expect(loadConfig({ ...full, ALLOW_INSECURE_UPSTREAMS: 'true' }).allowInsecureUpstreams).toBe(
+      true,
+    );
+  });
 });

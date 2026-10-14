@@ -21,6 +21,9 @@ const PROTOCOL = new Set<string>([
   'SyntaxError',
 ]);
 
+// Raised by pinned-fetch when an upstream name or address is not a public one.
+export const BLOCKED_CODE = 'ERR_UPSTREAM_BLOCKED';
+
 const RESET = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET']);
 
 const failure = (kind: ErrorKind, message: string): Failure => ({ kind, message });
@@ -40,6 +43,7 @@ export function classifyError(err: unknown): Failure {
     if (typeof name === 'string') codes.push(name);
     cur = (cur as { cause?: unknown }).cause;
   }
+  if (codes.includes(BLOCKED_CODE)) return failure('blocked', 'address not allowed');
   if (codes.some((c) => DNS.has(c))) return failure('dns', 'DNS lookup failed');
   if (codes.some((c) => REFUSED.has(c))) return failure('refused', 'connection refused');
   if (codes.some((c) => TLS.test(c))) return failure('tls', 'TLS handshake failed');
