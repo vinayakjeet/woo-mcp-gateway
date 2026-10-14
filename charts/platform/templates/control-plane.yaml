@@ -53,7 +53,7 @@ spec:
         checksum/seed: {{ list .Values.mcp.sharedToken .Values.seed .Values.fxMcp | toJson | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: control-plane
-      # Only the provisioner (M5) talks to the Kubernetes API, so the token is mounted when it is enabled.
+      # Only the provisioner (M9) talks to the Kubernetes API, so the token is mounted when it is enabled.
       automountServiceAccountToken: {{ .Values.provisioner.enabled }}
       terminationGracePeriodSeconds: 10
       securityContext:
@@ -76,6 +76,9 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-bootstrap, key: ADMIN_PASSWORD } }
             - name: SEED_SERVERS
               valueFrom: { secretKeyRef: { name: platform-seed, key: SEED_SERVERS } }
+            # Adoption of seeded stores builds their URL from these settings.
+            - name: PROVISIONER_STORE_VALUES
+              value: {{ include "platform.storeValues" . | quote }}
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 500m, memory: 384Mi }
@@ -110,6 +113,15 @@ spec:
               value: {{ include "platform.gatewayUrl" . | quote }}
             - name: APP_VERSION
               value: {{ .Values.global.imageTag | quote }}
+            - name: PROVISIONER_ENABLED
+              value: {{ .Values.provisioner.enabled | quote }}
+            - name: PROVISIONER_MAX_STORES_PER_USER
+              value: {{ .Values.provisioner.maxStoresPerUser | quote }}
+            - name: PROVISIONER_STORE_VALUES
+              value: {{ include "platform.storeValues" . | quote }}
+            # helm and its Kubernetes client keep caches under HOME; only /tmp is writable.
+            - name: HOME
+              value: /tmp
           readinessProbe:
             httpGet: { path: /readyz, port: 3001 }
             periodSeconds: 10

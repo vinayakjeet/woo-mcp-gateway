@@ -1,0 +1,38 @@
+# SPEC 18 guardrails. Worst case is every workload at its limit while the bootstrap Job runs:
+# 768 + 512 + 192 + 384 = 1856Mi of limits.memory, inside the 2Gi quota.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: store-quota
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.quota.requestsCpu | quote }}
+    requests.memory: {{ .Values.quota.requestsMemory }}
+    limits.cpu: {{ .Values.quota.limitsCpu | quote }}
+    limits.memory: {{ .Values.quota.limitsMemory }}
+    persistentvolumeclaims: {{ .Values.quota.persistentVolumeClaims | quote }}
+    requests.storage: {{ .Values.quota.requestsStorage }}
+    pods: {{ .Values.quota.pods | quote }}
+---
+# With a limits quota every pod must declare limits; these defaults cover probe pods and anything
+# else that omits them.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: store-limits
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 256Mi
+      max:
+        cpu: "1"
+        memory: 1Gi

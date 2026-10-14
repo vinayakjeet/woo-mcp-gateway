@@ -53,9 +53,18 @@ seed:
       name: Main Store
       namespace: store-main
 
-# Turn on with the provisioner (M5): it mounts the ServiceAccount token into the control-plane.
+# SPEC 18 (M9): the control-plane provisions stores with the helm CLI. Turning it on also mounts
+# the ServiceAccount token and creates the ClusterRole.
 provisioner:
   enabled: false
+  maxStoresPerUser: 3
+  # Per-store settings. global, images.registry, ingress and storage.className above apply too,
+  # so one environment file configures the platform and every store it creates.
+  store:
+    storage:
+      mariadb: 2Gi
+      wordpress: 2Gi
+    environmentType: local
 
 fxMcp:
   slug: fx

@@ -171,4 +171,35 @@ d=$(helm template store-main charts/store --namespace store-main -f deploy/store
 has "$d" 'value: "Main Store"' "chart default storeName"
 pass "a release installed without storeName still gives the bootstrap Main Store"
 
+q=$(show guardrails.yaml)
+for want in "kind: ResourceQuota" "name: store-quota" "requests.cpu: \"1\"" "requests.memory: 1536Mi" \
+  "limits.cpu: \"3\"" "limits.memory: 2Gi" "persistentvolumeclaims: \"3\"" "requests.storage: 8Gi" \
+  "pods: \"10\"" "kind: LimitRange" "name: store-limits" "type: Container"; do
+  has "$q" "$want" guardrails
+done
+lr=$(awk 'BEGIN{RS="---\n"} /kind: LimitRange/' <<<"$q")
+for want in "defaultRequest:" "cpu: 50m" "memory: 64Mi" "default:" "cpu: 500m" "memory: 256Mi" \
+  "max:" "cpu: \"1\"" "memory: 1Gi"; do
+  has "$lr" "$want" limitrange
+done
+has "$(show guardrails.yaml --set quota.requestsStorage=20Gi)" "requests.storage: 20Gi" "quota override"
+pass "resource quota and limit range"
+
+np=$(show networkpolicy-store.yaml)
+wp=$(awk 'BEGIN{RS="---\n"} /name: wordpress-ingress/' <<<"$np")
+for want in "app.kubernetes.io/component: wordpress" "policyTypes: [Ingress]" \
+  "kubernetes.io/metadata.name: kube-system" "app.kubernetes.io/name: traefik" \
+  "app.kubernetes.io/name: woo-mcp" "port: 8080"; do
+  has "$wp" "$want" "wordpress policy"
+done
+db=$(awk 'BEGIN{RS="---\n"} /name: mariadb-ingress/' <<<"$np")
+for want in "app.kubernetes.io/component: mariadb" "policyTypes: [Ingress]" \
+  "values: [wordpress, bootstrap]" "port: 3306"; do
+  has "$db" "$want" "mariadb policy"
+done
+# A peer without a namespaceSelector is this namespace only, which is what keeps stores apart.
+[ "$(grep -c namespaceSelector <<<"$wp")" -eq 1 ] || fail "wordpress policy: only Traefik may come from another namespace"
+[ "$(grep -c namespaceSelector <<<"$db")" -eq 0 ] || fail "mariadb policy: no other namespace may connect"
+pass "store networkpolicies"
+
 echo "OK"

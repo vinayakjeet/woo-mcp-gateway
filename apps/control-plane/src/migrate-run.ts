@@ -3,7 +3,8 @@ import { SCHEMA_VERSION, migrationsFolder, schema } from '@woo/core/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
-import { seedAdmin, seedServers, type SeedServer } from './seed.js';
+import { adoptSeededStores, seedAdmin, seedServers, type SeedServer } from './seed.js';
+import type { StoreDefaults } from './store-values.js';
 
 export const MIGRATION_LOCK = 4241;
 
@@ -13,6 +14,8 @@ export type MigrateOptions = {
   adminEmail: string;
   adminPassword: string;
   seedServers: SeedServer[];
+  // From PROVISIONER_STORE_VALUES. Null leaves seeded stores unadopted (tests, older charts).
+  storeDefaults?: StoreDefaults | null;
   // A stuck migrator must not hold every new pod in its init container forever.
   lockTimeout?: string;
 };
@@ -74,6 +77,9 @@ export async function migrateAndSeed(
     await inStep('seed-servers', () => seedServers(db, o.seedServers, o.kek));
     const adminCreated = await inStep('seed-admin', () =>
       seedAdmin(db, o.adminEmail, o.adminPassword),
+    );
+    await inStep('adopt-stores', () =>
+      adoptSeededStores(db, o.seedServers, o.storeDefaults ?? null),
     );
     await inStep('unlock', () => client.query('select pg_advisory_unlock($1)', [MIGRATION_LOCK]));
     return { schemaVersion: SCHEMA_VERSION, adminCreated };

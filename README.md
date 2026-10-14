@@ -139,7 +139,7 @@ S=<private dir> scripts/demo-reset.sh      # demo state; keeps orders, products 
 | WooCommerce        | 10.9.4                                      |
 | wp-cli             | 2.12.0                                      |
 | MariaDB            | `mariadb:11.4.13`                           |
-| Helm               | 4.3.0                                       |
+| Helm               | 4.3.0 (CLI and the control-plane image)     |
 | k3d                | 5.9.0                                       |
 | React              | 19.3.0                                      |
 | React Router       | 7.18.4                                      |

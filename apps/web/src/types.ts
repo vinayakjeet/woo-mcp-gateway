@@ -64,3 +64,21 @@ export type AuditItem = {
   replica: string;
 };
 export type AuditResponse = { items: AuditItem[]; nextCursor: string | null };
+
+export type StoreStatus = 'provisioning' | 'ready' | 'failed' | 'deleting';
+export type Store = {
+  id: string;
+  slug: string;
+  name: string;
+  status: StoreStatus;
+  statusReason: string | null;
+  lastStep: string | null;
+  url: string | null;
+  attempt: number;
+  createdAt: string;
+  readyAt: string | null;
+  deadlineAt: string | null;
+  owner: { id: string; email: string };
+  deletable: boolean;
+  seeded: boolean;
+};

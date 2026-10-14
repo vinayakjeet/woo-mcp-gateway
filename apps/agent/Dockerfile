@@ -1,8 +1,10 @@
 FROM node:24-alpine AS build
+# Low by default: the local network drops more than about 4 concurrent connections. CI can raise it.
+ARG PNPM_NETWORK_CONCURRENCY=4
 RUN npm install -g pnpm@10.34.6
 WORKDIR /src
 COPY . .
-RUN pnpm install --frozen-lockfile \
+RUN pnpm install --frozen-lockfile --network-concurrency "$PNPM_NETWORK_CONCURRENCY" \
  && pnpm --filter @woo/agent... build \
  && pnpm --filter @woo/agent deploy --prod --legacy /out
 

@@ -13,3 +13,7 @@ agent:
     model: gemini-3.5-flash-lite
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b
+
+# Stores from the dashboard (SPEC 18, M9).
+provisioner:
+  enabled: true
