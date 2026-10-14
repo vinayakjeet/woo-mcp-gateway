@@ -147,3 +147,4 @@ S=<private dir> scripts/demo-reset.sh      # demo state; keeps orders, products 
 | Vite               | 8.3.1                                       |
 | Tailwind CSS       | 4.3.3                                       |
 | nginx-unprivileged | `nginxinc/nginx-unprivileged:1.31.6-alpine` |
+| ipaddr.js          | 2.5.0 (core, SSRF ranges)                   |
