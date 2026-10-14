@@ -3,6 +3,7 @@ import pg from 'pg';
 import type { Authenticator } from './auth.js';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { PG_CONNECT_TIMEOUT_MS } from './pg-options.js';
+import type { PolicyStore } from './policies.js';
 import type { Registry } from './registry.js';
 import { definitionHash, loadServers, upsertTools, type LoadedServer } from './registry-db.js';
 import { UUID_RE, type Db, type Log, type ServerRecord } from './types.js';
@@ -14,9 +15,11 @@ export type SyncOptions = {
   kek: Buffer;
   registry: Pick<Registry, 'apply' | 'remove' | 'ids' | 'setToolStates'>;
   auth: Pick<Authenticator, 'purge' | 'purgeAll'>;
+  policies: Pick<PolicyStore, 'load'>;
   log: Log;
   reconnectMinMs?: number;
   reconnectMaxMs?: number;
+  policyRetryMs?: number;
 };
 
 // What mcp_tools holds for one server, as a single comparable string.
@@ -36,6 +39,7 @@ export class GatewaySync {
   private queue: Promise<void> = Promise.resolve();
   private attempt = 0;
   private timer: NodeJS.Timeout | undefined;
+  private policyTimer: NodeJS.Timeout | undefined;
   private closed = false;
 
   constructor(private readonly o: SyncOptions) {}
@@ -43,6 +47,8 @@ export class GatewaySync {
   // LISTEN before the first load, so a change made in between is not missed.
   async start(): Promise<void> {
     await this.listen();
+    // A failure here stops startup. Readiness stays false until the rules are in memory.
+    await this.o.policies.load();
     await this.reloadAll();
     this.loaded = true;
   }
@@ -86,6 +92,26 @@ export class GatewaySync {
     });
   }
 
+  // A rule that is deleted or added must not stay stale because one query failed, so a failed
+  // reload is retried until it works. The old rules stay in force meanwhile.
+  reloadPolicies(): Promise<void> {
+    clearTimeout(this.policyTimer);
+    return this.enqueue(async () => {
+      try {
+        await this.o.policies.load();
+      } catch (err) {
+        this.o.log.warn({ code: errorCode(err) }, 'policy reload failed, retrying');
+        if (!this.closed) {
+          this.policyTimer = setTimeout(
+            () => void this.reloadPolicies().catch(() => {}),
+            this.o.policyRetryMs ?? 2000,
+          );
+          this.policyTimer.unref();
+        }
+      }
+    });
+  }
+
   reloadServer(id: string): Promise<void> {
     return this.enqueue(async () => {
       const [s] = await loadServers(this.o.db, this.o.kek, id);
@@ -109,6 +135,7 @@ export class GatewaySync {
   async close(): Promise<void> {
     this.closed = true;
     clearTimeout(this.timer);
+    clearTimeout(this.policyTimer);
     const c = this.client;
     this.client = null;
     await c?.end().catch(() => {});
@@ -137,6 +164,7 @@ export class GatewaySync {
       await c.connect();
       await c.query('LISTEN registry_changed');
       await c.query('LISTEN key_revoked');
+      await c.query('LISTEN policies_changed');
     } catch (err) {
       await c.end().catch(() => {});
       throw err;
@@ -154,6 +182,7 @@ export class GatewaySync {
     const payload = rawPayload.toLowerCase();
     if (channel === 'key_revoked') this.o.auth.purge(payload);
     else if (channel === 'registry_changed') void this.reloadServer(payload).catch(() => {});
+    else if (channel === 'policies_changed') void this.reloadPolicies();
   }
 
   private lost(c: pg.Client, err?: unknown): void {
@@ -180,6 +209,7 @@ export class GatewaySync {
     try {
       await this.listen();
       this.o.auth.purgeAll();
+      await this.reloadPolicies();
       await this.reloadAll();
     } catch (err) {
       this.o.log.warn({ code: errorCode(err) }, 'listen reconnect failed');

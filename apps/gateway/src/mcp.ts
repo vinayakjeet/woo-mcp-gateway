@@ -7,6 +7,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { errorCode } from '@woo/core';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
+import type { PolicyView } from './policies.js';
 import type { Router } from './registry.js';
 import type { AuditRow, AuditSink, Log, Principal } from './types.js';
 
@@ -24,6 +25,7 @@ export const LIST_CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const
 export type GatewayServerOptions = {
   principal: Principal;
   router: Router;
+  policies: PolicyView;
   audit: AuditSink;
   replica: string;
   log: Log;
@@ -35,7 +37,9 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     { capabilities: { tools: {} }, cacheHints: { 'tools/list': LIST_CACHE_HINT } },
   );
 
-  server.setRequestHandler('tools/list', () => ({ tools: o.router.list() }));
+  const allowed = (slug: string, tool: string) => o.policies.allows(o.principal.role, slug, tool);
+
+  server.setRequestHandler('tools/list', () => ({ tools: o.router.list(allowed) }));
 
   server.setRequestHandler('tools/call', async (req, ctx) => {
     const started = performance.now();
@@ -76,6 +80,13 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
       const { record } = route.upstream;
+      // Checked before the enabled flag, so a hidden tool says nothing about its server. The
+      // message is the one a missing tool gets (SPEC 6.5 step 1).
+      if (!allowed(record.slug, route.toolName)) {
+        row.outcome = 'denied';
+        row.errorMessage = 'hidden by policy';
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
+      }
       if (!record.enabled) {
         row.outcome = 'disabled';
         return toolError(`Server ${record.slug} is disabled`);

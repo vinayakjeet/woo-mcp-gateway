@@ -4,11 +4,13 @@ import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { errorCode } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { createGatewayServer } from './mcp.js';
+import type { PolicyView } from './policies.js';
 import type { Router } from './registry.js';
 import type { AuditSink, Log, Principal } from './types.js';
 
 export type GatewayAppOptions = {
   router: Router;
+  policies: PolicyView;
   audit: AuditSink;
   authenticate(header: string | undefined): Promise<Principal | null>;
   replica: string;
@@ -34,6 +36,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
       return createGatewayServer({
         principal,
         router: o.router,
+        policies: o.policies,
         audit: o.audit,
         replica: o.replica,
         log,

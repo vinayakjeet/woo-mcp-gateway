@@ -6,6 +6,7 @@ import { and, eq } from 'drizzle-orm';
 import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { definitionHash, loadServers, upsertTools, type LoadedServer } from './registry-db.js';
+import { PolicyStore } from './policies.js';
 import { GatewaySync } from './sync.js';
 import { migratedDatabase, TEST_DATABASE_URL } from './test-db.js';
 import { quietLog } from './test-helpers.js';
@@ -146,17 +147,19 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
     function start() {
       const registry = new FakeRegistry();
       const auth = { purge: vi.fn(), purgeAll: vi.fn() };
+      const policies = new PolicyStore(db);
       const sync = new GatewaySync({
         databaseUrl: url,
         db,
         kek,
         registry,
         auth,
+        policies,
         log: quietLog,
         reconnectMinMs: 20,
         reconnectMaxMs: 100,
       });
-      return { registry, auth, sync };
+      return { registry, auth, policies, sync };
     }
     const notify = (channel: string, payload: string) =>
       pool.query('select pg_notify($1, $2)', [channel, payload]);
@@ -213,6 +216,74 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
         .where(eq(schema.mcpServers.id, ids.hdr!));
       await sync.reloadAll();
       expect(registry.applied.slice(first).map((s) => s.record.slug)).toEqual(['hdr']);
+      await sync.close();
+    });
+
+    it('loads the rules at start and reloads them on NOTIFY policies_changed within 1 s', async () => {
+      const { policies, sync } = start();
+      await sync.start();
+      expect(policies.allows('member', 'hdr', 'list_things')).toBe(false);
+      const [row] = await db
+        .insert(schema.toolPolicies)
+        .values({ role: 'member', serverPattern: 'hdr', toolPattern: 'list_*', effect: 'allow' })
+        .returning({ id: schema.toolPolicies.id });
+      await notify('policies_changed', row!.id);
+      await vi.waitFor(() => expect(policies.allows('member', 'hdr', 'list_things')).toBe(true), {
+        timeout: 1000,
+      });
+      await db.delete(schema.toolPolicies).where(eq(schema.toolPolicies.id, row!.id));
+      await notify('policies_changed', row!.id);
+      await vi.waitFor(() => expect(policies.allows('member', 'hdr', 'list_things')).toBe(false), {
+        timeout: 1000,
+      });
+      await sync.close();
+    });
+
+    it('reloads the rules after the listen connection drops and comes back', async () => {
+      const { policies, sync } = start();
+      await sync.start();
+      // Inserted with no NOTIFY: only the reload after reconnecting can see it.
+      const [row] = await db
+        .insert(schema.toolPolicies)
+        .values({ role: 'member', serverPattern: 'hdr', toolPattern: 'get_*', effect: 'allow' })
+        .returning({ id: schema.toolPolicies.id });
+      expect(policies.allows('member', 'hdr', 'get_x')).toBe(false);
+      await pool.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'gateway-listen' and datname = current_database()",
+      );
+      await vi.waitFor(() => expect(policies.allows('member', 'hdr', 'get_x')).toBe(true), {
+        timeout: 3000,
+      });
+      await db.delete(schema.toolPolicies).where(eq(schema.toolPolicies.id, row!.id));
+      await sync.close();
+    });
+
+    it('keeps the old rules and retries when a policy reload fails', async () => {
+      const registry = new FakeRegistry();
+      let fail = 0;
+      const policies = {
+        load: vi.fn(async () => {
+          if (fail > 0) {
+            fail -= 1;
+            throw new Error('db down');
+          }
+        }),
+      };
+      const sync = new GatewaySync({
+        databaseUrl: url,
+        db,
+        kek,
+        registry,
+        auth: { purge: vi.fn(), purgeAll: vi.fn() },
+        policies,
+        log: quietLog,
+        policyRetryMs: 20,
+      });
+      await sync.start();
+      expect(policies.load).toHaveBeenCalledTimes(1);
+      fail = 2;
+      await notify('policies_changed', '00000000-0000-4000-8000-0000000000cc');
+      await vi.waitFor(() => expect(policies.load).toHaveBeenCalledTimes(4), { timeout: 2000 });
       await sync.close();
     });
 

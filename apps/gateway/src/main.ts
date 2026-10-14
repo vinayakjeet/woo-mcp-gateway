@@ -12,6 +12,7 @@ import type { GatewayConfig } from './config.js';
 import { buildHealthApp } from './health.js';
 import { gatewayLogger } from './logger.js';
 import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
+import { PolicyStore } from './policies.js';
 import { Registry, type RegistryOptions } from './registry.js';
 import { StatusWriter } from './status.js';
 import { GatewaySync } from './sync.js';
@@ -68,16 +69,19 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     log,
     onElected: () => registry.upstreams().forEach((u) => writeStatus(u, true)),
   });
+  const policies = new PolicyStore(db);
   const sync = new GatewaySync({
     databaseUrl: cfg.databaseUrl,
     db,
     kek: cfg.kek,
     registry,
     auth,
+    policies,
     log,
   });
   const app = buildGatewayApp({
     router: registry,
+    policies,
     audit: new PgAuditSink(db),
     authenticate: (h) => auth.authenticate(h),
     replica: cfg.replica,
