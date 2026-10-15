@@ -135,7 +135,7 @@ The dry run (step 4) was run on the local cluster on 2026-10-14 (3 rows, rolled 
 
 Stops: an external upstream changing a tool's definition or adding a tool after review, and a new external server exposing tools before review.
 
-- Hash and state: `apps/gateway/src/registry-db.ts:128` (managed servers auto-approve; external tools start `changed` until `definition_hash = approved_hash`). Only the approve call writes `approved_hash` for external tools.
+- Hash and state: `apps/gateway/src/registry-db.ts:128` (store and system servers auto-approve, a hosted server on its first sync only; external tools start `changed` until `definition_hash = approved_hash`). Only the approve call writes `approved_hash` for external tools.
 - New external servers are inserted with `approval = pending` (`apps/control-plane/src/api-servers.ts:130`). A URL change sets it back to `pending` (`:182`).
 - Approval: `apps/control-plane/src/api-approvals.ts:84` (`POST /api/servers/:id/approve`, admin; stale hashes are skipped). Page: Tool approvals, with a diff against `approved_definition`.
 
@@ -190,7 +190,7 @@ Proof (all against the local cluster; each ends `OK`):
 
 1. Tags can be re-pushed. The allowlist matches a prefix and a tag, and a registry lets the owner of a tag point it at a different image later. The pod then runs different code from the one the admin reviewed, and Kubernetes pulls it again on the next restart if the node has dropped the image (`imagePullPolicy: IfNotPresent` only protects while the node has it). A digest (`name@sha256:...`) cannot be moved. Images imported into k3d have no registry digest, so locally the allowlist is `fx-mcp:` with a tag and nothing stronger is possible. Rule: once hosted images come from a registry (M8, `ghcr.io/<owner>/`), every create must use an `@sha256` digest. The input schema accepts digests already. It does not require them. Enforcing that (a chart value that refuses tag-only references) is open work for M8.
 2. Egress is TCP 443 to public addresses only, by design. A hosted image can still send anything it receives, including tool arguments and its own secret env, to any public host on 443. Run images you built. There is no per-server egress allowlist.
-3. Tools of a hosted server are not reviewed. `upsertTools` (`apps/gateway/src/registry-db.ts`, section 7) re-approves a managed server's tools on every sync, so a replaced image can change descriptions and schemas with no pass through Tool approvals. Combined with gap 1 this is the rug-pull path for hosted servers; the digest rule is its mitigation today.
+3. Fixed. Tools of a hosted server are approved on the server's first sync only, because creating it was the admin's review of the image. After that `upsertTools` (`apps/gateway/src/registry-db.ts`, section 7) follows the external rules: a changed or added tool is `changed` and hidden until an admin approves it in Tool approvals. A replaced image can no longer change descriptions or schemas unseen, so gap 1 now ends in a visible diff. Residual: if the first sync returns no tools, the first tools to appear later are approved as a first sync.
 4. No ResourceQuota or LimitRange in `mcp-hosted`, and no cap on the number of hosted servers. The per-server caps bound one server only.
 5. If the VM's own public IP answers on 443, the SSRF note in the VM list below applies to hosted pods as well.
 
