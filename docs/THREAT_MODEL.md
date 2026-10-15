@@ -194,6 +194,15 @@ Proof (all against the local cluster; each ends `OK`):
 4. No ResourceQuota or LimitRange in `mcp-hosted`, and no cap on the number of hosted servers. The per-server caps bound one server only.
 5. If the VM's own public IP answers on 443, the SSRF note in the VM list below applies to hosted pods as well.
 
+## 12. Rate limits (M12)
+
+Stops: one key, or the agent for one user, sending enough tool calls to starve the others or to run up the upstream's cost.
+
+- Counting. `apps/gateway/src/rate-limit.ts`: one upsert per counted call on `rate_counters`, keyed by `key:<id>` (or `user:<id>` for the agent) and a one-minute window start taken from Postgres time, so every replica shares one count. The check sits in `callRouted` after the policy check, so a hidden tool is never counted. A key's own limit (admin only, `PATCH /api/keys/:id`, 1 to 10000) beats `gateway.rateLimitPerMinute`.
+- Accepted: fixed windows allow up to twice the limit across a window boundary.
+- Fails open. If the counter query errors, or takes longer than 2 s (`RATE_CHECK_TIMEOUT_MS` in `apps/gateway/src/mcp.ts`), the call goes through and the gateway logs one `warn` with the error code only (no SQL, no arguments). We chose availability over strict limiting during a database problem: a Postgres hiccup must not turn into a tool outage for every user. The cost is that, while Postgres is failing or slow, limits are not enforced. Each stalled check also delays its call by up to 2 s. Other limits still hold: the per-upstream bulkhead (8 concurrent calls, queue 32) and the circuit breaker. Keys already in the 10 s auth cache keep working, but audit writes fail too in that case, so those calls leave no audit row. Watch for the `rate limit check failed, letting the call through` warning.
+- Proof: `pnpm --filter @woo/gateway exec vitest run mcp rate-limit` (limiter error and 2 s stall rows), and the rate limit rows in `scripts/e2e.sh`.
+
 ## On the VM (M8)
 
 Cannot be finished or proven on k3d:
