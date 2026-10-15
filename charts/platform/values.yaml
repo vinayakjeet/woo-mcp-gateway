@@ -28,6 +28,9 @@ gateway:
   allowInsecureUpstreams: false
 
 agent:
+  # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (SPEC 17).
+  # search and full force the mode with ?toolMode= on the gateway URL.
+  toolMode: auto
   # OpenAI-compatible chat completions. Each environment's values file sets these (SPEC 28).
   # Keys come from Secret agent-llm: LLM_API_KEY for the primary, LLM_FALLBACK_API_KEY for the fallback.
   # The agent exits at start, naming the missing variables, while baseUrl or model is empty.

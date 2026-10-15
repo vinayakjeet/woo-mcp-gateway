@@ -370,6 +370,10 @@ done
 nf=$(show agent.yaml --set agent.llm.fallbackBaseUrl= --set agent.llm.reasoningEffort=)
 lacks "$nf" "LLM_FALLBACK" agent-without-fallback
 lacks "$nf" "LLM_REASONING_EFFORT" agent-without-fallback
+tool_mode() { awk '/name: AGENT_TOOL_MODE/{getline; print $2}' <<<"$1"; }
+[ "$(tool_mode "$a")" = '"auto"' ] || fail "agent: AGENT_TOOL_MODE defaults to auto"
+[ "$(tool_mode "$(show agent.yaml --set agent.toolMode=search)")" = '"search"' ] ||
+  fail "agent: AGENT_TOOL_MODE follows agent.toolMode"
 pass "agent"
 
 ig=$(show ingress-app.yaml)

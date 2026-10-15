@@ -32,6 +32,8 @@ spec:
               value: {{ printf "http://control-plane-internal.%s.svc.cluster.local:3001" .Release.Namespace | quote }}
             - name: GATEWAY_MCP_URL
               value: {{ printf "http://gateway.%s.svc.cluster.local:8080/mcp" .Release.Namespace | quote }}
+            - name: AGENT_TOOL_MODE
+              value: {{ .Values.agent.toolMode | quote }}
             - name: INTERNAL_SECRET
               valueFrom: { secretKeyRef: { name: platform-crypto, key: INTERNAL_SECRET } }
             - name: LLM_BASE_URL

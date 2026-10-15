@@ -55,4 +55,22 @@ describe('loadConfig', () => {
     const c = loadConfig({ ...env, PORT: '3999', LLM_REASONING_EFFORT: 'low' });
     expect([c.port, c.reasoningEffort]).toEqual([3999, 'low']);
   });
+
+  describe('AGENT_TOOL_MODE', () => {
+    it.each(['search', 'full'])('appends ?toolMode=%s to the gateway URL', (mode) => {
+      expect(loadConfig({ ...env, AGENT_TOOL_MODE: mode }).gatewayMcpUrl).toBe(
+        `http://gateway.platform.svc.cluster.local:8080/mcp?toolMode=${mode}`,
+      );
+    });
+
+    it.each([undefined, '', 'auto'])('leaves the URL unchanged for %j', (mode) => {
+      expect(loadConfig({ ...env, AGENT_TOOL_MODE: mode }).gatewayMcpUrl).toBe(env.GATEWAY_MCP_URL);
+    });
+
+    it.each(['bogus', 'SEARCH', 'search '])('fails at start for %j', (mode) => {
+      expect(() => loadConfig({ ...env, AGENT_TOOL_MODE: mode })).toThrow(
+        'AGENT_TOOL_MODE must be auto, search or full',
+      );
+    });
+  });
 });
