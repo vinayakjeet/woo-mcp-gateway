@@ -1,8 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
-import { errorCode } from '@woo/core';
+import { errorCode, requestIdOptions } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { createGatewayServer, type GatewayServerOptions } from './mcp.js';
 import { parseToolModeOverride } from './search.js';
@@ -32,12 +31,7 @@ const rpcError = (code: number, message: string) => ({
 
 export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
   // Ids are ours alone: a client header cannot choose what appears in the logs or the audit log.
-  const app = Fastify({
-    logger: o.logger ?? false,
-    genReqId: () => randomUUID(),
-    requestIdHeader: false,
-    requestIdLogLabel: 'request_id',
-  });
+  const app = Fastify({ logger: o.logger ?? false, ...requestIdOptions });
   const log: Log = app.log;
   const allowed = new Set(o.allowedOrigins);
 

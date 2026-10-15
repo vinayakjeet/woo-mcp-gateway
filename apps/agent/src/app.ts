@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { errorCode, newTraceparent, traceIdOf } from '@woo/core';
+import { errorCode, newTraceparent, requestIdOptions, traceIdOf } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 import { UserFacingError } from './errors.js';
@@ -37,12 +36,7 @@ export function buildApp(
   deps: AppDeps,
   logger: FastifyServerOptions['logger'] = false,
 ): FastifyInstance {
-  const app = Fastify({
-    logger,
-    genReqId: () => randomUUID(),
-    requestIdHeader: false,
-    requestIdLogLabel: 'request_id',
-  });
+  const app = Fastify({ logger, ...requestIdOptions });
   app.get('/healthz', async () => 'ok');
   // SPEC 13 gives the agent no database, so there is no schema version to wait for.
   app.get('/readyz', async () => 'ready');
