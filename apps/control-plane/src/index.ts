@@ -5,6 +5,7 @@ import { apiRoutes } from './api.js';
 import { buildInternalApp, buildPublicApp } from './app.js';
 import { requireEnv } from './env.js';
 import { helmCli } from './helm.js';
+import { loadHostedConfig } from './hosted-input.js';
 import { introspectRoutes } from './internal-introspect.js';
 import { inClusterKube } from './kube.js';
 import { Provisioner } from './provisioner.js';
@@ -36,6 +37,7 @@ await pub.register(apiRoutes, {
   pepper: env.API_KEY_PEPPER,
   kek,
   provisioner,
+  hosted: loadHostedConfig(process.env),
   checkUrl: urlCheckFromEnv(process.env),
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
