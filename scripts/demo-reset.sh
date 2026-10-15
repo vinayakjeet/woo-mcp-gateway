@@ -3,8 +3,20 @@
 # asha@example.com active, and exactly one live API key, named demo, owned by the admin.
 # Orders, products, other users and the chat history (kept in each browser) are left alone.
 # Needs kubectl, curl and jq. Secrets go to files under $S (mode 600) and are never printed.
+#
+# --reset-member-password sets a new random password for the member, written to
+# .notes/demo/asha.pw (mode 600). It runs the app's own argon2 hash inside the control-plane pod and
+# updates that one user's password_hash, so use it for an account created earlier whose password
+# nobody kept. There is no reset API.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+reset_pw=false
+case "${1:-}" in
+  --reset-member-password) reset_pw=true ;;
+  '') ;;
+  *) echo "usage: $0 [--reset-member-password]" >&2; exit 2 ;;
+esac
 
 : "${S:?set S to a private scratch directory}"
 APP=${APP:-http://app.127.0.0.1.nip.io}
@@ -76,6 +88,39 @@ case "$(jq -r .status <<<"$asha")" in
     ;;
 esac
 pass "$DEMO_MEMBER is an active member"
+
+if $reset_pw; then
+  mkdir -p .notes/demo
+  chmod 700 .notes/demo
+  head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >.notes/demo/asha.pw
+  chmod 600 .notes/demo/asha.pw
+  # The password and email travel on stdin, so they never reach argv or the pod's process list.
+  jq -n --rawfile pw .notes/demo/asha.pw --arg email "$DEMO_MEMBER" '{password: $pw, email: $email}' |
+    kubectl -n platform exec -i deploy/control-plane -c control-plane -- node -e '
+      const { hash } = require("@node-rs/argon2");
+      const { Client } = require("pg");
+      let raw = "";
+      process.stdin.on("data", (c) => (raw += c));
+      process.stdin.on("end", async () => {
+        const { password, email } = JSON.parse(raw);
+        const db = new Client({ connectionString: process.env.DATABASE_URL });
+        await db.connect();
+        const r = await db.query(
+          "update users set password_hash = $1 where email = $2 and role = $3 and status = $4",
+          [await hash(password), email, "member", "active"],
+        );
+        await db.end();
+        if (r.rowCount !== 1) { console.error("rows updated: " + r.rowCount); process.exit(1); }
+      });
+    ' || fail "could not set the $DEMO_MEMBER password"
+  # Proves the new password works through the real login route.
+  jq -n --rawfile pw .notes/demo/asha.pw --arg e "$DEMO_MEMBER" '{email: $e, password: $pw}' >"$S/asha-login.json"
+  r=$(curl -s -o /dev/null -w '%{http_code}' -H "origin: $APP" -H 'content-type: application/json' \
+    --data-binary @"$S/asha-login.json" "$APP/api/auth/login")
+  rm -f "$S/asha-login.json"
+  [ "$r" = 200 ] || fail "login as $DEMO_MEMBER with the new password gave $r"
+  pass "$DEMO_MEMBER password reset; it is in .notes/demo/asha.pw"
+fi
 
 # Every live key except the newest admin key named demo goes: keys from test runs, smoke checks
 # and earlier demos, of every user.
