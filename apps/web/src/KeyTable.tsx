@@ -10,7 +10,7 @@ export function KeyTable({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: Api
     <table className="w-full border-collapse rounded border border-line bg-panel">
       <thead>
         <tr>
-          {['Name', 'Prefix', 'Created', 'Last used', 'Status', ''].map((h) => (
+          {['Name', 'Prefix', 'Mode', 'Created', 'Last used', 'Status', ''].map((h) => (
             <th key={h} className={th}>
               {h}
             </th>
@@ -24,6 +24,7 @@ export function KeyTable({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: Api
             <tr key={k.id}>
               <td className={td}>{k.name}</td>
               <td className={`${td} font-mono`}>urk_{k.prefix}</td>
+              <td className={td}>{k.toolMode}</td>
               <td className={td}>{formatTs(k.createdAt)}</td>
               <td className={td}>{k.lastUsedAt ? ago(k.lastUsedAt, now) : 'never'}</td>
               <td className={td}>

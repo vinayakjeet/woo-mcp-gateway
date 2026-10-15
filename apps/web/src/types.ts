@@ -2,6 +2,7 @@ export type Role = 'admin' | 'member';
 export type Tone = 'ok' | 'bad' | 'warn' | 'off' | 'idle';
 export type Me = { id: string; email: string; name: string | null; role: Role };
 export type Config = { gatewayUrl: string; version: string };
+export type ToolMode = 'auto' | 'search' | 'full';
 export type ApiKey = {
   id: string;
   name: string;
@@ -10,6 +11,7 @@ export type ApiKey = {
   lastUsedAt: string | null;
   revokedAt: string | null;
   expiresAt: string | null;
+  toolMode: ToolMode;
 };
 export type Member = {
   id: string;
