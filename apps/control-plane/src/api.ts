@@ -8,6 +8,7 @@ import { keyRoutes } from './api-keys.js';
 import { policyRoutes } from './api-policies.js';
 import { userRoutes } from './api-users.js';
 import { serverRoutes } from './api-servers.js';
+import { statsRoutes } from './api-stats.js';
 import { storeRoutes } from './api-stores.js';
 import { sessionRoutes, sessionUser, sidFromCookie } from './api-session.js';
 import type { HostedConfig } from './hosted-input.js';
@@ -47,4 +48,5 @@ export async function apiRoutes(scope: FastifyInstance, o: ApiOptions): Promise<
   storeRoutes(scope, o);
   hostedRoutes(scope, o);
   auditRoutes(scope, o);
+  statsRoutes(scope, o);
 }
