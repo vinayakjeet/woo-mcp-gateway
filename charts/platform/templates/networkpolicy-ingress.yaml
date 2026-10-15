@@ -58,6 +58,13 @@ spec:
       ports:
         - protocol: TCP
           port: 3001
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        {{- include "platform.fromPod" (list . "prometheus") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3001
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -78,6 +85,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        {{- include "platform.fromPod" (list . "prometheus") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 9090
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

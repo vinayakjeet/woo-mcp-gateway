@@ -1,0 +1,31 @@
+{{- if .Values.monitoring.enabled }}
+# Prometheus scrapes two ports and nothing else. DNS comes from allow-dns. The matching ingress
+# rules are in networkpolicy-ingress.yaml, so the gateway and control-plane list who may call them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-egress
+  labels:
+    {{- include "platform.labels" (list . "prometheus") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "prometheus") | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "platform.selectorLabels" (list . "gateway") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "platform.selectorLabels" (list . "control-plane") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 3001
+{{- end }}

@@ -83,6 +83,16 @@ hosted:
   maxCpu: 500m
   maxMemory: 256Mi
 
+# SPEC 20 (M12): one Prometheus that scrapes the gateway (9090) and the control-plane (3001). Off by
+# default and not in values-local; turn it on with --set monitoring.enabled=true. No Grafana, no
+# Ingress, no Service: use kubectl port-forward. The image is a third-party one, so it is not under
+# images.registry; it needs an explicit tag and is never latest.
+monitoring:
+  enabled: false
+  image: prom/prometheus:v3.15.0
+  retentionTime: 24h
+  retentionSize: 512MB
+
 fxMcp:
   slug: fx
   name: Currency
