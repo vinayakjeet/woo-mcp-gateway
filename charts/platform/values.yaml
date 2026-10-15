@@ -26,6 +26,8 @@ gateway:
   # connect-time check read the same value. Private, loopback, link-local and cluster addresses
   # stay refused either way. Keep false in production.
   allowInsecureUpstreams: false
+  # Tool calls per minute for a key without its own limit, and for the agent (SPEC 19).
+  rateLimitPerMinute: 60
 
 agent:
   # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (SPEC 17).

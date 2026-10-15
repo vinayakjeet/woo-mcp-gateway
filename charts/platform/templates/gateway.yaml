@@ -42,6 +42,8 @@ spec:
               value: {{ include "platform.gatewayAllowedOrigins" . | quote }}
             - name: ALLOW_INSECURE_UPSTREAMS
               value: {{ .Values.gateway.allowInsecureUpstreams | default false | toString | quote }}
+            - name: RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.gateway.rateLimitPerMinute | int | quote }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           readinessProbe:

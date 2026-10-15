@@ -212,6 +212,14 @@ for f in gateway.yaml control-plane.yaml; do
 done
 [ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -c '"true"')" = 0 ] ||
   fail "values-local.yaml turns on insecure upstreams"
+env_value() { # rendered gateway manifest, env var name
+  grep -A1 "name: $2\$" <<<"$1" | sed -n 's/.*value: //p'
+}
+[ "$(env_value "$gw" RATE_LIMIT_PER_MINUTE)" = '"120"' ] || fail "values-local: RATE_LIMIT_PER_MINUTE is not 120"
+defaults=$(helm template platform charts/platform --namespace platform --set mcp.sharedToken=x --show-only templates/gateway.yaml)
+[ "$(env_value "$defaults" RATE_LIMIT_PER_MINUTE)" = '"60"' ] || fail "chart defaults: RATE_LIMIT_PER_MINUTE is not 60"
+[ "$(env_value "$(show gateway.yaml --set gateway.rateLimitPerMinute=15)" RATE_LIMIT_PER_MINUTE)" = '"15"' ] ||
+  fail "gateway.rateLimitPerMinute does not reach RATE_LIMIT_PER_MINUTE"
 pass "gateway"
 
 fx=$(show fx-mcp.yaml)
