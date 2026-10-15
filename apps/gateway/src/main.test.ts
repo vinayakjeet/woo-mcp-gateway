@@ -89,6 +89,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
         port: 0,
         healthPort: 0,
         allowInsecureUpstreams: false,
+        rateLimitPerMinute: 60,
       },
       { host: '127.0.0.1', logger: false, upstream: { healthIntervalMs: 200 } },
     );

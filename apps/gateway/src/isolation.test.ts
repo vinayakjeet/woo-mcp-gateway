@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as z from 'zod';
 import { buildGatewayApp } from './app.js';
 import { Registry } from './registry.js';
+import { unlimited } from './test-helpers.js';
 import type { AuditRow, Log, Principal, ServerRecord } from './types.js';
 
 const TOKEN = 'upstream-token-not-a-secret';
@@ -20,6 +21,7 @@ const principal: Principal = {
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
   toolMode: 'full',
+  rateLimitPerMin: null,
 };
 
 type Fake = Awaited<ReturnType<typeof startMcpHttpServer>>;
@@ -97,6 +99,7 @@ describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (
       router: registry,
       policies: { allows: () => true },
       audit: { write: async (row) => void audit.push(row) },
+      limiter: unlimited,
       authenticate: async (h) => (h === 'Bearer good' ? principal : null),
       replica: 'test-replica',
       allowedOrigins: [],

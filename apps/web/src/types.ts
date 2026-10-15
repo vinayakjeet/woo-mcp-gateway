@@ -12,6 +12,8 @@ export type ApiKey = {
   revokedAt: string | null;
   expiresAt: string | null;
   toolMode: ToolMode;
+  // Calls per minute for this key. Null means the gateway default.
+  rateLimitPerMin: number | null;
 };
 export type Member = {
   id: string;
@@ -144,3 +146,22 @@ export type ApprovalServer = {
   tools: ApprovalTool[];
 };
 export type ApproveResult = { approved: string[]; stale: string[] };
+
+export type ServerHealth = {
+  slug: string;
+  name: string;
+  kind: Server['kind'];
+  enabled: boolean;
+  approval: 'approved' | 'pending';
+  state: ServerState | null;
+  errorKind: string | null;
+  errorMessage: string | null;
+  checkedAt: string | null;
+  calls: number;
+  callsPerMinute: number;
+  outcomes: Record<string, number>;
+  errorRate: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+};
+export type HealthResponse = { windowMinutes: number; servers: ServerHealth[] };

@@ -15,6 +15,10 @@ agent:
     fallbackModel: openai/gpt-oss-120b
 
 # Stores from the dashboard (SPEC 18, M9).
+gateway:
+  # Roomy for demos and e2e; the chart default is 60.
+  rateLimitPerMinute: 120
+
 provisioner:
   enabled: true
 

@@ -1,6 +1,13 @@
 import { hash, verify } from '@node-rs/argon2';
 import rateLimit from '@fastify/rate-limit';
-import { errorCode, generateSessionToken, sessionCookie, sessionExpiresAt } from '@woo/core';
+import {
+  errorCode,
+  METRICS_CONTENT_TYPE,
+  generateSessionToken,
+  requestIdOptions,
+  sessionCookie,
+  sessionExpiresAt,
+} from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 
@@ -61,7 +68,7 @@ export function buildPublicApp(
 ): FastifyInstance {
   // One hop: Traefik appends the client address, so the last X-Forwarded-For entry is the real one.
   // Trusting the whole header would let a client pick its own rate-limit bucket.
-  const app = Fastify({ logger, trustProxy: (_addr, hop) => hop < 1 });
+  const app = Fastify({ logger, ...requestIdOptions, trustProxy: (_addr, hop) => hop < 1 });
   installErrorHandler(app);
   // Verified when the user is missing or not active, so response time does not reveal which emails exist.
   // The catch keeps a failed hash from becoming an unhandled rejection at startup; verify then fails closed.
@@ -123,13 +130,20 @@ export function buildPublicApp(
 export function buildInternalApp(
   deps: Deps,
   logger: FastifyServerOptions['logger'] = false,
+  metrics?: { render(): Promise<string> },
 ): FastifyInstance {
-  const app = Fastify({ logger });
+  const app = Fastify({ logger, ...requestIdOptions });
   installErrorHandler(app);
   app.get('/healthz', async () => 'ok');
   app.get('/readyz', async (_req, reply) => {
     const ready = await deps.ping().catch(() => false);
     return reply.code(ready ? 200 : 503).send(ready ? 'ready' : 'not ready');
   });
+  // Port 3001 only: no Ingress routes it, and the NetworkPolicy admits Prometheus and the kubelet.
+  if (metrics) {
+    app.get('/metrics', async (_req, reply) =>
+      reply.header('content-type', METRICS_CONTENT_TYPE).send(await metrics.render()),
+    );
+  }
   return app;
 }

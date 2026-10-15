@@ -2,7 +2,7 @@
 # Live checks against the cluster: login, keys, a revoked key rejected within 1 s, server disable
 # and enable, the store name, a dead upstream (fx-mcp at zero), woo-mcp reachable only from the
 # gateway, invites, audit attribution and member scoping, role policies (hidden tools, a deny rule
-# added and removed), tool search mode, disabling a member, and one agent turn.
+# added and removed), tool search mode, a per-key rate limit, disabling a member, and one agent turn.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,6 +26,16 @@ count_prefix() {
   local out
   out=$(tools "$1") || true
   grep -c "^${2}__" <<<"$out" || true
+}
+psql_one() { kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c "$1"; }
+# fx_answered KEY KEY_ID: calls fx__get_info and is true when the gateway reached fx-mcp and it
+# answered (audit outcome ok or tool_error), so a rates API outage does not fail e2e.
+fx_answered() {
+  local outcome
+  tools "$1" fx__get_info >/dev/null 2>&1 || true
+  outcome=$(psql_one "select outcome from audit_events where api_key_id = '$2'
+    and exposed_name = 'fx__get_info' order by ts desc, id desc limit 1")
+  [ "$outcome" = ok ] || [ "$outcome" = tool_error ]
 }
 
 admin_login admin.jar
@@ -122,7 +132,7 @@ pass "fx shown unreachable; tools/list took $t s with main tools and no fx tools
 restore_fx
 kubectl -n platform rollout status deploy/fx-mcp --timeout=120s >/dev/null
 t0=$(date +%s%N)
-until tools k2 fx__get_info >/dev/null 2>&1; do
+until fx_answered k2 "$k2_id"; do
   [ "$(ms_since "$t0")" -lt 60000 ] || fail "fx not answering 60 s after scaling back"
   sleep 1
 done
@@ -182,8 +192,8 @@ save_key "$(body "$r")" k3
 r=$(req member.jar POST /api/keys "{\"name\":\"$run-member-2\"}")
 k4_id=$(body "$r" | jq -r .key.id)
 save_key "$(body "$r")" k4
-tools k3 fx__get_info >/dev/null || fail "member call fx__get_info"
-tools k2 fx__get_info >/dev/null || fail "admin call fx__get_info"
+fx_answered k3 "$k3_id" || fail "member call fx__get_info"
+fx_answered k2 "$k2_id" || fail "admin call fx__get_info"
 
 t0=$(date +%s%N)
 until body "$(req member.jar GET /api/audit)" |
@@ -278,7 +288,6 @@ pass "the member's audit view has one denied row for main__create_product"
 
 # SPEC 17: tool search mode. ?toolMode=search lists only the two meta-tools, search_tools ranks the
 # principal's visible tools, and call_tool goes through the same checks and audit as a direct call.
-psql_one() { kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c "$1"; }
 search_tools() { MCP="$MCP?toolMode=search" tools "$@"; }
 search_names=$(MCP="$MCP?toolMode=search" list_names k2) || fail "search-mode tools/list"
 [ "$search_names" = $'call_tool\nsearch_tools' ] || fail "search mode listed: $search_names"
@@ -289,10 +298,12 @@ found=$(search_tools k2 search_tools '{"query":"convert currency"}' | head -n1)
 [ "$(jq -r '.tools[0].name' <<<"$found")" = fx__convert_currency ] || fail "search ranked: $(jq -c '[.tools[].name]' <<<"$found")"
 pass "search_tools 'convert currency' puts fx__convert_currency first"
 
-search_tools k2 call_tool '{"name":"fx__get_info"}' >/dev/null || fail "call_tool fx__get_info"
+# A tool error (rates API down) still proves call_tool reached fx-mcp; the audit row decides.
+search_tools k2 call_tool '{"name":"fx__get_info"}' >/dev/null 2>&1 || true
 t0=$(date +%s%N)
 until [ "$(psql_one "select count(*) from audit_events where api_key_id = '$k2_id' and meta_tool = 'call_tool'
-  and tool_name = 'get_info' and exposed_name = 'fx__get_info' and server_slug = 'fx' and outcome = 'ok'")" -ge 1 ]; do
+  and tool_name = 'get_info' and exposed_name = 'fx__get_info' and server_slug = 'fx'
+  and outcome in ('ok', 'tool_error')")" -ge 1 ]; do
   [ "$(ms_since "$t0")" -lt 3000 ] || fail "no audit row for get_info with meta_tool = call_tool"
   sleep 0.2
 done
@@ -331,6 +342,37 @@ save_key "$(body "$r")" k5
 body "$(req admin.jar GET /api/keys)" | jq -e --arg id "$k5_id" 'any(.keys[]; .id == $id and .toolMode == "search")' >/dev/null ||
   fail "GET /api/keys lacks the key's toolMode"
 pass "a key created in search mode lists two tools; ?toolMode=full lists them all"
+
+# SPEC 19: a key limited to 3 calls a minute. All counted calls must share one window, so wait
+# for the start of a minute when fewer than 15 seconds of this one are left.
+while [ "$((10#$(date +%S)))" -ge 45 ]; do sleep 1; done
+since_rl=$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)
+r=$(req admin.jar POST /api/keys "{\"name\":\"$run-limited\"}")
+[ "$(code "$r")" = 201 ] || fail "create limited key gave $(code "$r")"
+k6_id=$(body "$r" | jq -r .key.id)
+save_key "$(body "$r")" k6
+r=$(req admin.jar PATCH "/api/keys/$k6_id" '{"rateLimitPerMin":3}')
+[ "$(code "$r")" = 200 ] && [ "$(body "$r" | jq -r .key.rateLimitPerMin)" = 3 ] || fail "set the limit to 3 gave $(code "$r")"
+rate_text='^Rate limit exceeded, retry in [0-9]+ s$'
+for i in 1 2 3; do
+  out=$(tools k6 main__get_info 2>&1) || fail "limited key, call $i of 3 failed: $out"
+done
+out=$(tools k6 main__get_info 2>&1) && fail "the 4th call on a key limited to 3 was not refused"
+grep -Eq "$rate_text" <<<"$out" || fail "the 4th call answered: $out"
+pass "a key limited to 3 gets 3 ok calls, then 'Rate limit exceeded, retry in N s' as a tool error"
+out=$(tools k6 call_tool '{"name":"main__get_info"}' 2>&1) && fail "call_tool got past the limit"
+grep -Eq "$rate_text" <<<"$out" || fail "call_tool answered: $out"
+[ -n "$(list_names k6)" ] || fail "tools/list was refused for the limited key"
+pass "call_tool is refused the same way, and tools/list still answers"
+tools k2 main__get_info >/dev/null || fail "k2 main__get_info was limited"
+pass "another key of the same user is not limited"
+t0=$(date +%s%N)
+until body "$(req admin.jar GET "/api/audit?user=$admin_id&outcome=rate_limited&from=$since_rl")" |
+  jq -e 'any(.items[]; .exposedName == "main__get_info") and any(.items[]; (.errorMessage // "") | test("^Rate limit exceeded"))' >/dev/null; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "no rate_limited audit row for the limited key"
+  sleep 0.2
+done
+pass "the audit API shows rate_limited rows"
 
 # Disabling the member ends their session and drops both of their cached keys in the gateway at once.
 for k in k3 k4; do [ "$(mcp_status "$k")" != 401 ] || fail "member key $k rejected before disable"; done
@@ -371,7 +413,7 @@ else
   pass "the agent answered one tool-calling turn, audited via agent to $admin_email"
 fi
 
-for id in "$k2_id" "$k3_id" "$k4_id" "$k5_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
-rm -f "$S"/k[1-5] "$S"/k[1-5].hdr "$S"/admin.jar "$S"/member.jar
+for id in "$k2_id" "$k3_id" "$k4_id" "$k5_id" "$k6_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
+rm -f "$S"/k[1-6] "$S"/k[1-6].hdr "$S"/admin.jar "$S"/member.jar
 pass "cleanup: e2e keys revoked, member disabled"
 echo OK

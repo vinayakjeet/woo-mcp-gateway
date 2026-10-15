@@ -8,6 +8,7 @@ import { helmCli } from './helm.js';
 import { loadHostedConfig } from './hosted-input.js';
 import { introspectRoutes } from './internal-introspect.js';
 import { inClusterKube } from './kube.js';
+import { createProvisionerMetrics } from './metrics.js';
 import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
 import { urlCheckFromEnv } from './ssrf.js';
@@ -43,7 +44,8 @@ await pub.register(apiRoutes, {
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
 });
-const internal = buildInternalApp(deps, logger);
+const metrics = createProvisionerMetrics(pool);
+const internal = buildInternalApp(deps, logger, metrics);
 // The agent JWT audience is the gateway's public URL, the same GATEWAY_URL the gateway checks.
 await internal.register(introspectRoutes, {
   pool,
@@ -69,6 +71,7 @@ if (provisioner) {
       chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',
       workDir: tmpdir(),
       log: provisionerLog,
+      onReady: (seconds) => metrics.storeReady(seconds),
     },
     hosted: { pool, kek, kube, config: hostedConfig, log: provisionerLog },
   });

@@ -51,6 +51,7 @@ async function fakeControlPlane() {
 let cp: Awaited<ReturnType<typeof fakeControlPlane>>;
 let gw: Awaited<ReturnType<typeof startMcpHttpServer>>;
 const gatewayCalls: string[] = [];
+const gatewayTraces: unknown[] = [];
 const closers: Array<() => Promise<unknown>> = [];
 
 beforeAll(async () => {
@@ -65,8 +66,9 @@ beforeAll(async () => {
       s.registerTool(
         'main__get_info',
         { description: 'Store name and currency.', inputSchema: z.object({}) },
-        async () => {
+        async (_args, ctx) => {
           gatewayCalls.push('main__get_info');
+          gatewayTraces.push(ctx.mcpReq._meta?.traceparent);
           return {
             content: [{ type: 'text' as const, text: 'Main Store' }],
             structuredContent: { name: 'Main Store', currency: 'INR' },
@@ -83,24 +85,32 @@ afterAll(async () => {
 });
 afterEach(async () => {
   gatewayCalls.length = 0;
+  gatewayTraces.length = 0;
   await Promise.all(closers.splice(0).map((c) => c()));
 });
 
-async function agent(script: FakeReply[], over: Partial<AppDeps> = {}) {
+async function agent(
+  script: FakeReply[],
+  over: Partial<AppDeps> = {},
+  logger: Parameters<typeof buildApp>[1] = false,
+) {
   const llm = await fakeLlm(script);
-  const app = buildApp({
-    appOrigin: ORIGIN,
-    introspect: (cookie) => introspect({ baseUrl: cp.url, secret: SECRET, cookie }),
-    connect: (token) => connectGateway(`${gw.url}/mcp`, token),
-    model: () =>
-      new ChatModel({
-        primary: { name: 'primary', baseUrl: llm.url, model: 'fake-model', apiKey: 'fake-key' },
-        fallback: null,
-        reasoningEffort: null,
-      }),
-    now: () => new Date('2026-10-12T10:00:00Z'),
-    ...over,
-  });
+  const app = buildApp(
+    {
+      appOrigin: ORIGIN,
+      introspect: (cookie) => introspect({ baseUrl: cp.url, secret: SECRET, cookie }),
+      connect: (token, traceparent) => connectGateway(`${gw.url}/mcp`, token, traceparent),
+      model: () =>
+        new ChatModel({
+          primary: { name: 'primary', baseUrl: llm.url, model: 'fake-model', apiKey: 'fake-key' },
+          fallback: null,
+          reasoningEffort: null,
+        }),
+      now: () => new Date('2026-10-12T10:00:00Z'),
+      ...over,
+    },
+    logger,
+  );
   await app.listen({ port: 0, host: '127.0.0.1' });
   closers.push(() => app.close(), llm.close);
   return { llm, url: `http://127.0.0.1:${(app.server.address() as AddressInfo).port}` };
@@ -261,6 +271,63 @@ describe('POST /api/chat', () => {
     const raw = await (await post(url)).text();
     expect(raw).toContain(': keepalive\n\n');
     expect(parse(raw).map((e) => e.event)).toEqual(['text', 'done']);
+  });
+});
+
+describe('trace context and request ids', () => {
+  const lines: string[] = [];
+  const sink = { write: (m: string) => void lines.push(m) };
+
+  it('sends one trace per turn, with a new parent id on every gateway call', async () => {
+    lines.length = 0;
+    const { url } = await agent(
+      [
+        { chunks: toolCallChunks('c1', 'main__get_info', '{}') },
+        { chunks: toolCallChunks('c2', 'main__get_info', '{}') },
+        { chunks: textChunks('Done.') },
+      ],
+      {},
+      { level: 'info', stream: sink },
+    );
+    await (await post(url)).text();
+    expect(gatewayTraces).toHaveLength(2);
+    const [a, b] = gatewayTraces.map((t) => String(t).split('-'));
+    expect(a?.[1]).toMatch(/^[0-9a-f]{32}$/);
+    expect(a?.[1]).toBe(b?.[1]);
+    expect(a?.[2]).not.toBe(b?.[2]);
+    const turn = lines.map((l) => JSON.parse(l)).find((l) => l.msg === 'chat turn');
+    expect(turn.trace_id).toBe(a?.[1]);
+  });
+
+  it('starts a new trace for the next turn', async () => {
+    const { url } = await agent([
+      { chunks: toolCallChunks('c1', 'main__get_info', '{}') },
+      { chunks: textChunks('One.') },
+      { chunks: toolCallChunks('c2', 'main__get_info', '{}') },
+      { chunks: textChunks('Two.') },
+    ]);
+    await (await post(url)).text();
+    await (await post(url)).text();
+    const ids = gatewayTraces.map((t) => String(t).split('-')[1]);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it('logs request_id as a UUID and never the session cookie or the message text', async () => {
+    lines.length = 0;
+    const { url } = await agent(
+      [{ chunks: textChunks('ok') }],
+      {},
+      { level: 'info', stream: sink },
+    );
+    await (await post(url)).text();
+    const parsed = lines.map((l) => JSON.parse(l));
+    const turn = parsed.find((l) => l.msg === 'chat turn');
+    expect(turn.request_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(lines.join('\n')).not.toContain(SID);
+    expect(lines.join('\n')).not.toContain('main store called');
   });
 });
 

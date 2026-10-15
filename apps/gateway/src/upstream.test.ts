@@ -2,7 +2,8 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { FetchLike } from '@modelcontextprotocol/client';
-import { Server } from '@modelcontextprotocol/server';
+import { McpServer, Server } from '@modelcontextprotocol/server';
+import * as z from 'zod';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Bulkhead } from './resilience.js';
 import { captureLog, fakeUpstream, quietLog, type FakeTool } from './test-helpers.js';
@@ -232,6 +233,45 @@ describe('Upstream', () => {
     const bad = await u.call('bad', {}, signal());
     expect(bad).toMatchObject({ outcome: 'tool_error', result: { isError: true } });
   });
+
+  it.each(['legacy', 'auto'] as const)(
+    'sends a traceparent as _meta and nothing else in protocol_mode %s',
+    async (protocolMode) => {
+      const metas: unknown[] = [];
+      const fake = await fakeUpstream({
+        tools: new Map(),
+        createServer: () => {
+          const s = new McpServer({ name: 'fake', version: '0.0.0' });
+          s.registerTool(
+            'echo',
+            { description: 'echo', inputSchema: z.object({}) },
+            async (_a, ctx) => {
+              metas.push(ctx.mcpReq._meta);
+              return text('ok');
+            },
+          );
+          return s;
+        },
+      });
+      cleanup.push(() => fake.close());
+      const u = new Upstream(record(fake.url, { protocolMode, auth: { type: 'none' } }), {
+        log: quietLog,
+        healthIntervalMs: 50,
+        healthTimeoutMs: 500,
+        backoffMinMs: 20,
+        backoffMaxMs: 100,
+      });
+      cleanup.push(() => u.stop());
+      u.start();
+      await connected(u);
+      const tp = '00-4bf92f3577b34da6a3ce929d0e0e4736-1122334455667788-01';
+      expect(await u.call('echo', {}, signal(), tp)).toMatchObject({ outcome: 'ok' });
+      expect(await u.call('echo', {}, signal())).toMatchObject({ outcome: 'ok' });
+      expect(metas[0]).toMatchObject({ traceparent: tp });
+      expect(Object.keys(metas[0] as object)).toEqual(['traceparent']);
+      expect(metas[1] ?? {}).not.toHaveProperty('traceparent');
+    },
+  );
 
   // Legacy era: the SDK sends notifications/cancelled in a separate POST, which a stateless upstream
   // cannot match to the running handler. In the 2026 era the aborted request stream is the cancel.

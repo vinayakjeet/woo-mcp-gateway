@@ -11,7 +11,7 @@ const app = buildApp(
     appOrigin: cfg.appOrigin,
     introspect: (cookie) =>
       introspect({ baseUrl: cfg.controlPlaneUrl, secret: cfg.internalSecret, cookie }),
-    connect: (token) => connectGateway(cfg.gatewayMcpUrl, token),
+    connect: (token, traceparent) => connectGateway(cfg.gatewayMcpUrl, token, traceparent),
     // A new model per turn: the switch to the fallback lasts for that turn only.
     model: () =>
       new ChatModel({

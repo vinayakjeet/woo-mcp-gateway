@@ -179,3 +179,25 @@ describe('Registry', () => {
     expect(onStatus).toHaveBeenCalledWith(expect.objectContaining({ state: 'disabled' }), true);
   });
 });
+
+describe('Registry.serverStats', () => {
+  it('reports up and the active tool count for connected approved servers', () => {
+    const { registry } = setup({
+      main: { tools: ['a', 'b', 'c'] },
+      down: { tools: ['x'], state: 'unreachable' },
+      pending: { tools: ['p', 'q'] },
+    });
+    registry.apply(record('main'), [
+      { name: 'a', exposedName: 'main__a', state: 'active', definitionHash: 'h' },
+      { name: 'b', exposedName: 'main__b', state: 'removed', definitionHash: 'h' },
+    ]);
+    registry.apply(record('down'));
+    registry.apply(record('pending', { approval: 'pending' }));
+    registry.apply(record('off', { enabled: false }));
+    const stats = Object.fromEntries(registry.serverStats().map((s) => [s.slug, s]));
+    expect(stats.main).toEqual({ slug: 'main', up: true, toolsExposed: 2 });
+    expect(stats.down).toEqual({ slug: 'down', up: false, toolsExposed: 0 });
+    expect(stats.pending).toEqual({ slug: 'pending', up: true, toolsExposed: 0 });
+    expect(stats.off).toEqual({ slug: 'off', up: false, toolsExposed: 0 });
+  });
+});

@@ -96,6 +96,27 @@ if [ "$A" = platform ]; then
   r=$(probe platform "$L=web" "$cp")
   blocked "$r" || fail "a web-labeled pod reached the control-plane on 3001: $r"
   pass "agent reaches gateway 8080 and control-plane 3001 only"
+
+  # Only when monitoring.enabled is on: Prometheus reaches the two metrics ports and nothing else.
+  if kubectl -n platform get deploy prometheus >/dev/null 2>&1; then
+    gwm=http://$gwpod:9090/metrics
+    cpm=http://control-plane-internal.platform.svc.cluster.local:3001/metrics
+    r=$(probe platform "$L=prometheus" "$gwm")
+    [ "${r%% *}" = 200 ] || fail "a prometheus-labeled pod got '$r' from gateway /metrics, expected 200"
+    r=$(probe platform "$L=prometheus" "$cpm")
+    [ "${r%% *}" = 200 ] || fail "a prometheus-labeled pod got '$r' from control-plane /metrics, expected 200"
+    r=$(probe platform - "$gwm")
+    blocked "$r" || fail "an unlabeled platform pod reached gateway /metrics: $r"
+    r=$(probe platform "$L=web" "$gwm")
+    blocked "$r" || fail "a web-labeled pod reached gateway /metrics: $r"
+    r=$(probe default - "$gwm")
+    blocked "$r" || fail "the default namespace reached gateway /metrics: $r"
+    for target in "$pg" "$gw" "$fx"; do
+      r=$(probe platform "$L=prometheus" "$target")
+      blocked "$r" || fail "a prometheus-labeled pod reached $target: $r"
+    done
+    pass "prometheus reaches gateway 9090 and control-plane 3001 only; other pods cannot read the gateway metrics"
+  fi
   echo OK
   exit 0
 fi
@@ -131,11 +152,17 @@ if [ "$A" = hosted ]; then
   pass "$slug cannot reach Postgres, a store's woo-mcp or a public host on port 80"
 
   # The control proves the allow comes from the slug's own policy: the same URL fails without the label.
-  r=$(probe mcp-hosted - https://api.frankfurter.app)
-  blocked "$r" || fail "an unlabeled mcp-hosted pod reached https://api.frankfurter.app: $r"
-  r=$(probe mcp-hosted "$H" https://api.frankfurter.app)
-  reached "$r" || fail "a pod labeled $H cannot reach https://api.frankfurter.app: $r"
-  pass "$slug reaches public 443 (api.frankfurter.app answered ${r%% *}); an unlabeled mcp-hosted pod does not"
+  # This row needs the internet; when this machine cannot reach the URL either, it proves nothing.
+  egress=https://api.frankfurter.dev/v1/latest
+  if ! curl -m 5 -s -o /dev/null "$egress"; then
+    echo "SKIP: public 443 egress row: this machine cannot reach $egress either"
+  else
+    r=$(probe mcp-hosted - "$egress")
+    blocked "$r" || fail "an unlabeled mcp-hosted pod reached $egress: $r"
+    r=$(probe mcp-hosted "$H" "$egress")
+    reached "$r" || fail "a pod labeled $H cannot reach $egress: $r"
+    pass "$slug reaches public 443 ($egress answered ${r%% *}); an unlabeled mcp-hosted pod does not"
+  fi
   echo OK
   exit 0
 fi

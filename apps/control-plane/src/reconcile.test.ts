@@ -110,6 +110,30 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('provisionStore (needs TEST_DATA
     }
   });
 
+  it('reports how long the store took to become ready', async () => {
+    const seen: number[] = [];
+    const { d } = setup({ onReady: (seconds) => void seen.push(seconds) });
+    const id = await add('metric');
+    await db.pool.query(
+      "update stores set created_at = now() - interval '100 seconds' where id = $1",
+      [id],
+    );
+    await provisionStore(d, await job(id));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeGreaterThanOrEqual(100);
+    expect(seen[0]).toBeLessThan(110);
+  });
+
+  it('does not report a store that was already ready', async () => {
+    const seen: number[] = [];
+    const { helm, d } = setup({ onReady: (seconds) => void seen.push(seconds) });
+    helm.releases.set('store-again/store-again', 'deployed');
+    const id = await add('again');
+    await db.pool.query("update stores set status = 'ready' where id = $1", [id]);
+    await provisionStore(d, await job(id));
+    expect(seen).toEqual([]);
+  });
+
   it('deletes the values file even when the install fails', async () => {
     const { helm, d } = setup();
     helm.failNext = 1;

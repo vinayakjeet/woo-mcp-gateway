@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { auditVersion, createGatewayServer } from './mcp.js';
 import type { Route, Router } from './registry.js';
-import { captureLog, quietLog } from './test-helpers.js';
+import type { CallLimiter } from './rate-limit.js';
+import { captureLog, quietLog, unlimited } from './test-helpers.js';
 import type { AuditRow, CallOutcome, Log, Principal, ServerRecord } from './types.js';
 
 const principal: Principal = {
@@ -14,12 +15,14 @@ const principal: Principal = {
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
   toolMode: 'full',
+  rateLimitPerMin: null,
 };
 
 type Call = (
   name: string,
   args: Record<string, unknown> | undefined,
   signal: AbortSignal,
+  traceparent?: string,
 ) => Promise<CallOutcome>;
 
 function route(slug: string, call: Call, enabled = true, toolName = 'tool'): Route {
@@ -54,6 +57,8 @@ async function connect(
     failAudit?: boolean;
     rules?: PolicyRule[];
     principal?: Principal;
+    limiter?: CallLimiter;
+    requestId?: string;
   } = {},
 ) {
   const audit: AuditRow[] = [];
@@ -74,6 +79,8 @@ async function connect(
       ? { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) }
       : allowAll,
     router,
+    limiter: o.limiter ?? unlimited,
+    requestId: o.requestId,
     replica: 'r1',
     log: o.log ?? quietLog,
     audit: {
@@ -264,6 +271,129 @@ describe('createGatewayServer', () => {
     expect(auditVersion('')).toBeNull();
   });
 
+  describe('rate limit', () => {
+    // Allows `n` checks, then refuses with 42 s. `checks` shows what was counted.
+    const limitAfter = (n: number) => {
+      const check = vi.fn(async () => ({
+        allowed: check.mock.calls.length <= n,
+        retryInSeconds: 42,
+      }));
+      return { check } satisfies CallLimiter;
+    };
+    const tool = (name: string): Tool => ({
+      name,
+      description: name,
+      inputSchema: { type: 'object' },
+    });
+
+    it('answers the call after the limit with a tool error and audits rate_limited', async () => {
+      const call = vi.fn(okCall);
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter });
+      await client.callTool({ name: 'fx__tool', arguments: {} });
+      const r = await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(r).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: 'Rate limit exceeded, retry in 42 s' }],
+      });
+      expect(call).toHaveBeenCalledOnce();
+      expect(audit.map((a) => a.outcome)).toEqual(['ok', 'rate_limited']);
+      expect(audit[1]).toMatchObject({
+        serverSlug: 'fx',
+        errorMessage: 'Rate limit exceeded, retry in 42 s',
+      });
+    });
+
+    it('counts call_tool once and limits it the same way', async () => {
+      const call = vi.fn(okCall);
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter });
+      const via = () => client.callTool({ name: 'call_tool', arguments: { name: 'fx__tool' } });
+      await via();
+      expect(limiter.check).toHaveBeenCalledTimes(1);
+      expect(await via()).toMatchObject({ isError: true });
+      expect(audit.map((a) => [a.metaTool, a.outcome])).toEqual([
+        ['call_tool', 'ok'],
+        ['call_tool', 'rate_limited'],
+      ]);
+    });
+
+    it('counts search_tools and limits it', async () => {
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({}, { tools: [tool('fx__a')], limiter });
+      await client.callTool({ name: 'search_tools', arguments: { query: 'a' } });
+      const r = await client.callTool({ name: 'search_tools', arguments: { query: 'a' } });
+      expect(r).toMatchObject({ isError: true });
+      expect(audit.map((a) => a.outcome)).toEqual(['ok', 'rate_limited']);
+    });
+
+    it('never limits tools/list', async () => {
+      const limiter = limitAfter(0);
+      const { client } = await connect({}, { tools: [tool('fx__a')], limiter });
+      for (let i = 0; i < 3; i++) await client.listTools();
+      expect(limiter.check).not.toHaveBeenCalled();
+    });
+
+    it('does not count a hidden tool or an unknown name', async () => {
+      const limiter = limitAfter(0);
+      const { client } = await connect(
+        { main__create_product: route('main', okCall, true, 'create_product') },
+        { rules: seeded, limiter },
+      );
+      await expect(
+        client.callTool({ name: 'main__create_product', arguments: {} }),
+      ).rejects.toMatchObject({ code: -32602, message: expect.stringContaining('Unknown tool') });
+      await expect(client.callTool({ name: 'nope__x', arguments: {} })).rejects.toMatchObject({
+        code: -32602,
+      });
+      expect(limiter.check).not.toHaveBeenCalled();
+    });
+
+    it('says rate limited for a disabled server when over the limit', async () => {
+      const { client, audit } = await connect(
+        { fx__tool: route('fx', okCall, false) },
+        { limiter: limitAfter(0) },
+      );
+      const r = await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(r).toMatchObject({ content: [{ text: 'Rate limit exceeded, retry in 42 s' }] });
+      expect(audit[0]?.outcome).toBe('rate_limited');
+    });
+
+    it('lets the call through and warns with a code only when the limiter throws', async () => {
+      const log = captureLog();
+      const limiter: CallLimiter = {
+        check: async () => {
+          throw Object.assign(new Error('insert into "rate_counters" values ($1)'), {
+            code: '57P01',
+          });
+        },
+      };
+      const call = vi.fn(okCall);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter, log });
+      expect(await client.callTool({ name: 'fx__tool', arguments: {} })).not.toHaveProperty(
+        'isError',
+      );
+      expect(call).toHaveBeenCalledOnce();
+      expect(audit[0]?.outcome).toBe('ok');
+      const warns = log.lines.filter((l) => l.includes('"level":"warn"'));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('57P01');
+      expect(warns[0]).not.toContain('rate_counters');
+    });
+
+    it('lets the call through after a 2 s stall', async () => {
+      const log = captureLog();
+      const limiter: CallLimiter = { check: () => new Promise(() => {}) };
+      const call = vi.fn(okCall);
+      const { client } = await connect({ fx__tool: route('fx', call) }, { limiter, log });
+      const t0 = Date.now();
+      await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(1900);
+      expect(call).toHaveBeenCalledOnce();
+      expect(log.lines.some((l) => l.includes('ETIMEDOUT'))).toBe(true);
+    }, 10_000);
+  });
+
   describe('role policy', () => {
     const tool = (name: string): Tool => ({ name, inputSchema: { type: 'object' } });
     const tools = [
@@ -380,5 +510,126 @@ describe('createGatewayServer', () => {
       expect(call).toHaveBeenCalledOnce();
       expect(audit.map((a) => a.outcome)).toEqual(['ok']);
     });
+  });
+});
+
+describe('trace context and the call log line', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const CLIENT_TP = `00-${TRACE}-00f067aa0ba902b7-01`;
+
+  it("sends the upstream the client's trace id with a new parent id", async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, _s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, _s);
+      }),
+    });
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: {},
+      _meta: { traceparent: CLIENT_TP },
+    });
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE}-[0-9a-f]{16}-01$`));
+    expect(seen[0]).not.toContain('00f067aa0ba902b7');
+  });
+
+  it.each([
+    ['an invalid traceparent', { traceparent: `00-${TRACE.toUpperCase()}-00f067aa0ba902b7-01` }],
+    ['no traceparent', {}],
+  ])('starts a new trace for %s', async (_name, meta) => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({ name: 'fx__tool', arguments: {}, _meta: meta });
+    expect(seen[0]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(seen[0]).not.toContain(TRACE.toUpperCase());
+  });
+
+  it('does not forward tracestate or any other client _meta key', async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: {},
+      _meta: { traceparent: CLIENT_TP, tracestate: 'v=secret-state', 'x-user': 'someone' },
+    });
+    // The only thing handed to an upstream call is one traceparent string.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain('secret-state');
+    expect(seen[0]).not.toContain('someone');
+  });
+
+  it('keeps the trace for call_tool inner calls', async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({
+      name: 'call_tool',
+      arguments: { name: 'fx__tool', arguments: {} },
+      _meta: { traceparent: CLIENT_TP },
+    });
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE}-`));
+  });
+
+  it('uses the request id for the audit row', async () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    const { client, audit } = await connect({ fx__tool: route('fx', okCall) }, { requestId: id });
+    await client.callTool({ name: 'fx__tool', arguments: {} });
+    expect(audit[0]?.requestId).toBe(id);
+  });
+
+  it('logs one info line per tools/call with ids and no arguments', async () => {
+    const log = captureLog();
+    const { client } = await connect(
+      { fx__tool: route('fx', okCall) },
+      { log, requestId: '11111111-2222-4333-8444-555555555555' },
+    );
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: { secret: 'argument-value-42' },
+      _meta: { traceparent: CLIENT_TP },
+    });
+    const lines = log.lines.map((l) => JSON.parse(l)).filter((l) => l.msg === 'tool call');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      level: 'info',
+      request_id: '11111111-2222-4333-8444-555555555555',
+      trace_id: TRACE,
+      user_id: principal.userId,
+      server: 'fx',
+      tool: 'tool',
+      outcome: 'ok',
+      ms: expect.any(Number),
+    });
+    const text = log.lines.join('\n');
+    expect(text).not.toContain('argument-value-42');
+    expect(text).not.toContain(principal.email);
+  });
+
+  it('logs _unknown instead of echoing an unknown name, and _search for search_tools', async () => {
+    const log = captureLog();
+    const { client } = await connect({}, { log });
+    await client.callTool({ name: 'evil__"inject', arguments: {} }).catch(() => {});
+    await client.callTool({ name: 'search_tools', arguments: { query: 'x' } });
+    const lines = log.lines.map((l) => JSON.parse(l)).filter((l) => l.msg === 'tool call');
+    expect(lines.map((l) => [l.server, l.tool])).toEqual([
+      ['_unknown', '_unknown'],
+      ['_search', 'search_tools'],
+    ]);
+    expect(log.lines.join('\n')).not.toContain('inject');
   });
 });

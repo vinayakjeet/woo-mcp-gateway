@@ -126,8 +126,11 @@ export class GatewaySync {
   }
 
   // Remember what Postgres holds before the upstream connects, so an unchanged list writes nothing.
+  // A server that never synced has no key, so its first list is written even when it is empty.
   private applyLoaded(s: LoadedServer): void {
-    this.persistedKeys.set(s.record.id, toolsKey(s.tools.filter((t) => t.state !== 'removed')));
+    if (s.synced)
+      this.persistedKeys.set(s.record.id, toolsKey(s.tools.filter((t) => t.state !== 'removed')));
+    else this.persistedKeys.delete(s.record.id);
     this.appliedRecords.set(s.record.id, recordKey(s.record));
     this.o.registry.apply(s.record, s.tools);
   }

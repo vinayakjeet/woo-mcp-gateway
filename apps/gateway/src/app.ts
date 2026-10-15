@@ -1,11 +1,13 @@
 import type { IncomingMessage } from 'node:http';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
-import { errorCode } from '@woo/core';
+import { errorCode, requestIdOptions } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { createGatewayServer, type GatewayServerOptions } from './mcp.js';
 import { parseToolModeOverride } from './search.js';
+import type { GatewayMetrics } from './metrics.js';
 import type { PolicyView } from './policies.js';
+import type { CallLimiter } from './rate-limit.js';
 import type { Router } from './registry.js';
 import type { AuditSink, Log, Principal } from './types.js';
 
@@ -13,6 +15,8 @@ export type GatewayAppOptions = {
   router: Router;
   policies: PolicyView;
   audit: AuditSink;
+  limiter: CallLimiter;
+  metrics?: Pick<GatewayMetrics, 'observe'>;
   authenticate(header: string | undefined): Promise<Principal | null>;
   replica: string;
   allowedOrigins: string[];
@@ -28,7 +32,8 @@ const rpcError = (code: number, message: string) => ({
 });
 
 export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
-  const app = Fastify({ logger: o.logger ?? false });
+  // Ids are ours alone: a client header cannot choose what appears in the logs or the audit log.
+  const app = Fastify({ logger: o.logger ?? false, ...requestIdOptions });
   const log: Log = app.log;
   const allowed = new Set(o.allowedOrigins);
 
@@ -43,6 +48,9 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         router: o.router,
         policies: o.policies,
         audit: o.audit,
+        limiter: o.limiter,
+        metrics: o.metrics,
+        requestId: ctx.authInfo?.extra?.requestId as string | undefined,
         replica: o.replica,
         log,
       });
@@ -63,6 +71,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
   app.addHook('onRequest', async (req, reply) => {
     // setHeader on the raw response, so hijacked SDK responses carry it too.
     reply.raw.setHeader('x-gateway-replica', o.replica);
+    reply.raw.setHeader('x-request-id', req.id);
     const origin = req.headers.origin;
     if (origin !== undefined && !allowed.has(origin)) {
       return reply.code(403).send(rpcError(-32000, 'Origin not allowed'));
@@ -93,7 +102,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         token: '',
         clientId: principal.userId,
         scopes: [],
-        extra: { principal, toolModeOverride },
+        extra: { principal, toolModeOverride, requestId: req.id },
       };
       (req.raw as IncomingMessage & { auth?: AuthInfo }).auth = auth;
       reply.raw.setHeader('x-accel-buffering', 'no');

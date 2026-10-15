@@ -59,6 +59,8 @@ export type Principal = {
   via: 'api_key' | 'agent';
   apiKeyId: string | null;
   toolMode: ToolMode;
+  // The key's own limit per minute. Null means the gateway default (always null for the agent).
+  rateLimitPerMin: number | null;
 };
 
 export type Outcome = (typeof outcomeEnum.enumValues)[number];

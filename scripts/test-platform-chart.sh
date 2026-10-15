@@ -212,6 +212,14 @@ for f in gateway.yaml control-plane.yaml; do
 done
 [ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -c '"true"')" = 0 ] ||
   fail "values-local.yaml turns on insecure upstreams"
+env_value() { # rendered gateway manifest, env var name
+  grep -A1 "name: $2\$" <<<"$1" | sed -n 's/.*value: //p'
+}
+[ "$(env_value "$gw" RATE_LIMIT_PER_MINUTE)" = '"120"' ] || fail "values-local: RATE_LIMIT_PER_MINUTE is not 120"
+defaults=$(helm template platform charts/platform --namespace platform --set mcp.sharedToken=x --show-only templates/gateway.yaml)
+[ "$(env_value "$defaults" RATE_LIMIT_PER_MINUTE)" = '"60"' ] || fail "chart defaults: RATE_LIMIT_PER_MINUTE is not 60"
+[ "$(env_value "$(show gateway.yaml --set gateway.rateLimitPerMinute=15)" RATE_LIMIT_PER_MINUTE)" = '"15"' ] ||
+  fail "gateway.rateLimitPerMinute does not reach RATE_LIMIT_PER_MINUTE"
 pass "gateway"
 
 fx=$(show fx-mcp.yaml)
@@ -423,10 +431,114 @@ has "$all_notes" "admin@example.com" notes
 has "$all_notes" "kubectl -n platform get secret platform-bootstrap -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d" notes
 pass "notes"
 
+# Prometheus (M12 decision 19): optional, no Ingress, no Service, no token, two target ports.
+off_all=$(render)
+lacks "$off_all" "prom/prometheus" "monitoring off"
+lacks "$off_all" "prometheus.yml" "monitoring off"
+lacks "$netpols" "app.kubernetes.io/name: prometheus" "monitoring off: network policies"
+lacks "$(npdoc gateway-ingress)" "port: 9090" "monitoring off: gateway-ingress"
+lacks "$(npdoc control-plane-ingress)" "prometheus" "monitoring off: control-plane-ingress"
+gw=$(show gateway.yaml)
+has "$gw" "name: gateway-metrics" "gateway-metrics service"
+has "$gw" "clusterIP: None" "gateway-metrics is headless"
+pass "monitoring off renders no Prometheus object and no rule for it"
+
+mon() { show prometheus.yaml --set monitoring.enabled=true "$@"; }
+mon_cm() { show prometheus-config.yaml --set monitoring.enabled=true "$@"; }
+p=$(mon)
+for want in "kind: Deployment" "name: prometheus" "image: prom/prometheus:v3.15.0" \
+  "runAsUser: 65534" "runAsGroup: 65534" "fsGroup: 65534" "runAsNonRoot: true" "readOnlyRootFilesystem: true" \
+  "allowPrivilegeEscalation: false" "automountServiceAccountToken: false" "type: RuntimeDefault" \
+  "cpu: 50m" "memory: 128Mi" "cpu: 500m" "memory: 512Mi" "path: /-/ready" "path: /-/healthy" \
+  "sizeLimit: 1Gi" "--storage.tsdb.retention.time=24h" "--storage.tsdb.retention.size=512MB" \
+  "app.kubernetes.io/name: prometheus" "checksum/config:"; do
+  has "$p" "$want" prometheus
+done
+cm=$(mon_cm)
+for want in "kind: ConfigMap" "scrape_interval: 30s" "dns_sd_configs" "gateway-metrics.platform.svc.cluster.local" \
+  "port: 9090" "control-plane-internal.platform.svc.cluster.local:3001"; do
+  has "$cm" "$want" prometheus-config
+done
+lacks "$p" ":latest" prometheus
+lacks "$p" "kind: Service" "prometheus (port-forward only)"
+lacks "$p" "kind: Ingress" prometheus
+lacks "$p" "serviceAccountName" prometheus
+[ "$(grep -c 'prom/prometheus' <<<"$p")" -eq 1 ] || fail "prometheus image appears more than once"
+{ mon --set monitoring.image=prom/prometheus:latest 2>&1 || true; } | grep -q "monitoring.image must not use the latest tag" ||
+  fail "a latest Prometheus image was accepted"
+{ mon --set monitoring.image=prom/prometheus 2>&1 || true; } | grep -q "monitoring.image must not use the latest tag" ||
+  fail "an untagged Prometheus image was accepted"
+has "$(mon --set monitoring.retentionTime=6h)" "--storage.tsdb.retention.time=6h" "retention override"
+pass "prometheus deployment and scrape config"
+
+on_all=$(render --set monitoring.enabled=true)
+lacks "$on_all" ":latest" "monitoring on"
+on_netpols=$(awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}' <<<"$on_all")
+pe=$(npdoc prometheus-egress "$on_netpols")
+[ -n "$pe" ] || fail "no prometheus-egress policy"
+for want in "Egress" "app.kubernetes.io/name: prometheus" "app.kubernetes.io/name: gateway" "port: 9090" \
+  "app.kubernetes.io/name: control-plane" "port: 3001"; do
+  has "$pe" "$want" prometheus-egress
+done
+lacks "$pe" "5432" prometheus-egress
+lacks "$pe" "ipBlock" prometheus-egress
+lacks "$pe" "Ingress" prometheus-egress
+[ "$(grep -c 'port: ' <<<"$pe")" -eq 2 ] || fail "prometheus-egress must allow exactly two ports"
+gi=$(npdoc gateway-ingress "$on_netpols")
+has "$gi" "app.kubernetes.io/name: prometheus" gateway-ingress
+[ "$(grep -c 'port: 9090' <<<"$gi")" -eq 1 ] || fail "gateway-ingress: 9090 must be allowed once, for Prometheus"
+ci=$(npdoc control-plane-ingress "$on_netpols")
+has "$ci" "app.kubernetes.io/name: prometheus" control-plane-ingress
+[ "$(grep -c 'port: 3001' <<<"$ci")" -eq 2 ] || fail "control-plane-ingress: 3001 must be allowed for the agent and Prometheus"
+[ "$(grep -c 'podSelector: {}' <<<"$on_netpols")" -eq 4 ] || fail "Prometheus policies must not select every pod"
+pass "prometheus network policies allow exactly the two metrics ports"
+
+# Scaling (M12 decisions 20 to 22).
+gw=$(show gateway.yaml)
+has "$gw" "replicas: 1" "gateway default replicas"
+[ "$(grep -c 'kind: PodDisruptionBudget\|kind: HorizontalPodAutoscaler' <<<"$(render)")" -eq 0 ] || fail "defaults render a PDB or HPA"
+# preStop first so Traefik drops the pod before it stops listening; grace covers sleep 5 + drain 5.
+for want in "preStop:" "sleep:" "seconds: 5" "terminationGracePeriodSeconds: 15"; do
+  has "$gw" "$want" "gateway stop"
+done
+[ "$(grep -A3 'preStop:' <<<"$gw" | grep -c 'seconds: 5')" -eq 1 ] || fail "preStop sleep is not 5 s"
+
+scaled=$(render --set gateway.replicas=2 --set gateway.pdb.enabled=true)
+has "$(awk 'BEGIN{RS="---\n"} index($0, "kind: Deployment") && index($0, "\n  name: gateway\n")' <<<"$scaled")" "replicas: 2" "gateway replicas=2"
+pdb=$(awk 'BEGIN{RS="---\n"} /kind: PodDisruptionBudget/' <<<"$scaled")
+for want in "apiVersion: policy/v1" "name: gateway" "minAvailable: 1" "app.kubernetes.io/name: gateway" \
+  "app.kubernetes.io/instance: platform"; do
+  has "$pdb" "$want" "gateway pdb"
+done
+lacks "$scaled" "HorizontalPodAutoscaler" "pdb only"
+
+hpa_all=$(render --set gateway.hpa.enabled=true)
+hpa=$(awk 'BEGIN{RS="---\n"} /kind: HorizontalPodAutoscaler/' <<<"$hpa_all")
+for want in "apiVersion: autoscaling/v2" "name: gateway" "minReplicas: 2" "maxReplicas: 4" "averageUtilization: 70" \
+  "name: cpu" "kind: Deployment"; do
+  has "$hpa" "$want" "gateway hpa"
+done
+# The HPA owns the count, so a helm upgrade must not reset it.
+lacks "$(awk 'BEGIN{RS="---\n"} index($0, "kind: Deployment") && index($0, "\n  name: gateway\n")' <<<"$hpa_all")" "replicas:" "gateway deployment under the HPA"
+has "$(render --set gateway.hpa.enabled=true --set gateway.hpa.maxReplicas=6 --set gateway.hpa.targetCPUUtilizationPercentage=50 |
+  awk 'BEGIN{RS="---\n"} /kind: HorizontalPodAutoscaler/')" "maxReplicas: 6" "hpa override"
+
+err=$(helm template x charts/platform -n platform -f deploy/values-local.yaml --set mcp.sharedToken=x \
+  --set gateway.pdb.enabled=true 2>&1 >/dev/null || true)
+has "$err" "a PDB with minAvailable 1 on one replica blocks every node drain" "pdb with one replica"
+# With the HPA on there are at least two replicas, so the PDB is allowed.
+render --set gateway.pdb.enabled=true --set gateway.hpa.enabled=true >/dev/null || fail "pdb with hpa must render"
+
+# The production combination the M8 values file will set.
+prod=$(render --set gateway.replicas=2 --set gateway.pdb.enabled=true --set gateway.rateLimitPerMinute=60 \
+  --set monitoring.enabled=true --set gateway.hpa.enabled=false) || fail "production combination does not render"
+lacks "$prod" ":latest" "production combination"
+pass "gateway replicas, pdb, hpa and a drain-safe stop"
+
 { render --set global.imageTag=latest 2>&1 || true; } | grep -q "global.imageTag must not be latest" || fail "imageTag latest accepted"
 pass "imageTag latest rejected"
 
-for f in fx-mcp.yaml gateway.yaml control-plane.yaml; do
+for f in fx-mcp.yaml control-plane.yaml; do
   has "$(show "$f")" "terminationGracePeriodSeconds: 10" "$f"
 done
 pass "node services terminate within 10 s"

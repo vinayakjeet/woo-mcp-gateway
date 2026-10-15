@@ -108,6 +108,27 @@ describe.skipIf(!TEST_DATABASE_URL)('StatusWriter', () => {
     await follower.close();
   });
 
+  it('prunes rate counters from the lock holder only, once its interval runs', async () => {
+    const make = (pruneEveryMs: number) =>
+      new StatusWriter({ databaseUrl: url, db, log: quietLog, retryMs: 50, pruneEveryMs });
+    const leader = make(1_000_000);
+    const follower = make(50);
+    writers.push(leader, follower);
+    await leader.start();
+    await follower.start();
+    expect(follower.isLeader).toBe(false);
+    await db
+      .insert(schema.rateCounters)
+      .values({ subject: 'key:stale', windowStart: new Date(Date.now() - 600_000), count: 3 });
+    const stale = () =>
+      db.select().from(schema.rateCounters).where(eq(schema.rateCounters.subject, 'key:stale'));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await stale()).toHaveLength(1);
+    await leader.close();
+    await vi.waitFor(async () => expect(await stale()).toHaveLength(0), { timeout: 3000 });
+    await follower.close();
+  });
+
   it('hands the lock over when the leader closes', async () => {
     const { leader, follower, onElected } = await pair();
     await leader.close();

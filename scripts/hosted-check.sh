@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Live checks for hosted MCP servers (SPEC 21), through the dashboard API.
-#   S=<scratchpad> scripts/hosted-check.sh create|check|delete <slug>
+#   S=<scratchpad> scripts/hosted-check.sh create <slug> [NAME=VALUE ...]
+#   S=<scratchpad> scripts/hosted-check.sh check|delete|offline <slug>
 #   S=<scratchpad> scripts/hosted-check.sh all
-# create applies the demo image (fx-mcp:dev) and waits for ready. check proves the tools, the pod
-# security, the object count, the rejections and that no secret value leaks. delete proves the tools
-# vanish at once and that nothing labeled for the slug stays. all runs the three on slug fx2.
+# create applies the demo image (fx-mcp:dev) with optional plain env and waits for ready. check
+# proves the tools, the pod security, the object count, the rejections and that no secret value
+# leaks. delete proves the tools vanish at once and that nothing labeled for the slug stays. all
+# runs the three on slug fx2. offline creates the server with an unroutable rates API, expects
+# its tool calls to answer with fx_unreachable, and deletes it.
+# A tool call passes when the gateway reached the server and the server answered (audit outcome
+# ok or tool_error), so no check here needs the rates API. netpol-check.sh hosted proves egress.
 # create and delete poll through a control-plane restart, so a restart in the middle is harmless.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
@@ -26,6 +31,14 @@ row() { # slug, jq filter on that slug's row
   hosted_list | jq -r --arg s "$1" ".servers[]? | select(.slug == \$s) | $2" 2>/dev/null || true
 }
 labeled() { kubectl -n "$NS" get all,secret,netpol -l "urumi.io/hosted=$1" -o name 2>/dev/null || true; }
+# One login per run: the control-plane allows 5 logins per email per minute, and all followed by
+# offline would otherwise make 6.
+logged_in=
+login() {
+  [ -z "$logged_in" ] || return 0
+  admin_login hosted.jar
+  logged_in=1
+}
 
 KEY_IDS=()
 trap revoke_keys EXIT
@@ -42,13 +55,15 @@ revoke_keys() {
   rm -f "$S/hosted-key" "$S/hosted-key.hdr"
 }
 
-create() {
+create() { # slug [NAME=VALUE ...] as plain env
   local slug=$1 r t0 state
-  admin_login hosted.jar
+  shift
+  login
   head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$S/hosted-demo-secret"
   jq -n --arg slug "$slug" --rawfile secret "$S/hosted-demo-secret" '{
     slug: $slug, image: "fx-mcp:dev", port: 8080, path: "/mcp", cpu: "200m", memory: "128Mi",
-    secretEnv: [{name: "DEMO_SECRET", value: $secret}]}' >"$S/hosted-create.json"
+    env: ($ARGS.positional | map(capture("^(?<name>[^=]+)=(?<value>.*)$"))),
+    secretEnv: [{name: "DEMO_SECRET", value: $secret}]}' --args "$@" >"$S/hosted-create.json"
   r=$(curl -s -b "$S/hosted.jar" -H "origin: $APP" -H 'content-type: application/json' \
     --data-binary @"$S/hosted-create.json" -w '\n%{http_code}' "$APP/api/hosted")
   rm -f "$S/hosted-create.json"
@@ -63,9 +78,28 @@ create() {
   pass "$slug ready in $(($(date +%s) - t0)) s"
 }
 
-check() {
-  local slug=$1 r names n t0 count uid ro
-  admin_login hosted.jar
+# answered SLUG EXPOSED OUTPUT SINCE [WANT]: passes when the newest audit row for EXPOSED since
+# SINCE says the server answered (ok or tool_error). WANT=tool_error:<text> instead requires a tool
+# error whose output contains <text>. OUTPUT is what mcp-smoke printed for the call.
+answered() {
+  local slug=$1 exposed=$2 out=$3 since=$4 want=${5:-} outcome
+  outcome=$(body "$(req hosted.jar GET "/api/audit?server=$slug&from=$since")" |
+    jq -r --arg e "$exposed" '[.items[]? | select(.exposedName == $e)][0].outcome // "none"')
+  case $want:$outcome in
+    :ok) pass "$exposed answered ok" ;;
+    :tool_error | tool_error:*:tool_error)
+      if [ -n "$want" ] && ! grep -qF "${want#tool_error:}" <<<"$out"; then
+        fail "$exposed answered with a tool error without '${want#tool_error:}': $(head -c 60 <<<"$out")"
+      fi
+      pass "$exposed answered with a tool error ($(head -n1 <<<"$out" | head -c 60))"
+      ;;
+    *) fail "$exposed: audit outcome '$outcome' (want ${want:-ok or tool_error}); gateway status $(body "$(req hosted.jar GET /api/servers)" | jq -c --arg s "$slug" '.servers[] | select(.slug == $s) | .status | {state, errorKind}')" ;;
+  esac
+}
+
+check() { # slug [WANT for the tool calls, see answered]
+  local slug=$1 want=${2:-} r names n t0 count uid ro since out
+  login
   [ -s "$S/hosted-demo-secret" ] || fail "no $S/hosted-demo-secret: run create first"
   with_key
 
@@ -83,10 +117,19 @@ check() {
   done
   pass "tools/list shows ${slug}__get_info, ${slug}__convert_currency and ${slug}__get_rates"
 
-  tools hosted-key "${slug}__get_info" >/dev/null || fail "${slug}__get_info failed"
-  r=$(tools hosted-key "${slug}__convert_currency" '{"amount":100,"from":"USD","to":"INR"}') ||
-    fail "${slug}__convert_currency failed (no public 443 egress?): $r"
-  pass "${slug}__get_info and ${slug}__convert_currency answer (the second one needs public 443 egress)"
+  # mcp-smoke exits 1 on a tool error too; the audit row decides (see answered).
+  since=$(date -u -d '-2 sec' +%Y-%m-%dT%H:%M:%SZ)
+  out=$(tools hosted-key "${slug}__get_info" 2>&1) || true
+  answered "$slug" "${slug}__get_info" "$out" "$since" "$want"
+  out=$(tools hosted-key "${slug}__convert_currency" '{"amount":100,"from":"USD","to":"INR"}' 2>&1) || true
+  answered "$slug" "${slug}__convert_currency" "$out" "$since" "$want"
+  pass "the gateway reached $slug for both calls (public 443 egress is proven by netpol-check.sh hosted)"
+
+  # The first sync is recorded in the row, so a tool added later cannot be auto-approved.
+  out=$(kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c \
+    "select s.tools_synced_at is not null, count(*) filter (where t.state = 'active') from mcp_servers s left join mcp_tools t on t.server_id = s.id where s.slug = '$slug' group by s.id")
+  [ "$out" = "t|3" ] || fail "$slug: want tools_synced_at set with 3 active tools, got '$out'"
+  pass "$slug has tools_synced_at set and 3 active tools"
 
   [ "$(kubectl -n "$NS" get deploy,svc,netpol,secret -l "urumi.io/hosted=$slug" -o name | wc -l)" -eq 4 ] ||
     fail "expected 4 objects labeled $slug"
@@ -136,7 +179,7 @@ check() {
 
 delete() {
   local slug=$1 id t0 before after names
-  admin_login hosted.jar
+  login
   with_key
   id=$(row "$slug" .id)
   [ -n "$id" ] || fail "no hosted server $slug"
@@ -164,7 +207,7 @@ delete() {
 }
 
 case ${1:-} in
-  create) create "${2:?slug}" ;;
+  create) create "${2:?slug}" "${@:3}" ;;
   check) check "${2:?slug}" ;;
   delete) delete "${2:?slug}" ;;
   all)
@@ -172,8 +215,14 @@ case ${1:-} in
     check fx2
     delete fx2
     ;;
+  offline)
+    # TEST-NET-1 is never routed: the fetch hits fx-mcp's 10 s timeout inside the gateway's 15 s.
+    create "${2:?slug}" FX_BASE_URL=https://192.0.2.1/v1
+    check "$2" tool_error:fx_unreachable
+    delete "$2"
+    ;;
   *)
-    echo "usage: $0 create|check|delete <slug> | all" >&2
+    echo "usage: $0 create <slug> [NAME=VALUE ...] | check|delete|offline <slug> | all" >&2
     exit 2
     ;;
 esac

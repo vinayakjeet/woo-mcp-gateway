@@ -1,0 +1,22 @@
+{{- if .Values.gateway.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  labels:
+    {{- include "platform.labels" (list . "gateway") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: {{ .Values.gateway.hpa.minReplicas | int }}
+  maxReplicas: {{ .Values.gateway.hpa.maxReplicas | int }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.gateway.hpa.targetCPUUtilizationPercentage | int }}
+{{- end }}

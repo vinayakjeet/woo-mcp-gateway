@@ -9,8 +9,12 @@ const nameBody = z.object({
   name: z.string().trim().min(1).max(100),
   toolMode: z.enum(['full', 'search', 'auto']).default('auto'),
 });
+const limitBody = z.strictObject({
+  rateLimitPerMin: z.number().int().min(1).max(10000).nullable(),
+});
 const KEY_COLUMNS = `id, name, prefix, created_at as "createdAt", last_used_at as "lastUsedAt",
-  revoked_at as "revokedAt", expires_at as "expiresAt", tool_mode as "toolMode"`;
+  revoked_at as "revokedAt", expires_at as "expiresAt", tool_mode as "toolMode",
+  rate_limit_per_min as "rateLimitPerMin"`;
 
 async function listKeys(o: ApiOptions, userId: string) {
   const r = await o.pool.query(
@@ -66,6 +70,24 @@ export function keyRoutes(scope: FastifyInstance, o: ApiOptions): void {
       return true;
     });
     return revoked ? reply.code(204).send() : reply.code(404).send({ error: 'not_found' });
+  });
+
+  // The gateway caches a key row for 10 s, so a new limit applies within that time without a NOTIFY.
+  scope.patch('/api/keys/:id', { preHandler: requireAdmin }, async (req, reply) => {
+    const id = parseId(req.params);
+    if (!id) return reply.code(404).send({ error: 'not_found' });
+    const body = limitBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: 'invalid_key_patch' });
+    const r = await o.pool.query(
+      `update api_keys set rate_limit_per_min = $2 where id = $1 and revoked_at is null
+       returning ${KEY_COLUMNS}`,
+      [id, body.data.rateLimitPerMin],
+    );
+    if (r.rows[0]) return { key: r.rows[0] };
+    const exists = (await o.pool.query('select 1 from api_keys where id = $1', [id])).rowCount;
+    return exists
+      ? reply.code(409).send({ error: 'key_revoked' })
+      : reply.code(404).send({ error: 'not_found' });
   });
 
   scope.get('/api/users/:id/keys', { preHandler: requireAdmin }, async (req, reply) => {

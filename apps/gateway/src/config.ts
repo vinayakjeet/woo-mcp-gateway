@@ -13,6 +13,8 @@ export type GatewayConfig = {
   healthPort: number;
   // Lets external upstreams use http. Off unless the chart sets it to the string "true".
   allowInsecureUpstreams: boolean;
+  // Calls per minute for a key without its own limit, and for the agent.
+  rateLimitPerMinute: number;
 };
 
 const REQUIRED = [
@@ -22,6 +24,14 @@ const REQUIRED = [
   'JWT_SIGNING_KEY',
   'GATEWAY_URL',
 ] as const;
+
+function parseRateLimit(raw: string | undefined): number {
+  if (raw === undefined) return 60;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1)
+    throw new Error('RATE_LIMIT_PER_MINUTE must be a whole number of 1 or more');
+  return n;
+}
 
 // Errors name variables only, never values.
 export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
@@ -41,5 +51,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     port: Number(env.PORT ?? 8080),
     healthPort: Number(env.HEALTH_PORT ?? 9090),
     allowInsecureUpstreams: env.ALLOW_INSECURE_UPSTREAMS === 'true',
+    rateLimitPerMinute: parseRateLimit(env.RATE_LIMIT_PER_MINUTE),
   };
 }

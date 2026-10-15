@@ -15,6 +15,13 @@
       "when": 1791979078061,
       "tag": "0001_approved_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792069888498,
+      "tag": "0002_tools_synced_at",
+      "breakpoints": true
     }
   ]
 }

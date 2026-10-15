@@ -1,4 +1,4 @@
-import type { Server, Tone } from './types';
+import type { Server, ServerState, Tone } from './types';
 
 export type Pill = {
   label: 'Connected' | 'Unreachable' | 'Disabled' | 'Pending approval' | 'Checking';
@@ -7,7 +7,9 @@ export type Pill = {
 
 // enabled and approval come from mcp_servers and win; state comes from the gateway's last check
 // in mcp_server_status, which lags a change by up to a second.
-export function serverPill(s: Pick<Server, 'enabled' | 'approval' | 'status'>): Pill {
+export function serverPill(
+  s: Pick<Server, 'enabled' | 'approval'> & { status: { state: ServerState } | null },
+): Pill {
   if (!s.enabled) return { label: 'Disabled', tone: 'off' };
   if (s.approval === 'pending') return { label: 'Pending approval', tone: 'warn' };
   if (s.status?.state === 'connected') return { label: 'Connected', tone: 'ok' };

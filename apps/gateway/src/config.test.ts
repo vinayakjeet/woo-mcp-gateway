@@ -38,6 +38,16 @@ describe('loadConfig', () => {
     expect(loadConfig(full).allowedOrigins).toEqual([]);
   });
 
+  it('defaults RATE_LIMIT_PER_MINUTE to 60 and refuses 0, -1 and text', () => {
+    expect(loadConfig(full).rateLimitPerMinute).toBe(60);
+    expect(loadConfig({ ...full, RATE_LIMIT_PER_MINUTE: '120' }).rateLimitPerMinute).toBe(120);
+    for (const bad of ['0', '-1', 'many', '1.5', '']) {
+      expect(() => loadConfig({ ...full, RATE_LIMIT_PER_MINUTE: bad })).toThrow(
+        'RATE_LIMIT_PER_MINUTE',
+      );
+    }
+  });
+
   it('keeps http upstreams off unless ALLOW_INSECURE_UPSTREAMS is exactly "true"', () => {
     expect(loadConfig(full).allowInsecureUpstreams).toBe(false);
     expect(loadConfig({ ...full, ALLOW_INSECURE_UPSTREAMS: 'yes' }).allowInsecureUpstreams).toBe(

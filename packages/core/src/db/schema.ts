@@ -144,6 +144,8 @@ export const mcpServers = pgTable('mcp_servers', {
   protocolMode: protocolModeEnum('protocol_mode').notNull().default('legacy'),
   approval: approvalEnum('approval').notNull().default('approved'),
   storeId: uuid('store_id').references(() => stores.id, { onDelete: 'set null' }),
+  // Set by the first tool sync, even an empty one: a hosted server is auto-approved only then.
+  toolsSyncedAt: ts('tools_synced_at'),
   createdBy: uuid('created_by'),
   createdAt: ts('created_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),

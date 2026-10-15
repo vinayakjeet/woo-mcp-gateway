@@ -51,6 +51,8 @@ export type ReconcileDeps = {
   chartPath: string;
   workDir: string;
   log: Log;
+  // Called once with the seconds from creation to ready, only when this pass made the store ready.
+  onReady?: (seconds: number) => void;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
@@ -113,13 +115,17 @@ async function markFailed(
 
 async function markReady(d: ReconcileDeps, job: StoreJob): Promise<void> {
   await withTx(d.pool, async (c) => {
-    const r = await c.query(
+    const r = await c.query<{ seconds: number }>(
       `update stores set status = 'ready', url = $2, ready_at = now(), last_step = 'ready',
          updated_at = now()
-       where id = $1 and status = 'provisioning' returning id`,
+       where id = $1 and status = 'provisioning'
+       returning extract(epoch from (now() - created_at))::float8 as seconds`,
       [job.id, storeUrl(d.defaults, job.slug)],
     );
-    if (r.rows[0]) await notify(c, 'stores_changed', job.id);
+    if (r.rows[0]) {
+      await notify(c, 'stores_changed', job.id);
+      d.onReady?.(r.rows[0].seconds);
+    }
   });
   d.log.info({ store: job.slug }, 'store ready');
 }

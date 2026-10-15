@@ -8,3 +8,5 @@ export * from './shutdown.js';
 export * from './policy.js';
 export * from './screening.js';
 export * from './ssrf.js';
+export * from './trace.js';
+export * from './metrics.js';

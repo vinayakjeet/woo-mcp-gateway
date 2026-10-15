@@ -3,6 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createMcpHandler, type McpServer } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import { traceIdOf } from './trace.js';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest();
 
@@ -13,6 +14,38 @@ export function checkBearer(header: string | undefined, token: string): boolean 
 }
 
 const READY_TIMEOUT_MS = 2000;
+
+export type ToolCallLog = (line: Record<string, unknown>) => void;
+
+const jsonLine: ToolCallLog = (line) => console.log(JSON.stringify(line));
+
+// One line per tool call with the tool name, the caller's trace id and the time. Never arguments,
+// results or error messages: those can hold customer data. Call it on a new McpServer before any
+// registerTool, so both upstream servers share one code path without touching each tool.
+export function logToolCalls(server: McpServer, log: ToolCallLog = jsonLine): McpServer {
+  const register = server.registerTool.bind(server) as (...a: unknown[]) => unknown;
+  (server as unknown as { registerTool: unknown }).registerTool = (
+    name: string,
+    config: unknown,
+    cb: (...a: unknown[]) => unknown,
+  ) =>
+    register(name, config, async (...a: unknown[]) => {
+      const started = performance.now();
+      const ctx = a.at(-1) as { mcpReq?: { _meta?: { traceparent?: unknown } } } | undefined;
+      try {
+        return await cb(...a);
+      } finally {
+        log({
+          level: 'info',
+          msg: 'tool call',
+          tool: name,
+          trace_id: traceIdOf(ctx?.mcpReq?._meta?.traceparent),
+          ms: Math.round(performance.now() - started),
+        });
+      }
+    });
+  return server;
+}
 
 async function isReady(ready: () => Promise<boolean>): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;

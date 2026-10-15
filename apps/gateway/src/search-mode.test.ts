@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { createGatewayServer } from './mcp.js';
 import { Registry } from './registry.js';
-import { quietLog } from './test-helpers.js';
+import { unlimited, quietLog } from './test-helpers.js';
 import type {
   AuditRow,
   CallOutcome,
@@ -22,6 +22,7 @@ const member: Principal = {
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
   toolMode: 'auto',
+  rateLimitPerMin: null,
 };
 const admin: Principal = { ...member, email: 'admin@example.com', role: 'admin' };
 
@@ -111,6 +112,7 @@ async function connect(
     toolMode: o.toolMode ?? principal.toolMode,
     router: registry,
     policies: { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) },
+    limiter: unlimited,
     replica: 'r1',
     log: quietLog,
     audit: {
@@ -256,7 +258,12 @@ describe('call_tool', () => {
       arguments: { name: 'fx__get_info', arguments: { b: 2, a: 1 } },
     });
     expect(r.structuredContent).toEqual({ ran: 'get_info' });
-    expect(call).toHaveBeenCalledWith('get_info', { b: 2, a: 1 }, expect.anything());
+    expect(call).toHaveBeenCalledWith(
+      'get_info',
+      { b: 2, a: 1 },
+      expect.anything(),
+      expect.stringMatching(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/),
+    );
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({
       outcome: 'ok',

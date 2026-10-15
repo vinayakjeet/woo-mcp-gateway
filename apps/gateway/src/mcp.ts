@@ -5,10 +5,18 @@ import {
   Server,
   type CallToolResult,
 } from '@modelcontextprotocol/server';
-import { errorCode } from '@woo/core';
+import {
+  childTraceparent,
+  errorCode,
+  newTraceparent,
+  parseTraceparent,
+  type TraceParent,
+} from '@woo/core';
 import type { z } from 'zod';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
+import { serverLabel, type GatewayMetrics } from './metrics.js';
 import type { PolicyView } from './policies.js';
+import type { CallLimiter } from './rate-limit.js';
 import type { Router } from './registry.js';
 import {
   CALL_TOOL,
@@ -30,6 +38,8 @@ export const MAX_VERSION_ECHO = 32;
 // The SDK already answers 400 to an unknown version, but the audit row should not rely on that.
 export const auditVersion = (raw: string | null | undefined): string | null =>
   raw ? raw.slice(0, MAX_VERSION_ECHO) : null;
+// A limiter that stalls must not stall the call: past this the call goes through.
+export const RATE_CHECK_TIMEOUT_MS = 2000;
 export const LIST_CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const;
 
 export type GatewayServerOptions = {
@@ -39,11 +49,22 @@ export type GatewayServerOptions = {
   router: Router;
   policies: PolicyView;
   audit: AuditSink;
+  limiter: CallLimiter;
+  // The HTTP request id, so the audit row, the log line and the x-request-id header agree.
+  requestId?: string;
+  metrics?: Pick<GatewayMetrics, 'observe'>;
   replica: string;
   log: Log;
 };
 
 type MetaTool = AuditRow['metaTool'];
+
+// The client's trace if it sent a valid one (_meta first, then the HTTP header), else a new one.
+// Anything invalid is dropped, so client text never reaches a log line or an upstream.
+export function traceFor(meta: unknown, header: string | null | undefined): TraceParent {
+  const fromMeta = parseTraceparent((meta as { traceparent?: unknown } | undefined)?.traceparent);
+  return fromMeta ?? parseTraceparent(header) ?? parseTraceparent(newTraceparent())!;
+}
 
 export function createGatewayServer(o: GatewayServerOptions): Server {
   const server = new Server(
@@ -62,7 +83,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
   });
 
   const newRow = (name: string, protocolVersion: string | null, metaTool: MetaTool): AuditRow => ({
-    requestId: randomUUID(),
+    requestId: o.requestId ?? randomUUID(),
     userId: o.principal.userId,
     userEmail: o.principal.email,
     via: o.principal.via,
@@ -80,12 +101,51 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     protocolVersion,
   });
 
-  const writeAudit = async (row: AuditRow, started: number) => {
+  const writeAudit = async (row: AuditRow, started: number, trace: TraceParent) => {
     row.durationMs = Math.round(performance.now() - started);
+    o.metrics?.observe(row);
     await o.audit
       .write(row)
       .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
+    // Ids, names from our own registry, outcome and time only: never arguments, results or emails.
+    // A name the registry did not resolve came from the client, so it is logged as _unknown.
+    o.log.info(
+      {
+        request_id: row.requestId,
+        trace_id: trace.traceId,
+        user_id: row.userId,
+        server: serverLabel(row),
+        tool: row.serverId || row.metaTool === 'search_tools' ? row.toolName : '_unknown',
+        outcome: row.outcome,
+        ms: row.durationMs,
+      },
+      'tool call',
+    );
   };
+
+  // Seconds until the window resets when the caller is over the limit, else null. A broken or slow
+  // limiter lets the call through: Postgres trouble should not turn into a second outage.
+  const overLimit = async (): Promise<number | null> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const stall = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('rate limit check stalled'), { code: 'ETIMEDOUT' })),
+          RATE_CHECK_TIMEOUT_MS,
+        );
+      });
+      const r = await Promise.race([o.limiter.check(o.principal), stall]);
+      return r.allowed ? null : r.retryInSeconds;
+    } catch (err) {
+      o.log.warn({ code: errorCode(err) }, 'rate limit check failed, letting the call through');
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const rateLimitedText = (retryInSeconds: number) =>
+    `Rate limit exceeded, retry in ${retryInSeconds} s`;
 
   // A tree deeper than the limit would overflow the recursive canonicalJson.
   const hashArgs = (row: AuditRow, args: unknown) => {
@@ -115,6 +175,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     signal: AbortSignal,
     protocolVersion: string | null,
     metaTool: MetaTool,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const started = performance.now();
     const name = rawName.slice(0, MAX_NAME_ECHO);
@@ -142,24 +203,31 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         row.errorMessage = 'hidden by policy';
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
+      // After policy, so a hidden tool is not counted; before the enabled flag (SPEC 6.5 step 2).
+      const retry = await overLimit();
+      if (retry !== null) {
+        row.outcome = 'rate_limited';
+        return toolError(rateLimitedText(retry));
+      }
       if (!record.enabled) {
         row.outcome = 'disabled';
         return toolError(`Server ${record.slug} is disabled`);
       }
       row.outcome = 'upstream_error';
-      const r = await route.upstream.call(route.toolName, args, signal);
+      const r = await route.upstream.call(route.toolName, args, signal, childTraceparent(trace));
       row.outcome = r.outcome;
       // As received (SPEC 6.5 step 6): projectCallToolResult could append a content block.
       if ('result' in r) return r.result;
       return toolError(r.message);
     } finally {
-      await writeAudit(row, started);
+      await writeAudit(row, started, trace);
     }
   };
 
   const runSearch = async (
     args: Record<string, unknown> | undefined,
     protocolVersion: string | null,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const started = performance.now();
     const row = newRow(SEARCH_TOOLS, protocolVersion, SEARCH_TOOLS);
@@ -167,6 +235,12 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       hashArgs(row, args);
       const parsed = searchToolsInput.safeParse(args ?? {});
       if (!parsed.success) throw invalidArguments(row, SEARCH_TOOLS, parsed.error);
+      const retry = await overLimit();
+      if (retry !== null) {
+        row.outcome = 'rate_limited';
+        row.errorMessage = rateLimitedText(retry);
+        return { content: [{ type: 'text', text: row.errorMessage }], isError: true };
+      }
       // The same filter as tools/list, so search never shows what the caller could not list.
       const found = searchTools(o.router.list(allowed), parsed.data.query, parsed.data.limit);
       const payload = {
@@ -183,7 +257,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         structuredContent: payload,
       };
     } finally {
-      await writeAudit(row, started);
+      await writeAudit(row, started, trace);
     }
   };
 
@@ -191,6 +265,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     args: Record<string, unknown> | undefined,
     signal: AbortSignal,
     protocolVersion: string | null,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const parsed = callToolInput.safeParse(args ?? {});
     if (!parsed.success) {
@@ -200,21 +275,30 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         hashArgs(row, args);
         throw invalidArguments(row, CALL_TOOL, parsed.error);
       } finally {
-        await writeAudit(row, started);
+        await writeAudit(row, started, trace);
       }
     }
     // The inner call writes the audit row: one row per tools/call (SPEC 9), naming the real tool.
-    return callRouted(parsed.data.name, parsed.data.arguments, signal, protocolVersion, CALL_TOOL);
+    return callRouted(
+      parsed.data.name,
+      parsed.data.arguments,
+      signal,
+      protocolVersion,
+      CALL_TOOL,
+      trace,
+    );
   };
 
   server.setRequestHandler('tools/call', (req, ctx) => {
     const version = auditVersion(ctx.http?.req?.headers.get('mcp-protocol-version'));
     const signal = ctx.mcpReq.signal;
+    const trace = traceFor(req.params._meta, ctx.http?.req?.headers.get('traceparent'));
     // Meta-tools work in every mode: under `auto` a client that listed in search mode must keep
     // working if the count falls to 40 before its next call.
-    if (req.params.name === SEARCH_TOOLS) return runSearch(req.params.arguments, version);
-    if (req.params.name === CALL_TOOL) return runCallTool(req.params.arguments, signal, version);
-    return callRouted(req.params.name, req.params.arguments, signal, version, null);
+    if (req.params.name === SEARCH_TOOLS) return runSearch(req.params.arguments, version, trace);
+    if (req.params.name === CALL_TOOL)
+      return runCallTool(req.params.arguments, signal, version, trace);
+    return callRouted(req.params.name, req.params.arguments, signal, version, null, trace);
   });
 
   return server;

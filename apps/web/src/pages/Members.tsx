@@ -209,6 +209,11 @@ function MemberKeys({ user, canIssue }: { user: Member; canIssue: boolean }) {
     mutationFn: (id: string) => api(`/api/keys/${id}`, { method: 'DELETE' }),
     onSuccess: refresh,
   });
+  const setLimit = useMutation({
+    mutationFn: ({ id, limit }: { id: string; limit: number | null }) =>
+      api(`/api/keys/${id}`, { method: 'PATCH', body: { rateLimitPerMin: limit } }),
+    onSuccess: refresh,
+  });
   return (
     <>
       {canIssue && (
@@ -232,9 +237,10 @@ function MemberKeys({ user, canIssue }: { user: Member; canIssue: boolean }) {
           </Button>
         </form>
       )}
-      <ErrorLine error={keys.error ?? issue.error ?? revoke.error} />
+      <ErrorLine error={keys.error ?? issue.error ?? revoke.error ?? setLimit.error} />
       <KeyTable
         keys={keys.data ?? []}
+        onSetLimit={(k, limit) => setLimit.mutate({ id: k.id, limit })}
         onRevoke={(k) =>
           window.confirm(`Revoke "${k.name}" of ${user.email}?`) && revoke.mutate(k.id)
         }

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildGatewayApp, type GatewayAppOptions } from './app.js';
 import { createGatewayServer } from './mcp.js';
 import type { Router } from './registry.js';
+import { unlimited } from './test-helpers.js';
 import type { Principal } from './types.js';
 
 const principal: Principal = {
@@ -14,6 +15,7 @@ const principal: Principal = {
   via: 'api_key',
   apiKeyId: null,
   toolMode: 'full',
+  rateLimitPerMin: null,
 };
 const router: Router = {
   list: () => [{ name: 'fx__get_info', description: '[FX] info', inputSchema: { type: 'object' } }],
@@ -32,6 +34,7 @@ async function start(
     router,
     policies: { allows: () => true },
     audit: { write: async () => {} },
+    limiter: unlimited,
     authenticate,
     replica: 'gw-test-0',
     allowedOrigins: ['http://app.example.test'],
@@ -87,6 +90,16 @@ describe('buildGatewayApp', () => {
       const res = await post(listBody, { authorization });
       expect(res.status).toBe(401);
       expect(res.headers.get('x-gateway-replica')).toBe('gw-test-0');
+    }
+  });
+
+  it('has no /metrics on the MCP port', async () => {
+    for (const method of ['GET', 'POST']) {
+      const res = await fetch(`${base}/metrics`, {
+        method,
+        headers: { authorization: 'Bearer good' },
+      });
+      expect(res.status).toBe(404);
     }
   });
 
@@ -243,5 +256,117 @@ describe('buildGatewayApp', () => {
       expect(seen).toEqual([]);
       await a.close();
     });
+  });
+});
+
+describe('request ids and trace headers', () => {
+  const TRACE_H = '0af7651916cd43dd8448eb211c80319c';
+  const TRACE_M = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const seen: Array<string | undefined> = [];
+  const audited: string[] = [];
+  let traced: FastifyInstance;
+  let url: string;
+
+  beforeAll(async () => {
+    const recording: Router = {
+      list: () => [],
+      resolve: (n) =>
+        n === 'fx__get_info'
+          ? {
+              toolName: 'get_info',
+              upstream: {
+                record: {
+                  id: 'id-fx',
+                  slug: 'fx',
+                  name: 'fx',
+                  url: 'http://x.test/mcp',
+                  kind: 'system',
+                  enabled: true,
+                  approval: 'approved',
+                  timeoutMs: 15_000,
+                  protocolMode: 'auto',
+                  auth: { type: 'none' },
+                },
+                call: async (_n, _a, _s, tp) => {
+                  seen.push(tp);
+                  return { outcome: 'ok', result: { content: [{ type: 'text', text: 'hi' }] } };
+                },
+              },
+            }
+          : undefined,
+    };
+    traced = buildGatewayApp({
+      router: recording,
+      policies: { allows: () => true },
+      audit: { write: async (row) => void audited.push(row.requestId) },
+      limiter: unlimited,
+      authenticate: async () => principal,
+      replica: 'gw-test-0',
+      allowedOrigins: [],
+    });
+    await traced.listen({ host: '127.0.0.1', port: 0 });
+    url = `http://127.0.0.1:${(traced.server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => traced.close());
+
+  const callBody = (meta?: Record<string, unknown>) =>
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'fx__get_info', arguments: {}, ...(meta ? { _meta: meta } : {}) },
+    });
+  const send = (body: string, headers: Record<string, string> = {}) =>
+    fetch(`${url}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer good',
+        'mcp-protocol-version': '2025-11-25',
+        ...headers,
+      },
+      body,
+    });
+
+  it('uses the HTTP traceparent header when _meta has none', async () => {
+    seen.length = 0;
+    await (await send(callBody(), { traceparent: `00-${TRACE_H}-00f067aa0ba902b7-01` })).text();
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE_H}-[0-9a-f]{16}-01$`));
+  });
+
+  it('lets _meta win over the header', async () => {
+    seen.length = 0;
+    await (
+      await send(callBody({ traceparent: `00-${TRACE_M}-00f067aa0ba902b7-01` }), {
+        traceparent: `00-${TRACE_H}-00f067aa0ba902b7-01`,
+      })
+    ).text();
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE_M}-`));
+  });
+
+  it('starts a new trace for an invalid value', async () => {
+    seen.length = 0;
+    await (await send(callBody(), { traceparent: 'not-a-trace' })).text();
+    expect(seen[0]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(seen[0]).not.toContain('not-a-trace');
+  });
+
+  it('answers x-request-id, equal to the audit request_id, and ignores the client value', async () => {
+    audited.length = 0;
+    const res = await send(callBody(), { 'x-request-id': 'chosen-by-client', 'request-id': 'x' });
+    await res.text();
+    const id = res.headers.get('x-request-id');
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(audited).toEqual([id]);
+    const other = await send(callBody());
+    await other.text();
+    expect(other.headers.get('x-request-id')).not.toBe(id);
+  });
+
+  it('sets x-request-id on a refused request too', async () => {
+    const res = await send(callBody(), { origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
   });
 });

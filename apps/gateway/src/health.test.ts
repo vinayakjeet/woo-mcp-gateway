@@ -69,3 +69,18 @@ describe('gatewayLogger', () => {
     expect(out).not.toContain('LEAKMARKER');
   });
 });
+
+describe('/metrics', () => {
+  it('serves /metrics as Prometheus text when a renderer is given', async () => {
+    const app = buildHealthApp({ ready: async () => true, metrics: () => 'x_total 1\n' });
+    const res = await app.inject('/metrics');
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('text/plain; version=0.0.4; charset=utf-8');
+    expect(res.body).toBe('x_total 1\n');
+  });
+
+  it('answers 404 for /metrics when there is no renderer', async () => {
+    const res = await buildHealthApp({ ready: async () => true }).inject('/metrics');
+    expect(res.statusCode).toBe(404);
+  });
+});

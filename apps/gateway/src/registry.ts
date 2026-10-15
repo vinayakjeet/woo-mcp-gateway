@@ -86,6 +86,23 @@ export class Registry implements Router {
     return [...this.entries.values()].map((e) => e.upstream);
   }
 
+  // What the metrics read at scrape time. toolsExposed uses the same rules as list(), before policy.
+  serverStats(): Array<{ slug: string; up: boolean; toolsExposed: number }> {
+    return [...this.entries].map(([serverId, { upstream, states }]) => {
+      const r = upstream.record;
+      const up = upstream.state === 'connected';
+      let toolsExposed = 0;
+      if (r.enabled && r.approval === 'approved' && up) {
+        for (const t of upstream.tools()) {
+          if ((states.get(t.name) ?? 'active') !== 'active') continue;
+          const route = this.routes.get(exposedToolName(r.slug, t.name));
+          if (route?.serverId === serverId && route.toolName === t.name) toolsExposed++;
+        }
+      }
+      return { slug: r.slug, up, toolsExposed };
+    });
+  }
+
   list(keep?: ToolFilter): Tool[] {
     const out: Tool[] = [];
     for (const [serverId, { upstream, states }] of this.entries) {

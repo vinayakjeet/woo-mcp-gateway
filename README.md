@@ -127,26 +127,47 @@ Models (`deploy/values-local.yaml`): primary `gemini-3.5-flash-lite`, fallback `
 make e2e S=<private dir>                   # live end to end checks, ends with OK
 S=<private dir> scripts/chat-check.sh      # agent hardening and one chat turn, ends with OK
 S=<private dir> scripts/demo-reset.sh      # demo state; keeps orders, products and chat history
+S=<private dir> scripts/obs-check.sh       # metrics, request ids and trace ids across services, ends with OK
 ```
+
+## Scale and metrics (M12)
+
+Local values run one gateway and no Prometheus. Turn the extras on with `--set` and restore with a plain `make platform`:
+
+```bash
+# Two gateway replicas, a PodDisruptionBudget, then the demo (20 calls, one pod deleted mid-run).
+make platform HELM_FLAGS="--wait --rollback-on-failure --timeout 15m --set gateway.replicas=2 --set gateway.pdb.enabled=true"
+S=<private dir> scripts/replica-demo.sh    # each call prints the answering pod; ends with 20 of 20 ok and OK
+
+# Prometheus (no Grafana, no Ingress): scrapes the gateway on 9090 and the control-plane on 3001.
+make platform HELM_FLAGS="--wait --rollback-on-failure --timeout 15m --set monitoring.enabled=true"
+kubectl -n platform port-forward deploy/prometheus 19091:9090   # then open http://localhost:19091
+# try: rate(gateway_tool_calls_total[5m])   and   sum by (outcome) (gateway_tool_calls_total)
+
+make platform                              # back to one gateway, no Prometheus
+```
+
+The Health page in the dashboard shows the last 60 minutes per server without Prometheus. Key rate limits are set on the Members page (Limit/min); the default is `gateway.rateLimitPerMinute` (120 locally, 60 in the chart). If you use the HPA (`--set gateway.hpa.enabled=true`) in production, turn it on from the first deploy with `minReplicas` 2 or more: switching later from a fixed count drops the gateway to one pod until the HPA acts.
 
 ## Pinned versions
 
-| Tool               | Version                                            |
-| ------------------ | -------------------------------------------------- |
-| Node.js            | 24 (engines `>=24`)                                |
-| pnpm               | 10.34.6                                            |
-| WordPress image    | `wordpress:7.1.3-php8.3-apache`                    |
-| WooCommerce        | 10.9.4                                             |
-| wp-cli             | 2.12.0                                             |
-| MariaDB            | `mariadb:11.4.13`                                  |
-| Helm               | 4.3.0 (CLI and the control-plane image)            |
-| k3d                | 5.9.0                                              |
-| React              | 19.3.0                                             |
-| React Router       | 7.18.4                                             |
-| TanStack Query     | 5.104.0                                            |
-| Vite               | 8.3.1                                              |
-| Tailwind CSS       | 4.3.3                                              |
-| nginx-unprivileged | `nginxinc/nginx-unprivileged:1.31.6-alpine`        |
-| ipaddr.js          | 2.5.0 (core, SSRF ranges)                          |
-| undici             | 8.11.2 (gateway, pinned upstream connections)      |
-| minisearch         | 7.2.0 (gateway, tool search; published 2025-09-16) |
+| Tool               | Version                                                                       |
+| ------------------ | ----------------------------------------------------------------------------- |
+| Node.js            | 24 (engines `>=24`)                                                           |
+| pnpm               | 10.34.6                                                                       |
+| WordPress image    | `wordpress:7.1.3-php8.3-apache`                                               |
+| WooCommerce        | 10.9.4                                                                        |
+| wp-cli             | 2.12.0                                                                        |
+| MariaDB            | `mariadb:11.4.13`                                                             |
+| Helm               | 4.3.0 (CLI and the control-plane image)                                       |
+| k3d                | 5.9.0                                                                         |
+| React              | 19.3.0                                                                        |
+| React Router       | 7.18.4                                                                        |
+| TanStack Query     | 5.104.0                                                                       |
+| Vite               | 8.3.1                                                                         |
+| Tailwind CSS       | 4.3.3                                                                         |
+| nginx-unprivileged | `nginxinc/nginx-unprivileged:1.31.6-alpine`                                   |
+| ipaddr.js          | 2.5.0 (core, SSRF ranges)                                                     |
+| undici             | 8.11.2 (gateway, pinned upstream connections)                                 |
+| minisearch         | 7.2.0 (gateway, tool search; published 2025-09-16)                            |
+| Prometheus         | `prom/prometheus:v3.15.0` (optional, `monitoring.enabled`; pushed 2026-09-25) |

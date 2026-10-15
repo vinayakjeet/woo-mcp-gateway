@@ -236,4 +236,87 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('keys API (needs TEST_DATABASE_U
     });
     expect(issueNoOrigin.statusCode).toBe(403);
   });
+
+  describe('rate limit override', () => {
+    const patch = (id: string, cookie: string, body: unknown, extra: object = {}) =>
+      call(t.app, 'PATCH', `/api/keys/${id}`, { cookie, body, ...extra });
+    const limitInDb = async (id: string) =>
+      (await t.pool.query('select rate_limit_per_min as n from api_keys where id = $1', [id]))
+        .rows[0].n;
+
+    it('lets an admin set 5 and clear it with null', async () => {
+      const { key } = (await create(alice.cookie, 'limited')).json();
+      expect(key.rateLimitPerMin).toBeNull();
+      const set = await patch(key.id, admin.cookie, { rateLimitPerMin: 5 });
+      expect(set.statusCode).toBe(200);
+      expect(set.json().key).toMatchObject({ id: key.id, rateLimitPerMin: 5 });
+      expect(await limitInDb(key.id)).toBe(5);
+      const cleared = await patch(key.id, admin.cookie, { rateLimitPerMin: null });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json().key.rateLimitPerMin).toBeNull();
+      expect(await limitInDb(key.id)).toBeNull();
+    });
+
+    it('gives a member 403, even on their own key', async () => {
+      const { key } = (await create(alice.cookie, 'mine')).json();
+      const r = await patch(key.id, alice.cookie, { rateLimitPerMin: 5 });
+      expect(r.statusCode).toBe(403);
+      expect(await limitInDb(key.id)).toBeNull();
+    });
+
+    it("refuses 0, 10001, 1.5, '5', a missing field and extra fields", async () => {
+      const { key } = (await create(alice.cookie, 'strict')).json();
+      for (const body of [
+        { rateLimitPerMin: 0 },
+        { rateLimitPerMin: 10001 },
+        { rateLimitPerMin: 1.5 },
+        { rateLimitPerMin: '5' },
+        { rateLimitPerMin: -1 },
+        {},
+        { rateLimitPerMin: 5, toolMode: 'full' },
+      ]) {
+        const r = await patch(key.id, admin.cookie, body);
+        expect(r.statusCode, JSON.stringify(body)).toBe(400);
+        expect(r.json()).toEqual({ error: 'invalid_key_patch' });
+      }
+      expect(await limitInDb(key.id)).toBeNull();
+      expect((await patch(key.id, admin.cookie, { rateLimitPerMin: 10000 })).statusCode).toBe(200);
+      expect((await patch(key.id, admin.cookie, { rateLimitPerMin: 1 })).statusCode).toBe(200);
+    });
+
+    it('answers 409 key_revoked for a revoked key and 404 for an unknown or malformed id', async () => {
+      const { key } = (await create(alice.cookie, 'gone')).json();
+      await revoke(key.id, alice.cookie);
+      const r = await patch(key.id, admin.cookie, { rateLimitPerMin: 5 });
+      expect(r.statusCode).toBe(409);
+      expect(r.json()).toEqual({ error: 'key_revoked' });
+      expect(await limitInDb(key.id)).toBeNull();
+      for (const id of ['00000000-0000-4000-8000-000000000000', 'nope']) {
+        expect((await patch(id, admin.cookie, { rateLimitPerMin: 5 })).statusCode).toBe(404);
+      }
+    });
+
+    it('returns rateLimitPerMin in both listings', async () => {
+      const { key } = (await create(bob.cookie, 'listed')).json();
+      await patch(key.id, admin.cookie, { rateLimitPerMin: 12 });
+      const own = await call(t.app, 'GET', '/api/keys', { cookie: bob.cookie });
+      expect(own.json().keys.find((k: { id: string }) => k.id === key.id)).toMatchObject({
+        rateLimitPerMin: 12,
+      });
+      const viaAdmin = await call(t.app, 'GET', `/api/users/${bob.id}/keys`, {
+        cookie: admin.cookie,
+      });
+      expect(viaAdmin.json().keys.find((k: { id: string }) => k.id === key.id)).toMatchObject({
+        rateLimitPerMin: 12,
+      });
+    });
+
+    it('keeps the Origin check', async () => {
+      const { key } = (await create(alice.cookie, 'origin')).json();
+      expect(
+        (await patch(key.id, admin.cookie, { rateLimitPerMin: 5 }, { origin: null })).statusCode,
+      ).toBe(403);
+      expect(await limitInDb(key.id)).toBeNull();
+    });
+  });
 });

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 // Shared by every Fastify service so a new service cannot forget to hide credentials.
 export const LOG_REDACT = [
   'req.headers.cookie',
@@ -19,3 +21,11 @@ export function errorCode(err: unknown): string {
   }
   return 'unknown';
 }
+
+// Fastify options for request ids. Ids are generated here and a client header is never read, so a
+// caller cannot choose what appears in a log line.
+export const requestIdOptions = {
+  genReqId: () => randomUUID(),
+  requestIdHeader: false as const,
+  requestIdLogLabel: 'request_id' as const,
+};

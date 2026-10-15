@@ -10,6 +10,7 @@ import {
 import { AcceptInvitePage } from './pages/AcceptInvite';
 import { AuditPage } from './pages/Audit';
 import { ChatPage } from './pages/Chat';
+import { HealthPage } from './pages/Health';
 import { HostedPage } from './pages/Hosted';
 import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
@@ -61,6 +62,7 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to="/servers" replace /> },
       { path: 'servers', element: <ServersPage /> },
+      { path: 'health', element: <HealthPage /> },
       { path: 'stores', element: <StoresPage /> },
       { path: 'chat', element: <ChatPage /> },
       { path: 'policies', element: <PoliciesPage /> },

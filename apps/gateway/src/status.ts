@@ -3,6 +3,7 @@ import { schema } from '@woo/core/db';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { PG_CONNECT_TIMEOUT_MS } from './pg-options.js';
+import { pruneRateCounters } from './rate-limit.js';
 import type { Db, Log } from './types.js';
 import type { UpstreamStatus } from './upstream.js';
 
@@ -13,6 +14,7 @@ export type StatusWriterOptions = {
   db: Db;
   log: Log;
   retryMs?: number;
+  pruneEveryMs?: number;
   onElected?: () => void;
 };
 
@@ -22,6 +24,7 @@ export class StatusWriter {
   private lockClient: pg.Client | null = null;
   private leader = false;
   private timer: NodeJS.Timeout | undefined;
+  private pruneTimer: NodeJS.Timeout | undefined;
   private closed = false;
 
   constructor(private readonly o: StatusWriterOptions) {}
@@ -60,6 +63,7 @@ export class StatusWriter {
     this.closed = true;
     this.leader = false;
     clearTimeout(this.timer);
+    clearInterval(this.pruneTimer);
     const c = this.lockClient;
     this.lockClient = null;
     // Ending the session releases the lock.
@@ -88,6 +92,7 @@ export class StatusWriter {
         this.leader = true;
         this.o.log.info({ lock: STATUS_LOCK }, 'status writer elected');
         this.o.onElected?.();
+        this.startPruning();
         return;
       }
     } catch (err) {
@@ -103,12 +108,24 @@ export class StatusWriter {
     if (this.lockClient !== c || this.closed) return;
     this.lockClient = null;
     this.leader = false;
+    clearInterval(this.pruneTimer);
     this.o.log.warn(
       { code: err === undefined ? 'end' : errorCode(err) },
       'status lock connection lost',
     );
     void c.end().catch(() => {});
     this.schedule();
+  }
+
+  // One replica prunes, so the delete does not run once per replica per minute.
+  private startPruning(): void {
+    clearInterval(this.pruneTimer);
+    this.pruneTimer = setInterval(() => {
+      pruneRateCounters(this.o.db).catch((err: unknown) =>
+        this.o.log.warn({ code: errorCode(err) }, 'rate counter prune failed'),
+      );
+    }, this.o.pruneEveryMs ?? 60_000);
+    this.pruneTimer.unref();
   }
 
   private schedule(): void {
