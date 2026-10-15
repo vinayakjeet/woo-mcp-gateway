@@ -1,4 +1,5 @@
-import { errorCode } from '@woo/core';
+import { randomUUID } from 'node:crypto';
+import { errorCode, newTraceparent, traceIdOf } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 import { UserFacingError } from './errors.js';
@@ -16,7 +17,7 @@ export const KEEPALIVE_MS = 15_000;
 export type AppDeps = {
   appOrigin: string;
   introspect(cookie: string): Promise<SessionInfo | null>;
-  connect(token: string): Promise<GatewaySession>;
+  connect(token: string, traceparent: string): Promise<GatewaySession>;
   model(): Completer;
   now?: () => Date;
   turnDeadlineMs?: number;
@@ -36,7 +37,12 @@ export function buildApp(
   deps: AppDeps,
   logger: FastifyServerOptions['logger'] = false,
 ): FastifyInstance {
-  const app = Fastify({ logger });
+  const app = Fastify({
+    logger,
+    genReqId: () => randomUUID(),
+    requestIdHeader: false,
+    requestIdLogLabel: 'request_id',
+  });
   app.get('/healthz', async () => 'ok');
   // SPEC 13 gives the agent no database, so there is no schema version to wait for.
   app.get('/readyz', async () => 'ready');
@@ -82,8 +88,10 @@ export function buildApp(
     let stats: TurnStats | null = null;
     let outcome = 'ok';
     let gateway: GatewaySession | null = null;
+    // One trace per turn, made here and never taken from the browser.
+    const traceparent = newTraceparent();
     try {
-      gateway = await deps.connect(session.token).catch((err: unknown) => {
+      gateway = await deps.connect(session.token, traceparent).catch((err: unknown) => {
         throw new UserFacingError('Could not connect to the gateway.', { cause: err });
       });
       stats = await runTurn({
@@ -118,7 +126,13 @@ export function buildApp(
       await gateway?.close().catch(() => {});
       res.end();
       req.log.info(
-        { user: session.user.id, ...(stats ?? {}), ms: Date.now() - started, outcome },
+        {
+          user: session.user.id,
+          trace_id: traceIdOf(traceparent),
+          ...(stats ?? {}),
+          ms: Date.now() - started,
+          outcome,
+        },
         'chat turn',
       );
     }
