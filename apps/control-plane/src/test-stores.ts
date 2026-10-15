@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { encryptSecret } from '@woo/core';
 import pg from 'pg';
 import { HelmError, type Helm, type InstallOptions, type ReleaseStatus } from './helm.js';
-import type { Kube } from './kube.js';
+import type { HostedObject } from './hosted-manifests.js';
+import type { DeploymentState, HostedKind, Kube } from './kube.js';
 import { migrateAndSeed } from './migrate-run.js';
 import type { Log } from './reconcile.js';
 import { parseStoreDefaults, storeMcpUrl, type StoreDefaults } from './store-values.js';
@@ -177,6 +178,62 @@ export class FakeKube implements Kube {
     if (this.namespaces.has(name) && !this.deleting.has(name)) {
       this.deleting.set(name, this.terminatingPolls);
     }
+  }
+
+  // Hosted objects, keyed kind/namespace/name. Pods are implied: one exists while its Deployment
+  // does, and for podLingerPolls more listNames('Pod') calls after the Deployment is deleted.
+  readonly objects = new Map<string, HostedObject>();
+  readonly applied: { kind: string; name: string; fieldManager: string }[] = [];
+  hostedApplyError: Error | null = null;
+  readonly deployments = new Map<string, Omit<DeploymentState, 'exists'>>();
+  readonly waiting = new Map<string, string[]>();
+  podLingerPolls = 0;
+  private readonly lingering = new Map<string, number>();
+
+  async apply(obj: HostedObject, fieldManager: string): Promise<void> {
+    this.calls.push(`apply ${obj.kind}/${obj.metadata.name}`);
+    if (this.hostedApplyError) throw this.hostedApplyError;
+    this.applied.push({ kind: obj.kind, name: obj.metadata.name, fieldManager });
+    this.objects.set(`${obj.kind}/${obj.metadata.namespace}/${obj.metadata.name}`, obj);
+  }
+
+  async deploymentStatus(ns: string, name: string): Promise<DeploymentState> {
+    this.calls.push(`status ${name}`);
+    if (!this.objects.has(`Deployment/${ns}/${name}`)) {
+      return { exists: false, available: false, deadlineExceeded: false };
+    }
+    return {
+      exists: true,
+      available: false,
+      deadlineExceeded: false,
+      ...this.deployments.get(name),
+    };
+  }
+
+  async podWaitingReasons(_ns: string, selector: string): Promise<string[]> {
+    return this.waiting.get(selector.split('=')[1] ?? '') ?? [];
+  }
+
+  async listNames(kind: HostedKind | 'Pod', ns: string, selector: string): Promise<string[]> {
+    const slug = selector.split('=')[1] ?? '';
+    if (kind === 'Pod') {
+      const left = this.lingering.get(slug) ?? 0;
+      if (left > 0) {
+        this.lingering.set(slug, left - 1);
+        return [`${slug}-pod`];
+      }
+      return this.objects.has(`Deployment/${ns}/${slug}`) ? [`${slug}-pod`] : [];
+    }
+    return [...this.objects.values()]
+      .filter((o) => o.kind === kind && o.metadata.namespace === ns)
+      .filter((o) => o.metadata.labels['urumi.io/hosted'] === slug)
+      .map((o) => o.metadata.name);
+  }
+
+  async deleteObject(kind: HostedKind, ns: string, name: string): Promise<void> {
+    this.calls.push(`delete ${kind}/${name}`);
+    this.objects.delete(`${kind}/${ns}/${name}`);
+    if (kind === 'Deployment') this.lingering.set(name, this.podLingerPolls);
   }
 }
 

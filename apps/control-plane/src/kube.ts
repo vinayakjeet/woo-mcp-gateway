@@ -1,11 +1,23 @@
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
+import type { HostedObject } from './hosted-manifests.js';
+
+export type HostedKind = HostedObject['kind'];
+export type DeploymentState = { exists: boolean; available: boolean; deadlineExceeded: boolean };
 
 export interface Kube {
   applyNamespace(name: string, labels: Record<string, string>): Promise<void>;
   namespaceExists(name: string): Promise<boolean>;
   deleteNamespace(name: string): Promise<void>;
+  // Server-side apply of one hosted object. force=true takes over fields from other managers.
+  apply(obj: HostedObject, fieldManager: string): Promise<void>;
+  deploymentStatus(ns: string, name: string): Promise<DeploymentState>;
+  // Container waiting reasons of the pods under a label selector, such as ImagePullBackOff.
+  podWaitingReasons(ns: string, selector: string): Promise<string[]>;
+  // Pods are listed so a delete can wait for them, but are never deleted directly.
+  listNames(kind: HostedKind | 'Pod', ns: string, selector: string): Promise<string[]>;
+  deleteObject(kind: HostedKind, ns: string, name: string): Promise<void>;
 }
 
 // Only the status and the API's reason word leave this module, never a response body.
@@ -19,7 +31,12 @@ export class KubeError extends Error {
 }
 
 type KubeConfig = { server: string; token: () => Promise<string>; ca?: Buffer };
-type Answer = { status: number; reason: string };
+type Answer = { status: number; reason: string; json: unknown };
+
+// Kubernetes reasons and waiting reasons are single CamelCase words. Anything else is dropped, so
+// a body that quotes an object or an env value cannot leak through a status or a reason.
+const WORD = /^[A-Za-z]{1,64}$/;
+const word = (v: unknown): string | null => (typeof v === 'string' && WORD.test(v) ? v : null);
 
 const SA = '/var/run/secrets/kubernetes.io/serviceaccount';
 
@@ -61,13 +78,14 @@ export function kubeClient(cfg: KubeConfig): Kube {
         let text = '';
         res.on('data', (c: Buffer) => (text += c.toString()));
         res.on('end', () => {
-          let reason = 'Unknown';
+          let json: unknown = null;
           try {
-            reason = (JSON.parse(text) as { reason?: string }).reason ?? reason;
+            json = JSON.parse(text);
           } catch {
             // Not JSON: keep the default reason.
           }
-          resolve({ status: res.statusCode ?? 0, reason });
+          const reason = word((json as { reason?: unknown } | null)?.reason) ?? 'Unknown';
+          resolve({ status: res.statusCode ?? 0, reason, json });
         });
       };
       const req =
@@ -81,6 +99,31 @@ export function kubeClient(cfg: KubeConfig): Kube {
   }
 
   const ns = (name: string) => `/api/v1/namespaces/${encodeURIComponent(name)}`;
+  const collection = (kind: HostedKind | 'Pod', namespace: string): string => {
+    const n = encodeURIComponent(namespace);
+    switch (kind) {
+      case 'Secret':
+        return `/api/v1/namespaces/${n}/secrets`;
+      case 'Service':
+        return `/api/v1/namespaces/${n}/services`;
+      case 'Pod':
+        return `/api/v1/namespaces/${n}/pods`;
+      case 'NetworkPolicy':
+        return `/apis/networking.k8s.io/v1/namespaces/${n}/networkpolicies`;
+      case 'Deployment':
+        return `/apis/apps/v1/namespaces/${n}/deployments`;
+    }
+  };
+  const named = (kind: HostedKind, namespace: string, name: string) =>
+    `${collection(kind, namespace)}/${encodeURIComponent(name)}`;
+  const list = async (kind: HostedKind | 'Pod', namespace: string, selector: string) => {
+    const a = await request(
+      'GET',
+      `${collection(kind, namespace)}?labelSelector=${encodeURIComponent(selector)}`,
+    );
+    if (a.status !== 200) throw new KubeError(a.status, a.reason);
+    return (a.json as { items?: Item[] } | null)?.items ?? [];
+  };
   return {
     async applyNamespace(name, labels) {
       const a = await request('PATCH', `${ns(name)}?fieldManager=control-plane&force=true`, {
@@ -101,5 +144,58 @@ export function kubeClient(cfg: KubeConfig): Kube {
       if (a.status === 200 || a.status === 202 || a.status === 404) return;
       throw new KubeError(a.status, a.reason);
     },
+    async apply(obj, fieldManager) {
+      const { name, namespace } = obj.metadata;
+      const q = `fieldManager=${encodeURIComponent(fieldManager)}&force=true`;
+      const a = await request('PATCH', `${named(obj.kind, namespace, name)}?${q}`, obj);
+      if (a.status !== 200 && a.status !== 201) throw new KubeError(a.status, a.reason);
+    },
+    async deploymentStatus(namespace, name) {
+      const a = await request('GET', named('Deployment', namespace, name));
+      if (a.status === 404) return { exists: false, available: false, deadlineExceeded: false };
+      if (a.status !== 200) throw new KubeError(a.status, a.reason);
+      const status = (a.json as DeploymentBody | null)?.status;
+      return {
+        exists: true,
+        available: (status?.availableReplicas ?? 0) >= 1,
+        deadlineExceeded: (status?.conditions ?? []).some(
+          (c) =>
+            c.type === 'Progressing' &&
+            c.status === 'False' &&
+            c.reason === 'ProgressDeadlineExceeded',
+        ),
+      };
+    },
+    async podWaitingReasons(namespace, selector) {
+      const reasons: string[] = [];
+      for (const pod of await list('Pod', namespace, selector)) {
+        for (const c of pod.status?.containerStatuses ?? []) {
+          const r = word(c.state?.waiting?.reason);
+          if (r) reasons.push(r);
+        }
+      }
+      return reasons;
+    },
+    async listNames(kind, namespace, selector) {
+      const items = await list(kind, namespace, selector);
+      return items.map((i) => i.metadata?.name).filter((n): n is string => typeof n === 'string');
+    },
+    async deleteObject(kind, namespace, name) {
+      const a = await request('DELETE', named(kind, namespace, name));
+      if (a.status === 200 || a.status === 202 || a.status === 404) return;
+      throw new KubeError(a.status, a.reason);
+    },
   };
 }
+
+type Item = {
+  metadata?: { name?: unknown };
+  status?: { containerStatuses?: { state?: { waiting?: { reason?: unknown } } }[] };
+};
+
+type DeploymentBody = {
+  status?: {
+    availableReplicas?: number;
+    conditions?: { type?: string; status?: string; reason?: string }[];
+  };
+};
