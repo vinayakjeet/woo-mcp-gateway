@@ -12,6 +12,8 @@ export type ApiKey = {
   revokedAt: string | null;
   expiresAt: string | null;
   toolMode: ToolMode;
+  // Calls per minute for this key. Null means the gateway default.
+  rateLimitPerMin: number | null;
 };
 export type Member = {
   id: string;
