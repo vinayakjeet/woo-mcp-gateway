@@ -10,6 +10,7 @@ import {
 import { AcceptInvitePage } from './pages/AcceptInvite';
 import { AuditPage } from './pages/Audit';
 import { ChatPage } from './pages/Chat';
+import { HostedPage } from './pages/Hosted';
 import { KeysPage } from './pages/Keys';
 import { LoginPage } from './pages/Login';
 import { MembersPage } from './pages/Members';
@@ -64,6 +65,7 @@ export const routes: RouteObject[] = [
       { path: 'chat', element: <ChatPage /> },
       { path: 'policies', element: <PoliciesPage /> },
       { path: 'approvals', element: <ToolApprovalsPage /> },
+      { path: 'hosted', element: <HostedPage /> },
       { path: 'keys', element: <KeysPage /> },
       { path: 'audit', element: <AuditPage /> },
       { path: 'members', element: <MembersPage /> },

@@ -2,12 +2,13 @@
 # SPEC 16 proofs for store namespaces, with throwaway curl pods.
 #   scripts/netpol-check.sh <slug-a> [<slug-b>]
 #   scripts/netpol-check.sh platform
+#   scripts/netpol-check.sh hosted <slug>
 # Each probe sleeps 5 s first: kube-router admits a new pod's IP late, so the first request of a
 # brand new pod is refused even where a policy allows it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-A=${1:?usage: $0 <slug-a> [<slug-b>] | platform}
+A=${1:?usage: $0 <slug-a> [<slug-b>] | platform | hosted <slug>}
 B=${2:-}
 IMAGE=curlimages/curl:8.17.0
 fail() {
@@ -95,6 +96,46 @@ if [ "$A" = platform ]; then
   r=$(probe platform "$L=web" "$cp")
   blocked "$r" || fail "a web-labeled pod reached the control-plane on 3001: $r"
   pass "agent reaches gateway 8080 and control-plane 3001 only"
+  echo OK
+  exit 0
+fi
+
+if [ "$A" = hosted ]; then
+  # SPEC 16 and 21: a hosted pod takes traffic from the gateway only and reaches DNS and public 443 only.
+  # The pod needs a running hosted server, so create one first (scripts/hosted-check.sh create <slug>).
+  slug=${B:?usage: $0 hosted <slug>}
+  H=urumi.io/hosted=$slug
+  url=http://$slug.mcp-hosted.svc.cluster.local:8080/healthz
+  pg=http://postgres.platform.svc.cluster.local:5432/
+  woo=http://woo-mcp.store-main.svc.cluster.local:8080/healthz
+  # Any HTTP answer proves a connection: 000 means no connection, whatever the curl exit code.
+  reached() { [ "${1%% *}" != 000 ]; }
+
+  r=$(probe default - "$url")
+  blocked "$r" || fail "the default namespace reached $slug: $r"
+  r=$(probe mcp-hosted - "$url")
+  blocked "$r" || fail "an unlabeled mcp-hosted pod reached $slug: $r"
+  r=$(probe platform app.kubernetes.io/instance=platform,app.kubernetes.io/name=agent "$url")
+  blocked "$r" || fail "an agent-labeled platform pod reached $slug: $r"
+  r=$(probe platform app.kubernetes.io/instance=platform,app.kubernetes.io/name=gateway "$url")
+  [ "${r%% *}" = 200 ] || fail "a gateway-labeled pod got '$r' from $slug /healthz, expected 200"
+  pass "$slug takes traffic from the gateway's labels only (200 from the gateway, closed to default, mcp-hosted and agent)"
+
+  for target in "$pg" "$woo"; do
+    r=$(probe mcp-hosted "$H" "$target")
+    blocked "$r" || fail "a pod labeled $H reached $target: $r"
+  done
+  # Port 80 on a public host: egress is TCP 443 only.
+  r=$(probe mcp-hosted "$H" http://example.com)
+  blocked "$r" || fail "a pod labeled $H reached http://example.com on port 80: $r"
+  pass "$slug cannot reach Postgres, a store's woo-mcp or a public host on port 80"
+
+  # The control proves the allow comes from the slug's own policy: the same URL fails without the label.
+  r=$(probe mcp-hosted - https://api.frankfurter.app)
+  blocked "$r" || fail "an unlabeled mcp-hosted pod reached https://api.frankfurter.app: $r"
+  r=$(probe mcp-hosted "$H" https://api.frankfurter.app)
+  reached "$r" || fail "a pod labeled $H cannot reach https://api.frankfurter.app: $r"
+  pass "$slug reaches public 443 (api.frankfurter.app answered ${r%% *}); an unlabeled mcp-hosted pod does not"
   echo OK
   exit 0
 fi

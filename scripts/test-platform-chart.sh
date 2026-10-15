@@ -143,6 +143,31 @@ if render --set provisioner.enabled=false --show-only templates/rbac-provisioner
 fi
 pass "control-plane"
 
+# Hosted servers (M11): the control-plane reads its allowlist and caps from the chart, and builds the
+# NetworkPolicy from the gateway's own selector labels, so the two cannot drift apart.
+hostedenv() { # values args; prints the value line after the named env var
+  show control-plane.yaml "${@:2}" | grep -A1 "name: $1\$" | sed -n 's/.*value: //p'
+}
+for n in HOSTED_ALLOWED_IMAGE_PREFIXES HOSTED_MAX_CPU HOSTED_MAX_MEMORY HOSTED_GATEWAY_NAMESPACE HOSTED_GATEWAY_LABELS; do
+  [ "$(grep -c "name: $n\$" <<<"$cp")" -eq 1 ] || fail "control-plane: $n must be set once, on the app container"
+done
+[ "$(hostedenv HOSTED_ALLOWED_IMAGE_PREFIXES)" = '"[\"fx-mcp:\"]"' ] || fail "values-local.yaml must allow fx-mcp: only"
+[ "$(helm template platform charts/platform --namespace platform --set mcp.sharedToken=x --show-only templates/control-plane.yaml | grep -A1 'name: HOSTED_ALLOWED_IMAGE_PREFIXES' | sed -n 's/.*value: //p')" = '"[]"' ] ||
+  fail "the chart default must allow no image prefix"
+[ "$(hostedenv HOSTED_MAX_CPU)" = '"500m"' ] || fail "HOSTED_MAX_CPU default"
+[ "$(hostedenv HOSTED_MAX_MEMORY)" = '"256Mi"' ] || fail "HOSTED_MAX_MEMORY default"
+[ "$(hostedenv HOSTED_GATEWAY_NAMESPACE)" = '"platform"' ] || fail "HOSTED_GATEWAY_NAMESPACE is the release namespace"
+[ "$(hostedenv HOSTED_GATEWAY_NAMESPACE --namespace other-ns)" = '"other-ns"' ] || fail "HOSTED_GATEWAY_NAMESPACE follows the release namespace"
+labels=$(hostedenv HOSTED_GATEWAY_LABELS | jq -r 'fromjson')
+[ "$(jq -c . <<<"$labels")" = '{"app.kubernetes.io/instance":"platform","app.kubernetes.io/name":"gateway"}' ] ||
+  fail "HOSTED_GATEWAY_LABELS must equal the gateway pod selector labels"
+for want in "app.kubernetes.io/name: gateway" "app.kubernetes.io/instance: platform"; do
+  has "$(show gateway.yaml)" "$want" "gateway labels behind HOSTED_GATEWAY_LABELS"
+done
+[ "$(hostedenv HOSTED_MAX_CPU --set hosted.maxCpu=300m)" = '"300m"' ] || fail "hosted.maxCpu does not reach HOSTED_MAX_CPU"
+pass "hosted server settings"
+
+
 # SPEC 18: the ClusterRole is wide because Helm's --wait lists and watches everything, so this policy is
 # the wall that keeps the control-plane to store-* and mcp-hosted.
 vap=$(show admission-policy.yaml)
@@ -370,6 +395,10 @@ done
 nf=$(show agent.yaml --set agent.llm.fallbackBaseUrl= --set agent.llm.reasoningEffort=)
 lacks "$nf" "LLM_FALLBACK" agent-without-fallback
 lacks "$nf" "LLM_REASONING_EFFORT" agent-without-fallback
+tool_mode() { awk '/name: AGENT_TOOL_MODE/{getline; print $2}' <<<"$1"; }
+[ "$(tool_mode "$a")" = '"auto"' ] || fail "agent: AGENT_TOOL_MODE defaults to auto"
+[ "$(tool_mode "$(show agent.yaml --set agent.toolMode=search)")" = '"search"' ] ||
+  fail "agent: AGENT_TOOL_MODE follows agent.toolMode"
 pass "agent"
 
 ig=$(show ingress-app.yaml)

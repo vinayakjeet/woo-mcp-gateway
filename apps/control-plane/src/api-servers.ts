@@ -161,13 +161,27 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
     }
     const secret = nextSecret(v.auth);
     const out = await withTx(o.pool, async (c) => {
-      const cur = await c.query<{ slug: string; managed: boolean; hasSecret: boolean }>(
-        `select slug, managed, auth_secret_enc is not null as "hasSecret"
+      const cur = await c.query<{
+        slug: string;
+        kind: string;
+        managed: boolean;
+        hasSecret: boolean;
+      }>(
+        `select slug, kind, managed, auth_secret_enc is not null as "hasSecret"
          from mcp_servers where id = $1 for update`,
         [id],
       );
       const s = cur.rows[0];
       if (!s) return 'not_found' as const;
+      // Only the reconcile pass enables a hosted server, once its Deployment is available. An
+      // admin enabling it earlier would point the gateway at a pod that does not exist yet.
+      if (s.kind === 'hosted' && v.enabled === true) {
+        const h = await c.query<{ status: string }>(
+          'select status from hosted_servers where server_id = $1',
+          [id],
+        );
+        if (h.rows[0]?.status !== 'ready') return 'hosted_not_ready' as const;
+      }
       if (s.managed && Object.keys(v).some((k) => !MANAGED_EDITABLE.has(k))) {
         return 'managed_server' as const;
       }
@@ -206,6 +220,7 @@ export function serverRoutes(scope: FastifyInstance, o: ApiOptions): void {
     });
     if (out === 'not_found') return reply.code(404).send({ error: 'not_found' });
     if (out === 'managed_server') return reply.code(409).send({ error: 'managed_server' });
+    if (out === 'hosted_not_ready') return reply.code(409).send({ error: 'hosted_not_ready' });
     if (out === 'secret_required') return reply.code(400).send({ error: 'secret_required' });
     return { server: await getServer(o, id) };
   });

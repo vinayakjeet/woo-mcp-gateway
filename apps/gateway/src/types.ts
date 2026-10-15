@@ -50,12 +50,15 @@ export type PersistedTool = {
   definitionHash: string;
 };
 
+export type ToolMode = 'full' | 'search' | 'auto';
+
 export type Principal = {
   userId: string;
   email: string;
   role: 'admin' | 'member';
   via: 'api_key' | 'agent';
   apiKeyId: string | null;
+  toolMode: ToolMode;
 };
 
 export type Outcome = (typeof outcomeEnum.enumValues)[number];
@@ -70,6 +73,7 @@ export type AuditRow = {
   serverSlug: string;
   toolName: string;
   exposedName: string;
+  metaTool: 'search_tools' | 'call_tool' | null;
   outcome: Outcome;
   durationMs: number;
   errorMessage: string | null;

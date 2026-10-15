@@ -5,15 +5,16 @@ const UNIQUE_VIOLATION = '23505';
 
 export async function insertKey(
   db: Pick<pg.Pool, 'query'>,
-  o: { userId: string; name: string; pepper: string },
+  o: { userId: string; name: string; pepper: string; toolMode?: 'full' | 'search' | 'auto' },
 ): Promise<{ id: string; key: string; prefix: string }> {
   // The 8 character prefix is unique. A collision is rare, so one retry is enough.
   for (let attempt = 0; ; attempt++) {
     const k = generateApiKey(o.pepper);
     try {
       const ins = await db.query<{ id: string }>(
-        `insert into api_keys (user_id, name, prefix, secret_hash) values ($1, $2, $3, $4) returning id`,
-        [o.userId, o.name, k.prefix, k.secretHash],
+        `insert into api_keys (user_id, name, prefix, secret_hash, tool_mode)
+         values ($1, $2, $3, $4, $5) returning id`,
+        [o.userId, o.name, k.prefix, k.secretHash, o.toolMode ?? 'auto'],
       );
       return { id: ins.rows[0]!.id, key: k.key, prefix: k.prefix };
     } catch (err) {

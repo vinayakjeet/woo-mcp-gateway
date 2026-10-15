@@ -13,6 +13,7 @@ const principal: Principal = {
   role: 'member',
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
+  toolMode: 'full',
 };
 
 type Call = (
@@ -68,6 +69,7 @@ async function connect(
   const rules = o.rules;
   const server = createGatewayServer({
     principal: o.principal ?? principal,
+    toolMode: (o.principal ?? principal).toolMode,
     policies: rules
       ? { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) }
       : allowAll,

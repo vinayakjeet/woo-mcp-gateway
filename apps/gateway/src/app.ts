@@ -3,7 +3,8 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { errorCode } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
-import { createGatewayServer } from './mcp.js';
+import { createGatewayServer, type GatewayServerOptions } from './mcp.js';
+import { parseToolModeOverride } from './search.js';
 import type { PolicyView } from './policies.js';
 import type { Router } from './registry.js';
 import type { AuditSink, Log, Principal } from './types.js';
@@ -16,6 +17,8 @@ export type GatewayAppOptions = {
   replica: string;
   allowedOrigins: string[];
   logger?: FastifyServerOptions['logger'];
+  // A seam for tests that watch which options the server gets.
+  createServer?: (options: GatewayServerOptions) => ReturnType<typeof createGatewayServer>;
 };
 
 const rpcError = (code: number, message: string) => ({
@@ -33,8 +36,10 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
     (ctx) => {
       const principal = ctx.authInfo?.extra?.principal as Principal | undefined;
       if (!principal) throw new Error('request reached the MCP handler without a principal');
-      return createGatewayServer({
+      const override = ctx.authInfo?.extra?.toolModeOverride as 'search' | 'full' | undefined;
+      return (o.createServer ?? createGatewayServer)({
         principal,
+        toolMode: override ?? principal.toolMode,
         router: o.router,
         policies: o.policies,
         audit: o.audit,
@@ -76,12 +81,19 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         return reply.code(503).send(rpcError(-32603, 'Authentication unavailable'));
       }
       if (!principal) return reply.code(401).send(rpcError(-32001, 'Unauthorized'));
+      // After authentication, so an unknown caller learns nothing about accepted values.
+      let toolModeOverride: 'search' | 'full' | undefined;
+      try {
+        toolModeOverride = parseToolModeOverride((req.query as Record<string, unknown>).toolMode);
+      } catch {
+        return reply.code(400).send(rpcError(-32602, 'Invalid toolMode'));
+      }
       // authInfo is pass-through to the server factory. The token field stays empty so no credential travels on.
       const auth: AuthInfo = {
         token: '',
         clientId: principal.userId,
         scopes: [],
-        extra: { principal },
+        extra: { principal, toolModeOverride },
       };
       (req.raw as IncomingMessage & { auth?: AuthInfo }).auth = auth;
       reply.raw.setHeader('x-accel-buffering', 'no');

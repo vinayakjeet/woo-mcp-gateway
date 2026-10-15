@@ -86,6 +86,33 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('approvals API (needs TEST_DATAB
     expect((await approve('not-a-uuid', {})).statusCode).toBe(404);
   });
 
+  it('lists and approves a changed tool of a hosted server', async () => {
+    const id = await server('hosted-one', 'approved', 'hosted');
+    await tool(id, 'moved', 'changed', { hash: hash(2), approved: hash(1) });
+    await tool(id, 'same', 'active', { hash: hash(1), approved: hash(1) });
+    type Listed = { id: string; kind: string; tools: { name: string }[] };
+    const list = (await call(t.app, 'GET', '/api/approvals', { cookie: admin.cookie })).json() as {
+      servers: Listed[];
+    };
+    const found = list.servers.find((x) => x.id === id);
+    expect(found?.kind).toBe('hosted');
+    expect(found?.tools.map((x) => x.name)).toEqual(['moved']);
+    const r = await approve(id, { tools: { moved: hash(2) } });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ approved: ['moved'], stale: [] });
+    expect((await rows(id)).moved).toMatchObject({ state: 'active', approved_hash: hash(2) });
+  });
+
+  it('does not list a store server and still answers 409 for it', async () => {
+    const id = await server('store-one', 'approved', 'store');
+    await tool(id, 'x', 'changed', { hash: hash(2), approved: hash(1) });
+    const list = (await call(t.app, 'GET', '/api/approvals', { cookie: admin.cookie })).json() as {
+      servers: { id: string }[];
+    };
+    expect(list.servers.some((x) => x.id === id)).toBe(false);
+    expect((await approve(id, {})).statusCode).toBe(409);
+  });
+
   it('rejects a malformed body', async () => {
     const id = await server('badbody', 'pending');
     expect((await approve(id, { tools: { a: 'short' } })).statusCode).toBe(400);

@@ -3,15 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import type { HostedDeps } from './hosted-reconcile.js';
 import { Provisioner } from './provisioner.js';
 import type { ReconcileDeps } from './reconcile.js';
 import {
   connectAll,
   FakeHelm,
   FakeKube,
+  insertHosted,
   insertStore,
   quietLog,
   storeDb,
+  TEST_HOSTED_CONFIG,
   testStoreDefaults,
   waitFor,
 } from './test-stores.js';
@@ -35,6 +38,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
     await db.pool.query(
       "update stores set status = 'failed' where status in ('provisioning', 'deleting')",
     );
+    await db.pool.query('delete from hosted_servers');
+    await db.pool.query("delete from mcp_servers where kind = 'hosted'");
   });
   afterAll(async () => {
     await db.pool.end();
@@ -58,7 +63,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
       namespaceWaitMs: 10,
     };
   };
-  const make = (d: ReconcileDeps, o: { tickMs?: number; lockRetryMs?: number } = {}) => {
+  const make = (
+    d: ReconcileDeps,
+    o: { tickMs?: number; lockRetryMs?: number; hosted?: HostedDeps } = {},
+  ) => {
     const p = new Provisioner({ databaseUrl: db.url, deps: d, log: quietLog, ...o });
     running.push(p);
     return p;
@@ -182,5 +190,64 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Provisioner (needs TEST_DATABAS
     await p.start();
     await waitFor(async () => (await status(id)) === undefined);
     expect(helm.calls).toEqual(['uninstall store-bye-late/store-bye-late']);
+  });
+
+  const hostedDeps = (d: ReconcileDeps): HostedDeps => ({
+    pool: db.pool,
+    kek: db.kek,
+    kube: d.kube,
+    config: TEST_HOSTED_CONFIG,
+    log: quietLog,
+  });
+  const hostedStatus = async (slug: string) =>
+    (await db.pool.query('select status from hosted_servers where slug = $1', [slug])).rows[0]
+      ?.status;
+
+  it('runs a hosted pass while 3 stores are in flight', async () => {
+    const d = deps();
+    let release!: () => void;
+    helm.gate = new Promise((r) => (release = r));
+    await Promise.all(['h1', 'h2', 'h3', 'h4'].map((s) => add(s)));
+    await insertHosted(db.pool, db.kek, db.owner, 'hostedfx');
+    const p = make(d, { tickMs: 20, hosted: hostedDeps(d) });
+    await p.start();
+    await waitFor(() => helm.active === 3);
+    await waitFor(() => kube.applied.some((a) => a.kind === 'Deployment'));
+    expect([helm.active, p.inFlight]).toEqual([3, 3]);
+    release();
+  });
+
+  it('starts a hosted pass on hosted_changed without waiting for the tick', async () => {
+    const d = deps();
+    const p = make(d, { tickMs: 60_000, hosted: hostedDeps(d) });
+    await p.start();
+    await p.idle();
+    const { id } = await insertHosted(db.pool, db.kek, db.owner, 'kicked');
+    await db.pool.query("select pg_notify('hosted_changed', $1)", [id]);
+    await waitFor(() => kube.applied.some((a) => a.name === 'kicked'), 2000);
+    expect(await hostedStatus('kicked')).toBe('pending');
+  });
+
+  it('does not touch hosted servers when no hosted deps are given', async () => {
+    const d = deps();
+    await insertHosted(db.pool, db.kek, db.owner, 'ignored');
+    const p = make(d, { tickMs: 20 });
+    await p.start();
+    await sleep(120);
+    expect(kube.applied).toEqual([]);
+  });
+
+  it('keeps ticking when a hosted pass throws', async () => {
+    const d = deps();
+    const bad = hostedDeps(d);
+    bad.pool = {
+      query: async () => {
+        throw new Error('db down');
+      },
+    } as unknown as HostedDeps['pool'];
+    const id = await add('survivor');
+    const p = make(d, { tickMs: 20, hosted: bad });
+    await p.start();
+    await waitFor(async () => (await status(id)) === 'ready');
   });
 });

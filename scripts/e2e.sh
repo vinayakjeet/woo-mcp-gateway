@@ -2,7 +2,7 @@
 # Live checks against the cluster: login, keys, a revoked key rejected within 1 s, server disable
 # and enable, the store name, a dead upstream (fx-mcp at zero), woo-mcp reachable only from the
 # gateway, invites, audit attribution and member scoping, role policies (hidden tools, a deny rule
-# added and removed), disabling a member, and one agent turn.
+# added and removed), tool search mode, disabling a member, and one agent turn.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -276,6 +276,62 @@ until body "$(req member.jar GET '/api/audit?server=main&outcome=denied')" |
 done
 pass "the member's audit view has one denied row for main__create_product"
 
+# SPEC 17: tool search mode. ?toolMode=search lists only the two meta-tools, search_tools ranks the
+# principal's visible tools, and call_tool goes through the same checks and audit as a direct call.
+psql_one() { kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c "$1"; }
+search_tools() { MCP="$MCP?toolMode=search" tools "$@"; }
+search_names=$(MCP="$MCP?toolMode=search" list_names k2) || fail "search-mode tools/list"
+[ "$search_names" = $'call_tool\nsearch_tools' ] || fail "search mode listed: $search_names"
+pass "?toolMode=search lists exactly call_tool and search_tools"
+
+# The first output line is the compact JSON text block of the result.
+found=$(search_tools k2 search_tools '{"query":"convert currency"}' | head -n1)
+[ "$(jq -r '.tools[0].name' <<<"$found")" = fx__convert_currency ] || fail "search ranked: $(jq -c '[.tools[].name]' <<<"$found")"
+pass "search_tools 'convert currency' puts fx__convert_currency first"
+
+search_tools k2 call_tool '{"name":"fx__get_info"}' >/dev/null || fail "call_tool fx__get_info"
+t0=$(date +%s%N)
+until [ "$(psql_one "select count(*) from audit_events where api_key_id = '$k2_id' and meta_tool = 'call_tool'
+  and tool_name = 'get_info' and exposed_name = 'fx__get_info' and server_slug = 'fx' and outcome = 'ok'")" -ge 1 ]; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "no audit row for get_info with meta_tool = call_tool"
+  sleep 0.2
+done
+[ "$(psql_one "select count(*) from audit_events where api_key_id = '$k2_id' and meta_tool = 'search_tools'
+  and server_slug = '' and outcome = 'ok'")" -ge 1 ] || fail "no audit row for search_tools"
+pass "call_tool is audited as get_info with meta_tool = call_tool; search_tools has its own row"
+
+found=$(search_tools k3 search_tools '{"query":"create product"}' | head -n1)
+! jq -e 'any(.tools[]; .name == "main__create_product")' <<<"$found" >/dev/null ||
+  fail "a member's search found main__create_product"
+denied=$(search_tools k3 call_tool '{"name":"main__create_product","arguments":{"name":"x"}}' 2>&1) &&
+  fail "a member ran main__create_product through call_tool"
+grep -q 'Unknown tool: main__create_product' <<<"$denied" || fail "call_tool error was: $denied"
+t0=$(date +%s%N)
+until [ "$(psql_one "select count(*) from audit_events where user_id = '$member_id' and meta_tool = 'call_tool'
+  and outcome = 'denied' and exposed_name = 'main__create_product'")" -ge 1 ]; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "no denied audit row with meta_tool for the member"
+  sleep 0.2
+done
+pass "a member's search hides main__create_product and call_tool of it fails, audited denied"
+
+bad=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$MCP?toolMode=bogus" -H @"$S/k2.hdr" \
+  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')
+[ "$bad" = 400 ] || fail "?toolMode=bogus gave $bad"
+pass "?toolMode=bogus is 400"
+
+# Decision A: a key created with toolMode search needs no override.
+r=$(req admin.jar POST /api/keys "{\"name\":\"$run-search\",\"toolMode\":\"search\"}")
+[ "$(code "$r")" = 201 ] || fail "create search key gave $(code "$r")"
+k5_id=$(body "$r" | jq -r .key.id)
+[ "$(body "$r" | jq -r .key.toolMode)" = search ] || fail "the new key is not in search mode"
+save_key "$(body "$r")" k5
+[ "$(list_names k5)" = $'call_tool\nsearch_tools' ] || fail "a search key listed: $(list_names k5)"
+[ "$(MCP="$MCP?toolMode=full" list_names k5 | grep -c .)" -ge 10 ] || fail "?toolMode=full did not list the full set"
+body "$(req admin.jar GET /api/keys)" | jq -e --arg id "$k5_id" 'any(.keys[]; .id == $id and .toolMode == "search")' >/dev/null ||
+  fail "GET /api/keys lacks the key's toolMode"
+pass "a key created in search mode lists two tools; ?toolMode=full lists them all"
+
 # Disabling the member ends their session and drops both of their cached keys in the gateway at once.
 for k in k3 k4; do [ "$(mcp_status "$k")" != 401 ] || fail "member key $k rejected before disable"; done
 t0=$(date +%s%N)
@@ -315,7 +371,7 @@ else
   pass "the agent answered one tool-calling turn, audited via agent to $admin_email"
 fi
 
-for id in "$k2_id" "$k3_id" "$k4_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
-rm -f "$S"/k[1-4] "$S"/k[1-4].hdr "$S"/admin.jar "$S"/member.jar
+for id in "$k2_id" "$k3_id" "$k4_id" "$k5_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
+rm -f "$S"/k[1-5] "$S"/k[1-5].hdr "$S"/admin.jar "$S"/member.jar
 pass "cleanup: e2e keys revoked, member disabled"
 echo OK

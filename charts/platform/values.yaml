@@ -28,6 +28,9 @@ gateway:
   allowInsecureUpstreams: false
 
 agent:
+  # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (SPEC 17).
+  # search and full force the mode with ?toolMode= on the gateway URL.
+  toolMode: auto
   # OpenAI-compatible chat completions. Each environment's values file sets these (SPEC 28).
   # Keys come from Secret agent-llm: LLM_API_KEY for the primary, LLM_FALLBACK_API_KEY for the fallback.
   # The agent exits at start, naming the missing variables, while baseUrl or model is empty.
@@ -69,6 +72,14 @@ provisioner:
       mariadb: 2Gi
       wordpress: 2Gi
     environmentType: local
+
+# SPEC 21 (M11): hosted MCP servers run in mcp-hosted. An admin can only submit an image that starts with
+# one of these prefixes. Each entry ends with "/" or ":" so "ghcr.io/acme/" cannot admit "ghcr.io/acme-evil/".
+# Empty refuses every create. The caps bound the limits an admin may request.
+hosted:
+  allowedImagePrefixes: []
+  maxCpu: 500m
+  maxMemory: 256Mi
 
 fxMcp:
   slug: fx

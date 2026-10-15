@@ -45,6 +45,62 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('keys API (needs TEST_DATABASE_U
     expect(list.body).not.toContain('secret');
   });
 
+  it('stores the tool mode chosen at creation and defaults to auto', async () => {
+    const search = await call(t.app, 'POST', '/api/keys', {
+      cookie: alice.cookie,
+      body: { name: 'search-key', toolMode: 'search' },
+    });
+    expect(search.statusCode).toBe(201);
+    expect(search.json().key.toolMode).toBe('search');
+    const row = await t.pool.query('select tool_mode from api_keys where id = $1', [
+      search.json().key.id,
+    ]);
+    expect(row.rows[0].tool_mode).toBe('search');
+    const plain = await create(alice.cookie, 'plain-key');
+    expect(plain.json().key.toolMode).toBe('auto');
+    const full = await call(t.app, 'POST', '/api/keys', {
+      cookie: alice.cookie,
+      body: { name: 'full-key', toolMode: 'full' },
+    });
+    expect(full.json().key.toolMode).toBe('full');
+  });
+
+  it('refuses an unknown tool mode and creates nothing', async () => {
+    const before = await t.pool.query('select count(*)::int as n from api_keys');
+    for (const toolMode of ['bogus', 'SEARCH', '', 5, null]) {
+      const r = await call(t.app, 'POST', '/api/keys', {
+        cookie: alice.cookie,
+        body: { name: 'bad', toolMode },
+      });
+      expect(r.statusCode).toBe(400);
+    }
+    const after = await t.pool.query('select count(*)::int as n from api_keys');
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+  });
+
+  it('returns toolMode in the own list and in the admin view of a member', async () => {
+    const made = await call(t.app, 'POST', '/api/keys', {
+      cookie: bob.cookie,
+      body: { name: 'bob-search', toolMode: 'search' },
+    });
+    const id = made.json().key.id;
+    const own = await call(t.app, 'GET', '/api/keys', { cookie: bob.cookie });
+    expect(own.json().keys.find((k: { id: string }) => k.id === id)).toMatchObject({
+      toolMode: 'search',
+    });
+    const viaAdmin = await call(t.app, 'GET', `/api/users/${bob.id}/keys`, {
+      cookie: admin.cookie,
+    });
+    expect(viaAdmin.json().keys.find((k: { id: string }) => k.id === id)).toMatchObject({
+      toolMode: 'search',
+    });
+    const issued = await call(t.app, 'POST', `/api/users/${bob.id}/keys`, {
+      cookie: admin.cookie,
+      body: { name: 'issued-search', toolMode: 'search' },
+    });
+    expect(issued.json().key.toolMode).toBe('search');
+  });
+
   it('lists only your own keys', async () => {
     const { key } = (await create(bob.cookie, 'bob-key')).json();
     expect(

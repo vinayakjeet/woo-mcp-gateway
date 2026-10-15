@@ -2,6 +2,7 @@ export type Role = 'admin' | 'member';
 export type Tone = 'ok' | 'bad' | 'warn' | 'off' | 'idle';
 export type Me = { id: string; email: string; name: string | null; role: Role };
 export type Config = { gatewayUrl: string; version: string };
+export type ToolMode = 'auto' | 'search' | 'full';
 export type ApiKey = {
   id: string;
   name: string;
@@ -10,6 +11,7 @@ export type ApiKey = {
   lastUsedAt: string | null;
   revokedAt: string | null;
   expiresAt: string | null;
+  toolMode: ToolMode;
 };
 export type Member = {
   id: string;
@@ -95,6 +97,27 @@ export type Store = {
   deletable: boolean;
   seeded: boolean;
 };
+
+export type HostedStatus = 'pending' | 'ready' | 'failed' | 'deleting';
+export type HostedServer = {
+  id: string;
+  slug: string;
+  image: string;
+  port: number;
+  path: string;
+  env: Array<{ name: string; value: string }>;
+  // Names only: the API never sends a secret value back.
+  secretEnvNames: string[];
+  cpu: string;
+  memory: string;
+  status: HostedStatus;
+  reason: string | null;
+  serverId: string | null;
+  url: string;
+  createdAt: string;
+};
+export type HostedLimits = { allowedImagePrefixes: string[]; maxCpu: string; maxMemory: string };
+export type HostedResponse = { servers: HostedServer[]; limits: HostedLimits };
 
 export type ScreenFlag = {
   kind: 'hidden_unicode' | 'long_description' | 'suspicious_phrase';

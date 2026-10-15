@@ -5,9 +5,12 @@ import { parseId, requireAdmin, requireUser, type SessionUser } from './api-sess
 import { notify, withTx } from './db.js';
 import { insertKey } from './keys.js';
 
-const nameBody = z.object({ name: z.string().trim().min(1).max(100) });
+const nameBody = z.object({
+  name: z.string().trim().min(1).max(100),
+  toolMode: z.enum(['full', 'search', 'auto']).default('auto'),
+});
 const KEY_COLUMNS = `id, name, prefix, created_at as "createdAt", last_used_at as "lastUsedAt",
-  revoked_at as "revokedAt", expires_at as "expiresAt"`;
+  revoked_at as "revokedAt", expires_at as "expiresAt", tool_mode as "toolMode"`;
 
 async function listKeys(o: ApiOptions, userId: string) {
   const r = await o.pool.query(
@@ -17,8 +20,18 @@ async function listKeys(o: ApiOptions, userId: string) {
   return { keys: r.rows };
 }
 
-async function issueKey(o: ApiOptions, userId: string, name: string, reply: FastifyReply) {
-  const k = await insertKey(o.pool, { userId, name, pepper: o.pepper });
+async function issueKey(
+  o: ApiOptions,
+  userId: string,
+  body: z.output<typeof nameBody>,
+  reply: FastifyReply,
+) {
+  const k = await insertKey(o.pool, {
+    userId,
+    name: body.name,
+    toolMode: body.toolMode,
+    pepper: o.pepper,
+  });
   const r = await o.pool.query(`select ${KEY_COLUMNS} from api_keys where id = $1`, [k.id]);
   // The only response that carries the full key; the database keeps an HMAC of its secret.
   return reply.code(201).send({ key: r.rows[0], secret: k.key });
@@ -32,7 +45,7 @@ export function keyRoutes(scope: FastifyInstance, o: ApiOptions): void {
   scope.post('/api/keys', { preHandler: requireUser }, async (req, reply) => {
     const body = nameBody.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: 'bad_request' });
-    return issueKey(o, (req.user as SessionUser).id, body.data.name, reply);
+    return issueKey(o, (req.user as SessionUser).id, body.data, reply);
   });
 
   scope.delete('/api/keys/:id', { preHandler: requireUser }, async (req, reply) => {
@@ -74,6 +87,6 @@ export function keyRoutes(scope: FastifyInstance, o: ApiOptions): void {
     if (!status) return reply.code(404).send({ error: 'not_found' });
     // The key belongs to the member, and the gateway refuses keys of users who are not active.
     if (status !== 'active') return reply.code(409).send({ error: 'user_not_active' });
-    return issueKey(o, id, body.data.name, reply);
+    return issueKey(o, id, body.data, reply);
   });
 }

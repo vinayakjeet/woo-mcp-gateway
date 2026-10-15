@@ -104,10 +104,19 @@ export async function upsertTools(
   tools: readonly Tool[],
 ): Promise<Map<string, ToolState>> {
   const t = schema.mcpTools;
-  // Our own servers (store, hosted, system) are approved as they are. Only an external server
-  // can change a tool behind the admin's back.
-  const managed = kind !== 'external';
   return db.transaction(async (tx) => {
+    // Store and system servers are ours and approved as they are. A hosted server is approved
+    // only on its first sync, because creating it was the admin's review of that image. A later
+    // sync can come from a replaced image, so it follows the external rules.
+    let managed = kind === 'store' || kind === 'system';
+    if (kind === 'hosted') {
+      const [seen] = await tx
+        .select({ name: t.name })
+        .from(t)
+        .where(eq(t.serverId, serverId))
+        .limit(1);
+      managed = !seen;
+    }
     const now = new Date();
     const names = tools.map((x) => x.name);
     if (tools.length > 0) {

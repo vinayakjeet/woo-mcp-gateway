@@ -206,4 +206,44 @@ describe('runTurn', () => {
     expect(err).toBeInstanceOf(UserFacingError);
     expect((err as Error).message).toBe('Could not list tools from the gateway.');
   });
+
+  it('searches, then runs the found tool through call_tool, when only the meta-tools are listed', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const found = { tools: [{ name: 'main__list_orders', description: 'List orders.' }] };
+    const tools: ToolClient = {
+      async listTools() {
+        return [
+          { name: 'call_tool', description: 'Run a found tool.', inputSchema: { type: 'object' } },
+          { name: 'search_tools', description: 'Find tools.', inputSchema: { type: 'object' } },
+        ] as unknown as Tool[];
+      },
+      async callTool(name, args) {
+        calls.push({ name, args });
+        return name === 'search_tools'
+          ? { content: [{ type: 'text', text: JSON.stringify(found) }], structuredContent: found }
+          : { content: [{ type: 'text', text: '3 orders today' }] };
+      },
+    };
+    const inner = { name: 'main__list_orders', arguments: { date: 'today' } };
+    const { model, seen } = scripted([
+      { toolCalls: [call('s1', 'search_tools', '{"query":"orders today"}')] },
+      { toolCalls: [call('c1', 'call_tool', JSON.stringify(inner))] },
+      { text: 'There are 3 orders today.' },
+    ]);
+    const { events, stats } = await turn(model, tools);
+    expect(calls).toEqual([
+      { name: 'search_tools', args: { query: 'orders today' } },
+      { name: 'call_tool', args: inner },
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      'tool_call',
+      'tool_result',
+      'tool_call',
+      'tool_result',
+      'text',
+      'done',
+    ]);
+    expect(seen).toHaveLength(3);
+    expect(stats).toMatchObject({ iterations: 3, toolCalls: 2, tools: 2 });
+  });
 });
