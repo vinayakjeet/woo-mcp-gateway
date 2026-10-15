@@ -41,6 +41,28 @@ for ns in store-main mcp-hosted; do
 done
 pass "ConfigMaps in store-main and mcp-hosted are allowed"
 
+# M11: hosted servers are applied server-side, which is a PATCH, not a create. Same policy, same verdict.
+deploy_yaml() { # namespace
+  cat <<YAML
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: vap-probe, namespace: $1 }
+spec:
+  selector: { matchLabels: { app: vap-probe } }
+  template:
+    metadata: { labels: { app: vap-probe } }
+    spec:
+      containers: [{ name: c, image: 'fx-mcp:dev' }]
+YAML
+}
+sa_apply() { deploy_yaml "$1" | as_sa apply --server-side --dry-run=server --field-manager=platform --force-conflicts -f -; }
+r=$(sa_apply mcp-hosted)
+allowed "$r" "server-side apply of a Deployment in mcp-hosted"
+grep -q 'serverside-applied (server dry run)' <<<"$r" || fail "apply in mcp-hosted: unexpected answer: $r"
+r=$(sa_apply default)
+denied "$r" "server-side apply of a Deployment in default"
+pass "server-side apply of a Deployment: allowed in mcp-hosted, denied in default"
+
 r=$(as_sa create namespace m10-vap-probe --dry-run=server)
 denied "$r" "Namespace m10-vap-probe"
 r=$(as_sa create namespace store-vap-probe --dry-run=server)
