@@ -1,6 +1,6 @@
 # Threat model
 
-Notes for SPEC 22 (M10). Each item says what it stops, where it lives, and the command that proves it. Run the live checks from the repo root with `S=<private scratch dir>`. None of them print secrets.
+Notes for SPEC 22 (M10) and hosted servers (M11, section 11). Each item says what it stops, where it lives, and the command that proves it. Run the live checks from the repo root with `S=<private scratch dir>`. None of them print secrets.
 
 Trust boundaries, in order of how much we trust them:
 
@@ -78,14 +78,14 @@ Proof: `pnpm --filter @woo/core exec vitest run crypto` (tamper, wrong AAD, wron
 
 ### KEK rotation
 
-State of the code: every caller passes key id 1 and `decryptSecret` rejects any other id. The key id byte is reserved for an online rotation (two KEKs live at once), which needs a code change. Today a rotation is an offline re-encrypt with a short outage of the control-plane and gateway. Tables with encrypted columns: `mcp_servers.auth_secret_enc` now, and `hosted_servers.secret_env_enc` once M11 writes it (extend the script then).
+State of the code: every caller passes key id 1 and `decryptSecret` rejects any other id. The key id byte is reserved for an online rotation (two KEKs live at once), which needs a code change. Today a rotation is an offline re-encrypt with a short outage of the control-plane and gateway. Tables with encrypted columns: `mcp_servers.auth_secret_enc` (AAD is the slug) and `hosted_servers.secret_env_enc` (AAD is `hosted:<slug>`). The script covers both. The Kubernetes Secret `<slug>-env` of a hosted server holds plain values and does not depend on the KEK, so a running hosted server is not affected by the rotation. The next apply decrypts with the new key.
 
-1. Back up the table: `kubectl -n platform exec postgres-0 -- sh -c 'pg_dump -U "$POSTGRES_USER" -t mcp_servers "${POSTGRES_DB:-$POSTGRES_USER}"' > $S/mcp_servers.sql` (mode 600, it holds ciphertext only).
+1. Back up both tables: `kubectl -n platform exec postgres-0 -- sh -c 'pg_dump -U "$POSTGRES_USER" -t mcp_servers -t hosted_servers "${POSTGRES_DB:-$POSTGRES_USER}"' > $S/mcp_servers.sql` (mode 600, it holds ciphertext only).
 2. Make the new key without printing it: `umask 077; head -c 32 /dev/urandom | base64 > $S/new-kek.b64`.
 3. Save the script below as `$S/rotate-kek.mjs`.
-4. Dry run (rolls back): `kubectl -n platform exec -i deploy/control-plane -c control-plane -- node --input-type=module -e "$(cat $S/rotate-kek.mjs)" < $S/new-kek.b64`. Expected: `N rows rolled back (set APPLY=1 to commit)`.
+4. Dry run (rolls back): `kubectl -n platform exec -i deploy/control-plane -c control-plane -- node --input-type=module -e "$(cat $S/rotate-kek.mjs)" < $S/new-kek.b64`. Expected: `N rows rolled back (mcp_servers A, hosted_servers B; set APPLY=1 to commit)` with N = A + B.
 5. Stop the gateway, which also reads the KEK: `kubectl -n platform scale deploy/gateway --replicas=0`. The control-plane stays up because the script runs inside it.
-6. Apply: the command from step 4 with `env APPLY=1` in front of `node`, so it reads `kubectl ... -- env APPLY=1 node --input-type=module -e ...`. Expected: `N rows committed`.
+6. Apply: the command from step 4 with `env APPLY=1` in front of `node`, so it reads `kubectl ... -- env APPLY=1 node --input-type=module -e ...`. Expected: `N rows committed (mcp_servers A, hosted_servers B)`.
 7. Swap the Secret: `kubectl -n platform patch secret platform-crypto --type merge -p "{\"data\":{\"KEK\":\"$(base64 -w0 < $S/new-kek.b64)\"}}"`. The value goes through the shell and never to a terminal.
 8. Restart in order: `kubectl -n platform rollout restart deploy/control-plane`, wait for it, then `kubectl -n platform scale deploy/gateway --replicas=1`. Between steps 6 and 8 the control-plane still holds the old KEK in memory, so do not save a server in the dashboard in that window.
 9. Verify: `make e2e S=$S` (the store and `gh` servers connect, so their secrets decrypt). Then `shred -u $S/new-kek.b64 $S/mcp_servers.sql` once the new KEK is stored in your password manager.
@@ -110,12 +110,26 @@ for (const r of rows) {
   if (decryptSecret(enc, next, r.slug) !== plain) throw new Error(`verify failed for ${r.slug}`);
   await db.query('update mcp_servers set auth_secret_enc = $1 where id = $2', [enc, r.id]);
 }
+// A different AAD, so a hosted ciphertext cannot be read as a server secret or the other way round.
+const hosted = await db.query(
+  'select id, slug, secret_env_enc from hosted_servers where secret_env_enc is not null for update',
+);
+for (const r of hosted.rows) {
+  const aad = `hosted:${r.slug}`;
+  const plain = decryptSecret(r.secret_env_enc, old, aad);
+  const enc = encryptSecret(plain, next, aad);
+  if (decryptSecret(enc, next, aad) !== plain) throw new Error(`verify failed for ${aad}`);
+  await db.query('update hosted_servers set secret_env_enc = $1 where id = $2', [enc, r.id]);
+}
 await db.query(apply ? 'commit' : 'rollback');
-console.log(`${rows.length} rows ${apply ? 'committed' : 'rolled back (set APPLY=1 to commit)'}`);
+const total = rows.length + hosted.rows.length;
+console.log(
+  `${total} rows ${apply ? 'committed' : 'rolled back'} (mcp_servers ${rows.length}, hosted_servers ${hosted.rows.length}${apply ? '' : '; set APPLY=1 to commit'})`,
+);
 await db.end();
 ```
 
-The dry run (step 4) was run on the local cluster on 2026-10-14: 3 rows, rolled back. Steps 5 to 9 are written but not run. Rotate once on a copy of the cluster before relying on them.
+The dry run (step 4) was run on the local cluster on 2026-10-14 (3 rows, rolled back) and again on 2026-10-15 with the extended script and a live hosted server: `5 rows rolled back (mcp_servers 4, hosted_servers 1; set APPLY=1 to commit)`. A hash of every ciphertext column was the same before and after. Only the dry run has ever been run. Steps 5 to 9 are written but not run, and no real rotation has touched the local database. Rotate once on a copy of the cluster before relying on them.
 
 ## 7. Tool pinning (rug pulls)
 
@@ -152,6 +166,34 @@ Stops: Kubernetes Secrets readable from an etcd or disk snapshot of the VM.
 - On the VM: `secrets-encryption: true` in the k3s config. Proof: `k3s secrets-encrypt status` prints `Encryption Status: Enabled`.
 - Not provable on k3d. M10 documents it; M8 applies and proves it.
 
+## 11. Hosted MCP servers (M11)
+
+Stops: an admin or a stolen admin session running an arbitrary image with reach into the cluster; a hosted pod talking to Postgres, the stores or the Kubernetes API; secret env values leaking; a ciphertext moved between columns.
+
+- Image allowlist. `apps/control-plane/src/hosted-input.ts` (`hostedInput`, `loadHostedConfig`): the image must match a strict reference regex, carry a tag or a `sha256` digest, not be `latest`, and start with one of `hosted.allowedImagePrefixes`. Every prefix must end with `/` or `:` or the control-plane refuses to start, so `ghcr.io/acme/` cannot admit `ghcr.io/acme-evil/`. The chart default is `[]`, which refuses every create. The same schema runs again at apply time, so a row written around the API, or a prefix list that shrank, goes to `failed` and nothing is applied.
+- Caps. Port 1024 to 65535, CPU and memory within `hosted.maxCpu` (500m) and `hosted.maxMemory` (256Mi), at most 32 plain and 16 secret env entries, no `KUBERNETES_*` names, `MCP_SHARED_TOKEN` reserved.
+- Pod. `apps/control-plane/src/hosted-manifests.ts`: uid and gid 10001, `runAsNonRoot`, `RuntimeDefault` seccomp, no privilege escalation, all capabilities dropped, read-only root with a 64Mi `/tmp`, no ServiceAccount token, no service links. `mcp-hosted` enforces PSA `restricted` (section 5), so a pod that did not meet this would not start.
+- Ingress. Only pods with the gateway's labels in the platform namespace, on the server port. The labels come from the chart helper the gateway pod uses.
+- Egress. Only TCP 443 to public addresses. The rule is `0.0.0.0/0` except `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` and `100.64.0.0/10`. That excludes the pod and Service ranges of k3s (10.42 and 10.43), so other namespaces, Postgres, the stores and the Kubernetes API Service (10.43.0.1) are out of reach. A node whose own address is public is not excluded (gap 5). The only other way out is DNS, from the namespace's `allow-dns`. Hosted servers need the public 443 egress because the servers call upstream APIs (`fx2` fetches rates from Frankfurter).
+- Secrets. Secret env is one JSON object encrypted with AAD `hosted:<slug>` (section 6). The control-plane decrypts it only inside the reconcile pass to build the Kubernetes Secret, applied as `data`. No response, log line, error, `status_reason` or audit row carries a value. The admin API is admin only (members get 403).
+- Delete. Every object carries `urumi.io/hosted=<slug>` and teardown deletes by that label, so nothing is left behind (see `docs/DESIGN.md`, restart proof).
+- RBAC. The existing provisioner ClusterRole and the admission policy from section 3 already confine the control-plane to `store-*` and `mcp-hosted`. `vap-check.sh` has a server-side apply row for it.
+
+Proof (all against the local cluster; each ends `OK`):
+
+- `S=... scripts/hosted-check.sh all`: create `fx2`, tools listed and called (the currency conversion proves public 443), four labeled objects, uid 10001 with a read-only root, the demo secret and the generated token absent from GET and the control-plane log, refusals (`busybox:1.37`, `fx-mcp:latest`, CPU `600m`, slug `fx`, member), delete leaves nothing and keeps audit rows.
+- `scripts/netpol-check.sh hosted fx2` (needs a running `fx2`): the default namespace, an unlabeled `mcp-hosted` pod and an agent-labeled pod cannot reach it; a gateway-labeled pod gets 200 from `/healthz`; a pod labeled like `fx2` cannot reach Postgres, a store's woo-mcp or a public host on port 80, and reaches `https://api.frankfurter.app`, which an unlabeled `mcp-hosted` pod cannot.
+- `S=... scripts/vap-check.sh`: server-side apply of a Deployment is allowed in `mcp-hosted` and denied in `default`.
+- `pnpm --filter @woo/control-plane exec vitest run hosted-input hosted-manifests`.
+
+### Gaps and rules for production
+
+1. Tags can be re-pushed. The allowlist matches a prefix and a tag, and a registry lets the owner of a tag point it at a different image later. The pod then runs different code from the one the admin reviewed, and Kubernetes pulls it again on the next restart if the node has dropped the image (`imagePullPolicy: IfNotPresent` only protects while the node has it). A digest (`name@sha256:...`) cannot be moved. Images imported into k3d have no registry digest, so locally the allowlist is `fx-mcp:` with a tag and nothing stronger is possible. Rule: once hosted images come from a registry (M8, `ghcr.io/<owner>/`), every create must use an `@sha256` digest. The input schema accepts digests already. It does not require them. Enforcing that (a chart value that refuses tag-only references) is open work for M8.
+2. Egress is TCP 443 to public addresses only, by design. A hosted image can still send anything it receives, including tool arguments and its own secret env, to any public host on 443. Run images you built. There is no per-server egress allowlist.
+3. Tools of a hosted server are not reviewed. `upsertTools` (`apps/gateway/src/registry-db.ts`, section 7) re-approves a managed server's tools on every sync, so a replaced image can change descriptions and schemas with no pass through Tool approvals. Combined with gap 1 this is the rug-pull path for hosted servers; the digest rule is its mitigation today.
+4. No ResourceQuota or LimitRange in `mcp-hosted`, and no cap on the number of hosted servers. The per-server caps bound one server only.
+5. If the VM's own public IP answers on 443, the SSRF note in the VM list below applies to hosted pods as well.
+
 ## On the VM (M8)
 
 Cannot be finished or proven on k3d:
@@ -163,3 +205,4 @@ Cannot be finished or proven on k3d:
 5. k3s 1.30 or later, and kube-router NetworkPolicy left on. Rerun `netpol-check.sh`, `vap-check.sh` and `stores-check.sh all` there.
 6. The control-plane's API server egress rule (any address on 6443 and 443) is proven by one store install on the VM.
 7. Decide whether to deny the VM's own public IP in the SSRF guard (item 1).
+8. Hosted servers (section 11): set `hosted.allowedImagePrefixes` to `ghcr.io/<owner>/` and require `@sha256` digests for every hosted create (section 11, gap 1). Run `hosted-check.sh all`, `netpol-check.sh hosted fx2` and `vap-check.sh` there. Confirm the pull works (a private package gives `ErrImagePull`).
