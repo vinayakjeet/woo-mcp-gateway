@@ -5,6 +5,7 @@ import { useConfig, useMe } from './session';
 
 export const NAV: Array<{ to: string; label: string; admin: boolean }> = [
   { to: '/servers', label: 'Servers', admin: false },
+  { to: '/health', label: 'Health', admin: false },
   { to: '/stores', label: 'Stores', admin: false },
   { to: '/chat', label: 'Chat', admin: false },
   { to: '/policies', label: 'Policies', admin: false },
