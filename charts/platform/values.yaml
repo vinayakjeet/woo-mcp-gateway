@@ -73,6 +73,14 @@ provisioner:
       wordpress: 2Gi
     environmentType: local
 
+# SPEC 21 (M11): hosted MCP servers run in mcp-hosted. An admin can only submit an image that starts with
+# one of these prefixes. Each entry ends with "/" or ":" so "ghcr.io/acme/" cannot admit "ghcr.io/acme-evil/".
+# Empty refuses every create. The caps bound the limits an admin may request.
+hosted:
+  allowedImagePrefixes: []
+  maxCpu: 500m
+  maxMemory: 256Mi
+
 fxMcp:
   slug: fx
   name: Currency

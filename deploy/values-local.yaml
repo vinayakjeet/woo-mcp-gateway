@@ -17,3 +17,7 @@ agent:
 # Stores from the dashboard (SPEC 18, M9).
 provisioner:
   enabled: true
+
+# Hosted servers (SPEC 21, M11). The local fx-mcp image is imported into k3d with no registry.
+hosted:
+  allowedImagePrefixes: ['fx-mcp:']

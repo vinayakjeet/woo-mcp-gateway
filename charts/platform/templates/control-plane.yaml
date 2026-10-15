@@ -121,6 +121,18 @@ spec:
               value: {{ .Values.provisioner.maxStoresPerUser | quote }}
             - name: PROVISIONER_STORE_VALUES
               value: {{ include "platform.storeValues" . | quote }}
+            # Hosted servers (SPEC 21). The gateway labels come from the same helper the gateway pod uses,
+            # so the NetworkPolicy the control-plane builds always matches the gateway.
+            - name: HOSTED_ALLOWED_IMAGE_PREFIXES
+              value: {{ .Values.hosted.allowedImagePrefixes | toJson | quote }}
+            - name: HOSTED_MAX_CPU
+              value: {{ .Values.hosted.maxCpu | quote }}
+            - name: HOSTED_MAX_MEMORY
+              value: {{ .Values.hosted.maxMemory | quote }}
+            - name: HOSTED_GATEWAY_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: HOSTED_GATEWAY_LABELS
+              value: {{ include "platform.selectorLabels" (list . "gateway") | fromYaml | toJson | quote }}
             # helm and its Kubernetes client keep caches under HOME; only /tmp is writable.
             - name: HOME
               value: /tmp
