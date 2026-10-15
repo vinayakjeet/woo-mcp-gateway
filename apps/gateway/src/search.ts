@@ -1,11 +1,12 @@
 import type { Tool } from '@modelcontextprotocol/client';
 import MiniSearch from 'minisearch';
 import { z } from 'zod';
+import type { ToolMode } from './types.js';
 
 // SPEC 17: above this many visible tools, `auto` lists only the two meta-tools.
 export const SEARCH_THRESHOLD = 40;
 
-export type ToolMode = 'full' | 'search' | 'auto';
+export type { ToolMode };
 
 export function parseToolModeOverride(raw: unknown): 'search' | 'full' | undefined {
   if (raw === undefined) return undefined;

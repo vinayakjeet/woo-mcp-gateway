@@ -9,7 +9,7 @@ import { errorCode } from '@woo/core';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 import type { PolicyView } from './policies.js';
 import type { Router } from './registry.js';
-import type { AuditRow, AuditSink, Log, Principal } from './types.js';
+import type { AuditRow, AuditSink, Log, Principal, ToolMode } from './types.js';
 
 // Tool names come from the client: cap what is echoed back and stored.
 export const MAX_NAME_ECHO = 128;
@@ -24,6 +24,8 @@ export const LIST_CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const
 
 export type GatewayServerOptions = {
   principal: Principal;
+  // The URL override if the request had one, else the principal's mode (decided in app.ts).
+  toolMode: ToolMode;
   router: Router;
   policies: PolicyView;
   audit: AuditSink;

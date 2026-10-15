@@ -65,7 +65,24 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
       role: 'admin',
       via: 'api_key',
       apiKeyId: id,
+      toolMode: 'auto',
     });
+  });
+
+  it("carries the key's tool_mode on the principal", async () => {
+    const { key } = await addKey(adminId, { toolMode: 'search' });
+    expect((await auth().authenticate(`Bearer ${key}`))?.toolMode).toBe('search');
+  });
+
+  it('keeps a cached mode until the cache entry expires', async () => {
+    const { key, id } = await addKey(adminId, { toolMode: 'search' });
+    const a = auth();
+    expect((await a.authenticate(`Bearer ${key}`))?.toolMode).toBe('search');
+    await db.update(schema.apiKeys).set({ toolMode: 'full' }).where(eq(schema.apiKeys.id, id));
+    t += 9_000;
+    expect((await a.authenticate(`Bearer ${key}`))?.toolMode).toBe('search');
+    t += 1_000;
+    expect((await a.authenticate(`Bearer ${key}`))?.toolMode).toBe('full');
   });
 
   it('rejects a wrong secret with a known prefix, cached or not', async () => {
@@ -168,6 +185,7 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
       role: 'admin',
       via: 'agent',
       apiKeyId: null,
+      toolMode: 'auto',
     });
   });
 

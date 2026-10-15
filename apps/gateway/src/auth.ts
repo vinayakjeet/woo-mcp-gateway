@@ -8,7 +8,7 @@ import {
 } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
-import { UUID_RE, type Db, type Log, type Principal } from './types.js';
+import { UUID_RE, type Db, type Log, type Principal, type ToolMode } from './types.js';
 
 type KeyRow = {
   id: string;
@@ -18,6 +18,7 @@ type KeyRow = {
   userId: string;
   email: string;
   role: 'admin' | 'member';
+  toolMode: ToolMode;
   status: 'invited' | 'active' | 'disabled';
 };
 
@@ -122,6 +123,7 @@ export class Authenticator {
       role: row.role,
       via: 'api_key',
       apiKeyId: row.id,
+      toolMode: row.toolMode,
     };
   }
 
@@ -166,6 +168,7 @@ export class Authenticator {
         email: u.email,
         role: u.role,
         status: u.status,
+        toolMode: k.toolMode,
       })
       .from(k)
       .innerJoin(u, eq(u.id, k.userId))
@@ -213,6 +216,14 @@ export class Authenticator {
       .where(eq(u.id, sub))
       .limit(1);
     if (!user || user.status !== 'active') return null;
-    return { userId: user.id, email: user.email, role: user.role, via: 'agent', apiKeyId: null };
+    // No key to carry a mode, so the agent follows the visible-count rule (SPEC 17).
+    return {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      via: 'agent',
+      apiKeyId: null,
+      toolMode: 'auto',
+    };
   }
 }

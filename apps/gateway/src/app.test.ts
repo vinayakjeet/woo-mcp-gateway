@@ -2,7 +2,8 @@ import type { AddressInfo } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildGatewayApp } from './app.js';
+import { buildGatewayApp, type GatewayAppOptions } from './app.js';
+import { createGatewayServer } from './mcp.js';
 import type { Router } from './registry.js';
 import type { Principal } from './types.js';
 
@@ -12,6 +13,7 @@ const principal: Principal = {
   role: 'admin',
   via: 'api_key',
   apiKeyId: null,
+  toolMode: 'full',
 };
 const router: Router = {
   list: () => [{ name: 'fx__get_info', description: '[FX] info', inputSchema: { type: 'object' } }],
@@ -24,6 +26,7 @@ let base: string;
 
 async function start(
   authenticate = async (h?: string) => (h === 'Bearer good' ? principal : null),
+  createServer?: GatewayAppOptions['createServer'],
 ) {
   const a = buildGatewayApp({
     router,
@@ -32,6 +35,7 @@ async function start(
     authenticate,
     replica: 'gw-test-0',
     allowedOrigins: ['http://app.example.test'],
+    createServer,
   });
   await a.listen({ host: '127.0.0.1', port: 0 });
   return { a, url: `http://127.0.0.1:${(a.server.address() as AddressInfo).port}` };
@@ -170,5 +174,74 @@ describe('buildGatewayApp', () => {
     });
     expect(res.status).toBe(503);
     await a.close();
+  });
+
+  describe('toolMode query', () => {
+    async function withSeen(authenticate?: Parameters<typeof start>[0]) {
+      const seen: string[] = [];
+      const { a, url } = await start(authenticate, (o) => {
+        seen.push(o.toolMode);
+        return createGatewayServer(o);
+      });
+      const send = (query: string, headers: Record<string, string> = {}) =>
+        fetch(`${url}/mcp${query}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer good',
+            'mcp-protocol-version': '2025-11-25',
+            ...headers,
+          },
+          body: listBody,
+        });
+      return { a, seen, send };
+    }
+
+    it('answers 400 for a bad value and never reaches the server factory', async () => {
+      const { a, seen, send } = await withSeen();
+      for (const q of [
+        '?toolMode=bogus',
+        '?toolMode=auto',
+        '?toolMode=',
+        '?toolMode=full&toolMode=search',
+      ]) {
+        const res = await send(q);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
+          jsonrpc: '2.0',
+          error: { code: -32602, message: 'Invalid toolMode' },
+          id: null,
+        });
+      }
+      expect(seen).toEqual([]);
+      await a.close();
+    });
+
+    it('hands the override to the server factory', async () => {
+      const { a, seen, send } = await withSeen();
+      expect((await send('?toolMode=search')).status).toBe(200);
+      expect((await send('?toolMode=full')).status).toBe(200);
+      expect(seen).toEqual(['search', 'full']);
+      await a.close();
+    });
+
+    it("uses the principal's mode without a query", async () => {
+      const { a, seen, send } = await withSeen(async (h) =>
+        h === 'Bearer good' ? { ...principal, toolMode: 'search' } : null,
+      );
+      expect((await send('')).status).toBe(200);
+      expect((await send('?other=1')).status).toBe(200);
+      expect(seen).toEqual(['search', 'search']);
+      await a.close();
+    });
+
+    it('answers 401 before it looks at the mode', async () => {
+      const { a, seen, send } = await withSeen();
+      const res = await send('?toolMode=bogus', { authorization: 'Bearer bad' });
+      expect(res.status).toBe(401);
+      expect(seen).toEqual([]);
+      await a.close();
+    });
   });
 });

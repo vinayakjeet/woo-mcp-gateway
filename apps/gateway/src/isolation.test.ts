@@ -19,6 +19,7 @@ const principal: Principal = {
   role: 'admin',
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
+  toolMode: 'full',
 };
 
 type Fake = Awaited<ReturnType<typeof startMcpHttpServer>>;
