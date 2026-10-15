@@ -27,6 +27,7 @@ type ServerRow = {
   name: string;
   kind: string;
   enabled: boolean;
+  approval: string;
   state: string | null;
   errorKind: string | null;
   errorMessage: string | null;
@@ -47,7 +48,7 @@ export function statsRoutes(scope: FastifyInstance, o: ApiOptions): void {
     if (!q.success) return reply.code(400).send({ error: 'bad_request' });
     const minutes = q.data.window ? Number.parseInt(q.data.window, 10) : DEFAULT_WINDOW_MINUTES;
     const servers = await o.pool.query<ServerRow>(
-      `select m.slug, m.name, m.kind, m.enabled, st.state,
+      `select m.slug, m.name, m.kind, m.enabled, m.approval::text as approval, st.state,
          st.error_kind as "errorKind", st.error_message as "errorMessage",
          to_char(st.checked_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "checkedAt",
          coalesce(a.calls, 0)::text as calls, coalesce(a.attempted, 0)::text as attempted,
@@ -93,6 +94,7 @@ export function statsRoutes(scope: FastifyInstance, o: ApiOptions): void {
           name: r.name,
           kind: r.kind,
           enabled: r.enabled,
+          approval: r.approval,
           state: r.state,
           errorKind: r.errorKind,
           errorMessage: r.errorMessage,

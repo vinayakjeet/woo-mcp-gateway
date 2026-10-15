@@ -7,6 +7,7 @@ type Server = {
   name: string;
   kind: string;
   enabled: boolean;
+  approval: string;
   state: string | null;
   errorKind: string | null;
   errorMessage: string | null;
@@ -142,6 +143,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('stats API (needs TEST_DATABASE_
       name: 'MAIN',
       kind: 'store',
       enabled: true,
+      approval: 'approved',
       state: 'unreachable',
       errorKind: 'refused',
       errorMessage: 'connection refused',
