@@ -125,6 +125,12 @@ check() { # slug [WANT for the tool calls, see answered]
   answered "$slug" "${slug}__convert_currency" "$out" "$since" "$want"
   pass "the gateway reached $slug for both calls (public 443 egress is proven by netpol-check.sh hosted)"
 
+  # The first sync is recorded in the row, so a tool added later cannot be auto-approved.
+  out=$(kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c \
+    "select s.tools_synced_at is not null, count(*) filter (where t.state = 'active') from mcp_servers s left join mcp_tools t on t.server_id = s.id where s.slug = '$slug' group by s.id")
+  [ "$out" = "t|3" ] || fail "$slug: want tools_synced_at set with 3 active tools, got '$out'"
+  pass "$slug has tools_synced_at set and 3 active tools"
+
   [ "$(kubectl -n "$NS" get deploy,svc,netpol,secret -l "urumi.io/hosted=$slug" -o name | wc -l)" -eq 4 ] ||
     fail "expected 4 objects labeled $slug"
   pass "4 objects carry urumi.io/hosted=$slug"
