@@ -28,6 +28,17 @@ gateway:
   allowInsecureUpstreams: false
   # Tool calls per minute for a key without its own limit, and for the agent (SPEC 19).
   rateLimitPerMinute: 60
+  # SPEC 23. Replicas share all state through Postgres, so any count works. Ignored while the HPA is on.
+  replicas: 1
+  # minAvailable 1: a node drain evicts one gateway pod at a time. Needs two replicas or the HPA.
+  pdb:
+    enabled: false
+  # CPU is measured against the 50m request, so 70 means about 35m per pod. k3s ships metrics-server.
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
 
 agent:
   # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (SPEC 17).

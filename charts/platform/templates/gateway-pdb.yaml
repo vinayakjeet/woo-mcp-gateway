@@ -1,0 +1,16 @@
+{{- if .Values.gateway.pdb.enabled }}
+{{- if and (le (int .Values.gateway.replicas) 1) (not .Values.gateway.hpa.enabled) }}
+{{- fail "a PDB with minAvailable 1 on one replica blocks every node drain: set gateway.replicas to 2 or more, or turn the HPA on" }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  labels:
+    {{- include "platform.labels" (list . "gateway") | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "gateway") | nindent 6 }}
+{{- end }}

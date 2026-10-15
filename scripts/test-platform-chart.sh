@@ -493,10 +493,52 @@ has "$ci" "app.kubernetes.io/name: prometheus" control-plane-ingress
 [ "$(grep -c 'podSelector: {}' <<<"$on_netpols")" -eq 4 ] || fail "Prometheus policies must not select every pod"
 pass "prometheus network policies allow exactly the two metrics ports"
 
+# Scaling (M12 decisions 20 to 22).
+gw=$(show gateway.yaml)
+has "$gw" "replicas: 1" "gateway default replicas"
+[ "$(grep -c 'kind: PodDisruptionBudget\|kind: HorizontalPodAutoscaler' <<<"$(render)")" -eq 0 ] || fail "defaults render a PDB or HPA"
+# preStop first so Traefik drops the pod before it stops listening; grace covers sleep 5 + drain 5.
+for want in "preStop:" "sleep:" "seconds: 5" "terminationGracePeriodSeconds: 15"; do
+  has "$gw" "$want" "gateway stop"
+done
+[ "$(grep -A3 'preStop:' <<<"$gw" | grep -c 'seconds: 5')" -eq 1 ] || fail "preStop sleep is not 5 s"
+
+scaled=$(render --set gateway.replicas=2 --set gateway.pdb.enabled=true)
+has "$(awk 'BEGIN{RS="---\n"} index($0, "kind: Deployment") && index($0, "\n  name: gateway\n")' <<<"$scaled")" "replicas: 2" "gateway replicas=2"
+pdb=$(awk 'BEGIN{RS="---\n"} /kind: PodDisruptionBudget/' <<<"$scaled")
+for want in "apiVersion: policy/v1" "name: gateway" "minAvailable: 1" "app.kubernetes.io/name: gateway" \
+  "app.kubernetes.io/instance: platform"; do
+  has "$pdb" "$want" "gateway pdb"
+done
+lacks "$scaled" "HorizontalPodAutoscaler" "pdb only"
+
+hpa_all=$(render --set gateway.hpa.enabled=true)
+hpa=$(awk 'BEGIN{RS="---\n"} /kind: HorizontalPodAutoscaler/' <<<"$hpa_all")
+for want in "apiVersion: autoscaling/v2" "name: gateway" "minReplicas: 2" "maxReplicas: 4" "averageUtilization: 70" \
+  "name: cpu" "kind: Deployment"; do
+  has "$hpa" "$want" "gateway hpa"
+done
+# The HPA owns the count, so a helm upgrade must not reset it.
+lacks "$(awk 'BEGIN{RS="---\n"} index($0, "kind: Deployment") && index($0, "\n  name: gateway\n")' <<<"$hpa_all")" "replicas:" "gateway deployment under the HPA"
+has "$(render --set gateway.hpa.enabled=true --set gateway.hpa.maxReplicas=6 --set gateway.hpa.targetCPUUtilizationPercentage=50 |
+  awk 'BEGIN{RS="---\n"} /kind: HorizontalPodAutoscaler/')" "maxReplicas: 6" "hpa override"
+
+err=$(helm template x charts/platform -n platform -f deploy/values-local.yaml --set mcp.sharedToken=x \
+  --set gateway.pdb.enabled=true 2>&1 >/dev/null || true)
+has "$err" "a PDB with minAvailable 1 on one replica blocks every node drain" "pdb with one replica"
+# With the HPA on there are at least two replicas, so the PDB is allowed.
+render --set gateway.pdb.enabled=true --set gateway.hpa.enabled=true >/dev/null || fail "pdb with hpa must render"
+
+# The production combination the M8 values file will set.
+prod=$(render --set gateway.replicas=2 --set gateway.pdb.enabled=true --set gateway.rateLimitPerMinute=60 \
+  --set monitoring.enabled=true --set gateway.hpa.enabled=false) || fail "production combination does not render"
+lacks "$prod" ":latest" "production combination"
+pass "gateway replicas, pdb, hpa and a drain-safe stop"
+
 { render --set global.imageTag=latest 2>&1 || true; } | grep -q "global.imageTag must not be latest" || fail "imageTag latest accepted"
 pass "imageTag latest rejected"
 
-for f in fx-mcp.yaml gateway.yaml control-plane.yaml; do
+for f in fx-mcp.yaml control-plane.yaml; do
   has "$(show "$f")" "terminationGracePeriodSeconds: 10" "$f"
 done
 pass "node services terminate within 10 s"

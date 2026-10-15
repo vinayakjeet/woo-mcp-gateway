@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "platform.labels" (list . "gateway") | nindent 4 }}
 spec:
-  replicas: 1
+  {{- if not .Values.gateway.hpa.enabled }}
+  replicas: {{ .Values.gateway.replicas | int }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "platform.selectorLabels" (list . "gateway") | nindent 6 }}
@@ -15,7 +17,9 @@ spec:
         {{- include "platform.labels" (list . "gateway") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 10
+      # preStop sleep 5 s, then SIGTERM and a drain of at most 5 s, with a margin. The pause lets
+      # Traefik and the EndpointSlice drop the pod before it stops listening.
+      terminationGracePeriodSeconds: 15
       securityContext:
         {{- include "platform.nodePodSecurity" . | nindent 8 }}
       containers:
@@ -46,6 +50,10 @@ spec:
               value: {{ .Values.gateway.rateLimitPerMinute | int | quote }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }
             periodSeconds: 10
