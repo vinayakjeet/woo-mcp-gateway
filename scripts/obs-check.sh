@@ -38,10 +38,23 @@ forward() {
   done
   fail "port-forward to $1 did not come up"
 }
-forward deploy/gateway 19090 9090
+# Every gateway replica gets its own forward: a call through the Ingress can land on any of them.
+gwports=()
+port=19090
+for pod in $(kubectl -n platform get pods -l app.kubernetes.io/name=gateway -o name); do
+  forward "$pod" "$port" 9090
+  gwports+=("$port")
+  port=$((port + 1))
+done
+[ "${#gwports[@]}" -ge 1 ] || fail "no gateway pods"
 forward svc/control-plane-internal 13001 3001
 
-gw_metrics() { curl -s --max-time 5 http://127.0.0.1:19090/metrics; }
+gw_metrics() { for pt in "${gwports[@]}"; do curl -s --max-time 5 "http://127.0.0.1:$pt/metrics"; done; }
+gw_logs() { kubectl -n platform logs -l app.kubernetes.io/name=gateway --max-log-requests=10 "$@"; }
+# The sum over replicas of one counter row.
+main_ok() {
+  gw_metrics | awk '/^gateway_tool_calls_total\{server="main",outcome="ok"\} / { s += $2 } END { print s + 0 }'
+}
 cp_metrics() { curl -s --max-time 5 http://127.0.0.1:13001/metrics; }
 
 gm=$(gw_metrics)
@@ -76,8 +89,7 @@ r=$(req admin.jar POST /api/keys "{\"name\":\"$run\"}")
 key_id=$(body "$r" | jq -r .key.id)
 save_key "$(body "$r")" obs-key
 
-before=$(gw_metrics | sed -n 's/^gateway_tool_calls_total{server="main",outcome="ok"} //p')
-before=${before:-0}
+before=$(main_ok)
 
 trace=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
 tp="00-$trace-00f067aa0ba902b7-01"
@@ -103,7 +115,7 @@ pass "a client x-request-id is ignored"
 seen_gw=0
 seen_woo=0
 for _ in $(seq 1 20); do
-  [ "$seen_gw" = 1 ] || { kubectl -n platform logs deploy/gateway --since=2m | grep -q "\"trace_id\":\"$trace\"" && seen_gw=1; } || true
+  [ "$seen_gw" = 1 ] || { gw_logs --since=2m | grep -q "\"trace_id\":\"$trace\"" && seen_gw=1; } || true
   [ "$seen_woo" = 1 ] || { kubectl -n store-main logs deploy/woo-mcp --since=2m | grep -q "\"trace_id\":\"$trace\"" && seen_woo=1; } || true
   [ "$seen_gw$seen_woo" = 11 ] && break
   sleep 0.5
@@ -112,7 +124,7 @@ done
 [ "$seen_woo" = 1 ] || fail "trace id not in the woo-mcp log"
 pass "trace id $trace is in the gateway and woo-mcp logs"
 
-line=$(kubectl -n platform logs deploy/gateway --since=2m | grep "\"trace_id\":\"$trace\"" | head -1)
+line=$(gw_logs --since=2m | grep "\"trace_id\":\"$trace\"" | head -1)
 jq -e --arg r "$rid" '.request_id == $r and .server == "main" and .tool == "get_info" and .outcome == "ok"' \
   <<<"$line" >/dev/null || fail "gateway call line lacks the request id, server, tool or outcome"
 pass "the gateway call line carries the same request id"
@@ -123,23 +135,22 @@ n=$(psql_one "select count(*) from audit_events where request_id = '$rid' and ou
 pass "audit row with request_id $rid exists"
 
 # Neither the key nor the call arguments appear in the logs that took part.
-for l in "gateway -n platform" "woo-mcp -n store-main"; do
-  # shellcheck disable=SC2086
-  set -- $l
-  logs=$(kubectl logs "deploy/$1" "$2" "$3" --since=5m)
-  ! grep -qFf "$S/obs-key" <<<"$logs" || fail "the API key is in the $1 log"
+for who in gateway woo-mcp; do
+  if [ "$who" = gateway ]; then logs=$(gw_logs --since=5m); else logs=$(kubectl -n store-main logs deploy/woo-mcp --since=5m); fi
+  ! grep -qFf "$S/obs-key" <<<"$logs" || fail "the API key is in the $who log"
 done
 pass "the API key is not in the gateway or woo-mcp logs"
 
 after=0
 for _ in $(seq 1 10); do
-  after=$(gw_metrics | sed -n 's/^gateway_tool_calls_total{server="main",outcome="ok"} //p')
-  after=${after:-0}
+  after=$(main_ok)
   [ "$after" -ge $((before + 1)) ] && break
   sleep 0.5
 done
 [ "$after" -ge $((before + 1)) ] || fail "gateway_tool_calls_total{main,ok} stayed at $before"
-gw_metrics | grep -q '^gateway_tool_call_duration_seconds_count{server="main"} ' ||
+# Captured first: grep -q closes the pipe early and pipefail would fail the pipeline.
+hist=$(gw_metrics)
+grep -q '^gateway_tool_call_duration_seconds_count{server="main"} ' <<<"$hist" ||
   fail "no duration histogram for main"
 pass "gateway_tool_calls_total{server=main,outcome=ok} grew from $before to $after"
 
