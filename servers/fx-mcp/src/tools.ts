@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/server';
+import { logToolCalls } from '@woo/core/mcp-http';
 import * as z from 'zod';
 import { FxError, formatAge, type Frankfurter } from './frankfurter.js';
 
@@ -38,7 +39,7 @@ function guard<A>(fn: (a: A) => Promise<ReturnType<typeof ok>>) {
 export function buildFxServer(deps: { fx: Frankfurter }): () => McpServer {
   const { fx } = deps;
   return () => {
-    const server = new McpServer({ name: 'fx-mcp', version: '0.1.0' });
+    const server = logToolCalls(new McpServer({ name: 'fx-mcp', version: '0.1.0' }));
 
     server.registerTool(
       'get_info',

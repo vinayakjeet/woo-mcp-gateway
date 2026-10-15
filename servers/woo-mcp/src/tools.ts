@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/server';
+import { logToolCalls } from '@woo/core/mcp-http';
 import { resolveRange, startOfDay, storeTimeZone, toWcGmt } from './dates.js';
 import {
   createdProduct,
@@ -69,7 +70,7 @@ export function buildWooServer(deps: { woo: WooApi; now?: () => Date }): () => M
   };
 
   return () => {
-    const server = new McpServer({ name: 'woo-mcp', version: '0.1.0' });
+    const server = logToolCalls(new McpServer({ name: 'woo-mcp', version: '0.1.0' }));
 
     server.registerTool(
       'get_info',
