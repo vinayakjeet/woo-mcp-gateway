@@ -93,6 +93,16 @@ describe('buildGatewayApp', () => {
     }
   });
 
+  it('has no /metrics on the MCP port', async () => {
+    for (const method of ['GET', 'POST']) {
+      const res = await fetch(`${base}/metrics`, {
+        method,
+        headers: { authorization: 'Bearer good' },
+      });
+      expect(res.status).toBe(404);
+    }
+  });
+
   it('answers 403 for a foreign Origin and accepts the app origin', async () => {
     const bad = await post(listBody, { origin: 'http://evil.example' });
     expect(bad.status).toBe(403);

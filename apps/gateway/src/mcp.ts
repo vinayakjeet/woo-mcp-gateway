@@ -14,6 +14,7 @@ import {
 } from '@woo/core';
 import type { z } from 'zod';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
+import { serverLabel, type GatewayMetrics } from './metrics.js';
 import type { PolicyView } from './policies.js';
 import type { CallLimiter } from './rate-limit.js';
 import type { Router } from './registry.js';
@@ -51,6 +52,7 @@ export type GatewayServerOptions = {
   limiter: CallLimiter;
   // The HTTP request id, so the audit row, the log line and the x-request-id header agree.
   requestId?: string;
+  metrics?: Pick<GatewayMetrics, 'observe'>;
   replica: string;
   log: Log;
 };
@@ -101,6 +103,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
 
   const writeAudit = async (row: AuditRow, started: number, trace: TraceParent) => {
     row.durationMs = Math.round(performance.now() - started);
+    o.metrics?.observe(row);
     await o.audit
       .write(row)
       .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
@@ -111,11 +114,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         request_id: row.requestId,
         trace_id: trace.traceId,
         user_id: row.userId,
-        server: row.serverId
-          ? row.serverSlug
-          : row.metaTool === 'search_tools'
-            ? '_search'
-            : '_unknown',
+        server: serverLabel(row),
         tool: row.serverId || row.metaTool === 'search_tools' ? row.toolName : '_unknown',
         outcome: row.outcome,
         ms: row.durationMs,

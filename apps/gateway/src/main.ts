@@ -10,6 +10,7 @@ import { PgAuditSink } from './audit-db.js';
 import { Authenticator } from './auth.js';
 import type { GatewayConfig } from './config.js';
 import { buildHealthApp } from './health.js';
+import { createGatewayMetrics } from './metrics.js';
 import { gatewayLogger } from './logger.js';
 import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
 import { pinnedFetch } from './pinned-fetch.js';
@@ -38,7 +39,10 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
   const db = drizzle(pool, { schema });
 
   const health = buildHealthApp(
-    { ready: async () => sync.loaded && (await schemaReady(pool)) },
+    {
+      ready: async () => sync.loaded && (await schemaReady(pool)),
+      metrics: () => metrics.render(),
+    },
     logger,
   );
   const log = health.log;
@@ -67,6 +71,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     onTools: (u) => sync.persistTools(u),
     onStatus: writeStatus,
   });
+  const metrics = createGatewayMetrics(registry);
   // A new status writer has never written this replica's view, including disabled servers that never check.
   const status = new StatusWriter({
     databaseUrl: cfg.databaseUrl,
@@ -89,6 +94,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     policies,
     audit: new PgAuditSink(db),
     limiter: callLimiter(new RateLimiter(db), cfg.rateLimitPerMinute),
+    metrics,
     authenticate: (h) => auth.authenticate(h),
     replica: cfg.replica,
     allowedOrigins: cfg.allowedOrigins,

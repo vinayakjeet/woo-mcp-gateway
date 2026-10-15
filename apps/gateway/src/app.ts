@@ -5,6 +5,7 @@ import { errorCode, requestIdOptions } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { createGatewayServer, type GatewayServerOptions } from './mcp.js';
 import { parseToolModeOverride } from './search.js';
+import type { GatewayMetrics } from './metrics.js';
 import type { PolicyView } from './policies.js';
 import type { CallLimiter } from './rate-limit.js';
 import type { Router } from './registry.js';
@@ -15,6 +16,7 @@ export type GatewayAppOptions = {
   policies: PolicyView;
   audit: AuditSink;
   limiter: CallLimiter;
+  metrics?: Pick<GatewayMetrics, 'observe'>;
   authenticate(header: string | undefined): Promise<Principal | null>;
   replica: string;
   allowedOrigins: string[];
@@ -47,6 +49,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         policies: o.policies,
         audit: o.audit,
         limiter: o.limiter,
+        metrics: o.metrics,
         requestId: ctx.authInfo?.extra?.requestId as string | undefined,
         replica: o.replica,
         log,
