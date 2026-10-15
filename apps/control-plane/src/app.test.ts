@@ -266,3 +266,30 @@ describe('error handling', () => {
     expect(r.statusCode).toBe(400);
   });
 });
+
+describe('request ids', () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  it.each(['public', 'internal'] as const)(
+    'log lines of the %s app carry request_id as a server made UUID',
+    async (which) => {
+      const lines: string[] = [];
+      const logger = { level: 'info', stream: { write: (m: string) => void lines.push(m) } };
+      const { deps } = fakeDeps(user());
+      const app =
+        which === 'public'
+          ? buildPublicApp(deps, { appOrigin: ORIGIN, secureCookies: false }, logger)
+          : buildInternalApp(deps, logger);
+      const headers = { 'x-request-id': 'chosen-by-client', 'request-id': 'also-client' };
+      await app.inject({ url: '/healthz', headers });
+      await app.inject({ url: '/healthz', headers });
+      const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      const ids = parsed.map((l) => l.request_id);
+      expect(ids.length).toBeGreaterThanOrEqual(2);
+      for (const id of ids) expect(id).toMatch(UUID);
+      expect(new Set(ids).size).toBeGreaterThan(1);
+      expect(parsed.every((l) => !('reqId' in l))).toBe(true);
+      expect(lines.join('')).not.toContain('chosen-by-client');
+    },
+  );
+});
