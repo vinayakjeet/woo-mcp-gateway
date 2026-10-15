@@ -8,6 +8,7 @@ import {
   type Server,
 } from '@modelcontextprotocol/server';
 import * as z from 'zod';
+import type { CallLimiter } from './rate-limit.js';
 import type { Log } from './types.js';
 
 export type FakeTool = (signal: AbortSignal) => Promise<CallToolResult>;
@@ -71,5 +72,7 @@ export function captureLog(): Log & { lines: string[] } {
     void lines.push(JSON.stringify({ level, ...obj, msg }));
   return { lines, info: push('info'), warn: push('warn'), error: push('error') };
 }
+
+export const unlimited: CallLimiter = { check: async () => ({ allowed: true, retryInSeconds: 0 }) };
 
 export const quietLog: Log = { info: () => {}, warn: () => {}, error: () => {} };

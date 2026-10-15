@@ -1,8 +1,8 @@
 import { schema } from '@woo/core/db';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { pruneRateCounters, RateLimiter, rateSubject } from './rate-limit.js';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { callLimiter, pruneRateCounters, RateLimiter, rateSubject } from './rate-limit.js';
 import { migratedDatabase, TEST_DATABASE_URL } from './test-db.js';
 import type { Db, Principal } from './types.js';
 
@@ -13,6 +13,7 @@ const principal = (p: Partial<Principal>): Principal => ({
   via: 'api_key',
   apiKeyId: 'k1',
   toolMode: 'full',
+  rateLimitPerMin: null,
   ...p,
 });
 
@@ -20,6 +21,26 @@ describe('rateSubject', () => {
   it('is key:<id> for a key and user:<id> for the agent', () => {
     expect(rateSubject(principal({ via: 'api_key', apiKeyId: 'k9' }))).toBe('key:k9');
     expect(rateSubject(principal({ via: 'agent', apiKeyId: null, userId: 'u7' }))).toBe('user:u7');
+  });
+});
+
+describe('callLimiter', () => {
+  const hit = vi.fn(async () => ({ allowed: true, count: 1, retryInSeconds: 30 }));
+
+  it("uses the key's own limit before the default", async () => {
+    hit.mockClear();
+    await callLimiter({ hit }, 60).check(principal({ apiKeyId: 'k5', rateLimitPerMin: 5 }));
+    expect(hit).toHaveBeenCalledWith('key:k5', 5);
+    await callLimiter({ hit }, 60).check(principal({ apiKeyId: 'k6', rateLimitPerMin: null }));
+    expect(hit).toHaveBeenLastCalledWith('key:k6', 60);
+  });
+
+  it('counts the agent under user:<id> with the default', async () => {
+    hit.mockClear();
+    await callLimiter({ hit }, 60).check(
+      principal({ via: 'agent', apiKeyId: null, userId: 'u3', rateLimitPerMin: null }),
+    );
+    expect(hit).toHaveBeenCalledWith('user:u3', 60);
   });
 });
 

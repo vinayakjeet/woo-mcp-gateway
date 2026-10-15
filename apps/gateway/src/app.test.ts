@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildGatewayApp, type GatewayAppOptions } from './app.js';
 import { createGatewayServer } from './mcp.js';
 import type { Router } from './registry.js';
+import { unlimited } from './test-helpers.js';
 import type { Principal } from './types.js';
 
 const principal: Principal = {
@@ -14,6 +15,7 @@ const principal: Principal = {
   via: 'api_key',
   apiKeyId: null,
   toolMode: 'full',
+  rateLimitPerMin: null,
 };
 const router: Router = {
   list: () => [{ name: 'fx__get_info', description: '[FX] info', inputSchema: { type: 'object' } }],
@@ -32,6 +34,7 @@ async function start(
     router,
     policies: { allows: () => true },
     audit: { write: async () => {} },
+    limiter: unlimited,
     authenticate,
     replica: 'gw-test-0',
     allowedOrigins: ['http://app.example.test'],

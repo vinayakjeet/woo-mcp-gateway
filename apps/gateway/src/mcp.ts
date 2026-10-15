@@ -9,6 +9,7 @@ import { errorCode } from '@woo/core';
 import type { z } from 'zod';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 import type { PolicyView } from './policies.js';
+import type { CallLimiter } from './rate-limit.js';
 import type { Router } from './registry.js';
 import {
   CALL_TOOL,
@@ -30,6 +31,8 @@ export const MAX_VERSION_ECHO = 32;
 // The SDK already answers 400 to an unknown version, but the audit row should not rely on that.
 export const auditVersion = (raw: string | null | undefined): string | null =>
   raw ? raw.slice(0, MAX_VERSION_ECHO) : null;
+// A limiter that stalls must not stall the call: past this the call goes through.
+export const RATE_CHECK_TIMEOUT_MS = 2000;
 export const LIST_CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const;
 
 export type GatewayServerOptions = {
@@ -39,6 +42,7 @@ export type GatewayServerOptions = {
   router: Router;
   policies: PolicyView;
   audit: AuditSink;
+  limiter: CallLimiter;
   replica: string;
   log: Log;
 };
@@ -86,6 +90,30 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       .write(row)
       .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
   };
+
+  // Seconds until the window resets when the caller is over the limit, else null. A broken or slow
+  // limiter lets the call through: Postgres trouble should not turn into a second outage.
+  const overLimit = async (): Promise<number | null> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const stall = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('rate limit check stalled'), { code: 'ETIMEDOUT' })),
+          RATE_CHECK_TIMEOUT_MS,
+        );
+      });
+      const r = await Promise.race([o.limiter.check(o.principal), stall]);
+      return r.allowed ? null : r.retryInSeconds;
+    } catch (err) {
+      o.log.warn({ code: errorCode(err) }, 'rate limit check failed, letting the call through');
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const rateLimitedText = (retryInSeconds: number) =>
+    `Rate limit exceeded, retry in ${retryInSeconds} s`;
 
   // A tree deeper than the limit would overflow the recursive canonicalJson.
   const hashArgs = (row: AuditRow, args: unknown) => {
@@ -142,6 +170,12 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         row.errorMessage = 'hidden by policy';
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
+      // After policy, so a hidden tool is not counted; before the enabled flag (SPEC 6.5 step 2).
+      const retry = await overLimit();
+      if (retry !== null) {
+        row.outcome = 'rate_limited';
+        return toolError(rateLimitedText(retry));
+      }
       if (!record.enabled) {
         row.outcome = 'disabled';
         return toolError(`Server ${record.slug} is disabled`);
@@ -167,6 +201,12 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       hashArgs(row, args);
       const parsed = searchToolsInput.safeParse(args ?? {});
       if (!parsed.success) throw invalidArguments(row, SEARCH_TOOLS, parsed.error);
+      const retry = await overLimit();
+      if (retry !== null) {
+        row.outcome = 'rate_limited';
+        row.errorMessage = rateLimitedText(retry);
+        return { content: [{ type: 'text', text: row.errorMessage }], isError: true };
+      }
       // The same filter as tools/list, so search never shows what the caller could not list.
       const found = searchTools(o.router.list(allowed), parsed.data.query, parsed.data.limit);
       const payload = {

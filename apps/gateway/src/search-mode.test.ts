@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { createGatewayServer } from './mcp.js';
 import { Registry } from './registry.js';
-import { quietLog } from './test-helpers.js';
+import { unlimited, quietLog } from './test-helpers.js';
 import type {
   AuditRow,
   CallOutcome,
@@ -22,6 +22,7 @@ const member: Principal = {
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
   toolMode: 'auto',
+  rateLimitPerMin: null,
 };
 const admin: Principal = { ...member, email: 'admin@example.com', role: 'admin' };
 
@@ -111,6 +112,7 @@ async function connect(
     toolMode: o.toolMode ?? principal.toolMode,
     router: registry,
     policies: { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) },
+    limiter: unlimited,
     replica: 'r1',
     log: quietLog,
     audit: {

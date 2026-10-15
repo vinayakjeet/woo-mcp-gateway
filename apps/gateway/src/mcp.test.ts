@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { auditVersion, createGatewayServer } from './mcp.js';
 import type { Route, Router } from './registry.js';
-import { captureLog, quietLog } from './test-helpers.js';
+import type { CallLimiter } from './rate-limit.js';
+import { captureLog, quietLog, unlimited } from './test-helpers.js';
 import type { AuditRow, CallOutcome, Log, Principal, ServerRecord } from './types.js';
 
 const principal: Principal = {
@@ -14,6 +15,7 @@ const principal: Principal = {
   via: 'api_key',
   apiKeyId: '00000000-0000-4000-8000-000000000002',
   toolMode: 'full',
+  rateLimitPerMin: null,
 };
 
 type Call = (
@@ -54,6 +56,7 @@ async function connect(
     failAudit?: boolean;
     rules?: PolicyRule[];
     principal?: Principal;
+    limiter?: CallLimiter;
   } = {},
 ) {
   const audit: AuditRow[] = [];
@@ -74,6 +77,7 @@ async function connect(
       ? { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) }
       : allowAll,
     router,
+    limiter: o.limiter ?? unlimited,
     replica: 'r1',
     log: o.log ?? quietLog,
     audit: {
@@ -262,6 +266,129 @@ describe('createGatewayServer', () => {
     expect(auditVersion('2025-11-25')).toBe('2025-11-25');
     expect(auditVersion(null)).toBeNull();
     expect(auditVersion('')).toBeNull();
+  });
+
+  describe('rate limit', () => {
+    // Allows `n` checks, then refuses with 42 s. `checks` shows what was counted.
+    const limitAfter = (n: number) => {
+      const check = vi.fn(async () => ({
+        allowed: check.mock.calls.length <= n,
+        retryInSeconds: 42,
+      }));
+      return { check } satisfies CallLimiter;
+    };
+    const tool = (name: string): Tool => ({
+      name,
+      description: name,
+      inputSchema: { type: 'object' },
+    });
+
+    it('answers the call after the limit with a tool error and audits rate_limited', async () => {
+      const call = vi.fn(okCall);
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter });
+      await client.callTool({ name: 'fx__tool', arguments: {} });
+      const r = await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(r).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: 'Rate limit exceeded, retry in 42 s' }],
+      });
+      expect(call).toHaveBeenCalledOnce();
+      expect(audit.map((a) => a.outcome)).toEqual(['ok', 'rate_limited']);
+      expect(audit[1]).toMatchObject({
+        serverSlug: 'fx',
+        errorMessage: 'Rate limit exceeded, retry in 42 s',
+      });
+    });
+
+    it('counts call_tool once and limits it the same way', async () => {
+      const call = vi.fn(okCall);
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter });
+      const via = () => client.callTool({ name: 'call_tool', arguments: { name: 'fx__tool' } });
+      await via();
+      expect(limiter.check).toHaveBeenCalledTimes(1);
+      expect(await via()).toMatchObject({ isError: true });
+      expect(audit.map((a) => [a.metaTool, a.outcome])).toEqual([
+        ['call_tool', 'ok'],
+        ['call_tool', 'rate_limited'],
+      ]);
+    });
+
+    it('counts search_tools and limits it', async () => {
+      const limiter = limitAfter(1);
+      const { client, audit } = await connect({}, { tools: [tool('fx__a')], limiter });
+      await client.callTool({ name: 'search_tools', arguments: { query: 'a' } });
+      const r = await client.callTool({ name: 'search_tools', arguments: { query: 'a' } });
+      expect(r).toMatchObject({ isError: true });
+      expect(audit.map((a) => a.outcome)).toEqual(['ok', 'rate_limited']);
+    });
+
+    it('never limits tools/list', async () => {
+      const limiter = limitAfter(0);
+      const { client } = await connect({}, { tools: [tool('fx__a')], limiter });
+      for (let i = 0; i < 3; i++) await client.listTools();
+      expect(limiter.check).not.toHaveBeenCalled();
+    });
+
+    it('does not count a hidden tool or an unknown name', async () => {
+      const limiter = limitAfter(0);
+      const { client } = await connect(
+        { main__create_product: route('main', okCall, true, 'create_product') },
+        { rules: seeded, limiter },
+      );
+      await expect(
+        client.callTool({ name: 'main__create_product', arguments: {} }),
+      ).rejects.toMatchObject({ code: -32602, message: expect.stringContaining('Unknown tool') });
+      await expect(client.callTool({ name: 'nope__x', arguments: {} })).rejects.toMatchObject({
+        code: -32602,
+      });
+      expect(limiter.check).not.toHaveBeenCalled();
+    });
+
+    it('says rate limited for a disabled server when over the limit', async () => {
+      const { client, audit } = await connect(
+        { fx__tool: route('fx', okCall, false) },
+        { limiter: limitAfter(0) },
+      );
+      const r = await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(r).toMatchObject({ content: [{ text: 'Rate limit exceeded, retry in 42 s' }] });
+      expect(audit[0]?.outcome).toBe('rate_limited');
+    });
+
+    it('lets the call through and warns with a code only when the limiter throws', async () => {
+      const log = captureLog();
+      const limiter: CallLimiter = {
+        check: async () => {
+          throw Object.assign(new Error('insert into "rate_counters" values ($1)'), {
+            code: '57P01',
+          });
+        },
+      };
+      const call = vi.fn(okCall);
+      const { client, audit } = await connect({ fx__tool: route('fx', call) }, { limiter, log });
+      expect(await client.callTool({ name: 'fx__tool', arguments: {} })).not.toHaveProperty(
+        'isError',
+      );
+      expect(call).toHaveBeenCalledOnce();
+      expect(audit[0]?.outcome).toBe('ok');
+      const warns = log.lines.filter((l) => l.includes('"level":"warn"'));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('57P01');
+      expect(warns[0]).not.toContain('rate_counters');
+    });
+
+    it('lets the call through after a 2 s stall', async () => {
+      const log = captureLog();
+      const limiter: CallLimiter = { check: () => new Promise(() => {}) };
+      const call = vi.fn(okCall);
+      const { client } = await connect({ fx__tool: route('fx', call) }, { limiter, log });
+      const t0 = Date.now();
+      await client.callTool({ name: 'fx__tool', arguments: {} });
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(1900);
+      expect(call).toHaveBeenCalledOnce();
+      expect(log.lines.some((l) => l.includes('ETIMEDOUT'))).toBe(true);
+    }, 10_000);
   });
 
   describe('role policy', () => {

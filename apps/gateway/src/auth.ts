@@ -19,6 +19,7 @@ type KeyRow = {
   email: string;
   role: 'admin' | 'member';
   toolMode: ToolMode;
+  rateLimitPerMin: number | null;
   status: 'invited' | 'active' | 'disabled';
 };
 
@@ -124,6 +125,7 @@ export class Authenticator {
       via: 'api_key',
       apiKeyId: row.id,
       toolMode: row.toolMode,
+      rateLimitPerMin: row.rateLimitPerMin,
     };
   }
 
@@ -169,6 +171,7 @@ export class Authenticator {
         role: u.role,
         status: u.status,
         toolMode: k.toolMode,
+        rateLimitPerMin: k.rateLimitPerMin,
       })
       .from(k)
       .innerJoin(u, eq(u.id, k.userId))
@@ -224,6 +227,7 @@ export class Authenticator {
       via: 'agent',
       apiKeyId: null,
       toolMode: 'auto',
+      rateLimitPerMin: null,
     };
   }
 }

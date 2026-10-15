@@ -29,6 +29,15 @@ export function rateSubject(p: Principal): string {
   return p.via === 'agent' ? `user:${p.userId}` : `key:${p.apiKeyId}`;
 }
 
+// The seam the call path uses. The key's own limit beats the default.
+export type CallLimiter = {
+  check(p: Principal): Promise<{ allowed: boolean; retryInSeconds: number }>;
+};
+
+export function callLimiter(limiter: Pick<RateLimiter, 'hit'>, defaultLimit: number): CallLimiter {
+  return { check: (p) => limiter.hit(rateSubject(p), p.rateLimitPerMin ?? defaultLimit) };
+}
+
 // Two minutes keeps the previous window around for a debugging query and costs a few rows.
 export async function pruneRateCounters(db: Db): Promise<number> {
   const res = await db.execute(

@@ -66,7 +66,17 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
       via: 'api_key',
       apiKeyId: id,
       toolMode: 'auto',
+      rateLimitPerMin: null,
     });
+  });
+
+  it('carries rate_limit_per_min from the cached key row', async () => {
+    const { key, id } = await addKey(adminId, { rateLimitPerMin: 7 });
+    const a = auth();
+    expect((await a.authenticate(`Bearer ${key}`))?.rateLimitPerMin).toBe(7);
+    // Cached for the TTL: a change shows up only after it, like tool_mode.
+    await db.update(schema.apiKeys).set({ rateLimitPerMin: 9 }).where(eq(schema.apiKeys.id, id));
+    expect((await a.authenticate(`Bearer ${key}`))?.rateLimitPerMin).toBe(7);
   });
 
   it("carries the key's tool_mode on the principal", async () => {
@@ -186,6 +196,7 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
       via: 'agent',
       apiKeyId: null,
       toolMode: 'auto',
+      rateLimitPerMin: null,
     });
   });
 
