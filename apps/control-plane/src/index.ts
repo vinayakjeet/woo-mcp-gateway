@@ -24,6 +24,7 @@ const env = requireEnv(
 );
 const kek = parseKek(env.KEK);
 const provisioner = provisionerConfig(process.env);
+const hostedConfig = loadHostedConfig(process.env);
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 5 });
 const deps = pgDeps(pool);
 const logger = { redact: LOG_REDACT };
@@ -37,7 +38,7 @@ await pub.register(apiRoutes, {
   pepper: env.API_KEY_PEPPER,
   kek,
   provisioner,
-  hosted: loadHostedConfig(process.env),
+  hosted: hostedConfig,
   checkUrl: urlCheckFromEnv(process.env),
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
@@ -52,23 +53,26 @@ await internal.register(introspectRoutes, {
 });
 
 const provisionerLog = pub.log.child({ component: 'provisioner' });
-const stores = provisioner
-  ? new Provisioner({
-      databaseUrl: env.DATABASE_URL,
+let stores: Provisioner | null = null;
+if (provisioner) {
+  const kube = await inClusterKube();
+  stores = new Provisioner({
+    databaseUrl: env.DATABASE_URL,
+    log: provisionerLog,
+    deps: {
+      pool,
+      kek,
+      kube,
+      helm: helmCli(),
+      defaults: provisioner.storeDefaults,
+      // Baked into the image (SPEC 18). Overridable for running outside the image.
+      chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',
+      workDir: tmpdir(),
       log: provisionerLog,
-      deps: {
-        pool,
-        kek,
-        kube: await inClusterKube(),
-        helm: helmCli(),
-        defaults: provisioner.storeDefaults,
-        // Baked into the image (SPEC 18). Overridable for running outside the image.
-        chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',
-        workDir: tmpdir(),
-        log: provisionerLog,
-      },
-    })
-  : null;
+    },
+    hosted: { pool, kek, kube, config: hostedConfig, log: provisionerLog },
+  });
+}
 await stores?.start();
 
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });

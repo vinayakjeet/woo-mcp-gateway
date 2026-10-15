@@ -1,5 +1,6 @@
 import { errorCode } from '@woo/core';
 import pg from 'pg';
+import { reconcileHosted, type HostedDeps } from './hosted-reconcile.js';
 import {
   JOB_SELECT,
   provisionStore,
@@ -17,6 +18,8 @@ const LOCK_RETRY_MS = 10_000;
 export type ProvisionerOptions = {
   databaseUrl: string;
   deps: ReconcileDeps;
+  // Hosted servers (SPEC 21). Left out, the pass does not run.
+  hosted?: HostedDeps;
   log: Log;
   tickMs?: number;
   lockRetryMs?: number;
@@ -24,7 +27,7 @@ export type ProvisionerOptions = {
 
 // SPEC 18: only the replica holding advisory lock 4243 reconciles. The lock lives on its own
 // session (same pattern as the gateway's status writer), and LISTEN runs on that session, so a
-// replica hears stores_changed only while it leads.
+// replica hears stores_changed and hosted_changed only while it leads.
 export class Provisioner {
   private lockClient: pg.Client | null = null;
   private leader = false;
@@ -35,6 +38,7 @@ export class Provisioner {
   private again = false;
   private readonly inflight = new Map<string, AbortController>();
   private readonly running = new Set<Promise<void>>();
+  private hostedAc: AbortController | null = null;
 
   constructor(private readonly o: ProvisionerOptions) {}
 
@@ -83,6 +87,9 @@ export class Provisioner {
     try {
       do {
         this.again = false;
+        // Before the store limit check: hosted work is a few API calls, not a helm run, so it
+        // must not wait behind three stores that are installing.
+        await this.hostedPass();
         if (this.inflight.size >= MAX_PARALLEL) break;
         const r = await this.o.deps.pool.query<StoreJob>(
           `${JOB_SELECT} where status in ('provisioning', 'deleting') order by created_at`,
@@ -96,6 +103,22 @@ export class Provisioner {
       this.o.log.warn({ code: errorCode(err) }, 'store reconcile tick failed');
     } finally {
       this.ticking = false;
+    }
+  }
+
+  // Awaited inside the tick. It never sleeps (a delete that waits for pods returns and the next
+  // tick looks again), so it cannot hold up store installs for long.
+  private async hostedPass(): Promise<void> {
+    const h = this.o.hosted;
+    if (!h || !this.leader) return;
+    const ac = new AbortController();
+    this.hostedAc = ac;
+    try {
+      await reconcileHosted(h, ac.signal);
+    } catch (err) {
+      this.o.log.warn({ code: errorCode(err) }, 'hosted reconcile pass failed');
+    } finally {
+      this.hostedAc = null;
     }
   }
 
@@ -138,6 +161,7 @@ export class Provisioner {
       );
       if (rows[0]?.ok) {
         await this.lockClient.query('LISTEN stores_changed');
+        if (this.o.hosted) await this.lockClient.query('LISTEN hosted_changed');
         this.leader = true;
         this.o.log.info({ lock: PROVISIONER_LOCK }, 'store provisioner elected');
         this.scheduleTick();
@@ -160,6 +184,7 @@ export class Provisioner {
     clearTimeout(this.tickTimer);
     // Another replica can take the lock now, so helm must not keep running here.
     for (const ac of this.inflight.values()) ac.abort();
+    this.hostedAc?.abort();
     this.o.log.warn(
       { code: err === undefined ? 'end' : errorCode(err) },
       'provisioner lock connection lost',
