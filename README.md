@@ -127,7 +127,27 @@ Models (`deploy/values-local.yaml`): primary `gemini-3.5-flash-lite`, fallback `
 make e2e S=<private dir>                   # live end to end checks, ends with OK
 S=<private dir> scripts/chat-check.sh      # agent hardening and one chat turn, ends with OK
 S=<private dir> scripts/demo-reset.sh      # demo state; keeps orders, products and chat history
+S=<private dir> scripts/obs-check.sh       # metrics, request ids and trace ids across services, ends with OK
 ```
+
+## Scale and metrics (M12)
+
+Local values run one gateway and no Prometheus. Turn the extras on with `--set` and restore with a plain `make platform`:
+
+```bash
+# Two gateway replicas, a PodDisruptionBudget, then the demo (20 calls, one pod deleted mid-run).
+make platform HELM_FLAGS="--wait --rollback-on-failure --timeout 15m --set gateway.replicas=2 --set gateway.pdb.enabled=true"
+S=<private dir> scripts/replica-demo.sh    # each call prints the answering pod; ends with 20 of 20 ok and OK
+
+# Prometheus (no Grafana, no Ingress): scrapes the gateway on 9090 and the control-plane on 3001.
+make platform HELM_FLAGS="--wait --rollback-on-failure --timeout 15m --set monitoring.enabled=true"
+kubectl -n platform port-forward deploy/prometheus 19091:9090   # then open http://localhost:19091
+# try: rate(gateway_tool_calls_total[5m])   and   sum by (outcome) (gateway_tool_calls_total)
+
+make platform                              # back to one gateway, no Prometheus
+```
+
+The Health page in the dashboard shows the last 60 minutes per server without Prometheus. Key rate limits are set on the Members page (Limit/min); the default is `gateway.rateLimitPerMinute` (120 locally, 60 in the chart). If you use the HPA (`--set gateway.hpa.enabled=true`) in production, turn it on from the first deploy with `minReplicas` 2 or more: switching later from a fixed count drops the gateway to one pod until the HPA acts.
 
 ## Pinned versions
 
