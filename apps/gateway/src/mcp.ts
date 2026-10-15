@@ -6,9 +6,19 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/server';
 import { errorCode } from '@woo/core';
+import type { z } from 'zod';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 import type { PolicyView } from './policies.js';
 import type { Router } from './registry.js';
+import {
+  CALL_TOOL,
+  META_TOOLS,
+  SEARCH_TOOLS,
+  callToolInput,
+  effectiveToolMode,
+  searchTools,
+  searchToolsInput,
+} from './search.js';
 import type { AuditRow, AuditSink, Log, Principal, ToolMode } from './types.js';
 
 // Tool names come from the client: cap what is echoed back and stored.
@@ -33,6 +43,8 @@ export type GatewayServerOptions = {
   log: Log;
 };
 
+type MetaTool = AuditRow['metaTool'];
+
 export function createGatewayServer(o: GatewayServerOptions): Server {
   const server = new Server(
     { name: 'woo-gateway', version: '0.1.0' },
@@ -41,42 +53,83 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
 
   const allowed = (slug: string, tool: string) => o.policies.allows(o.principal.role, slug, tool);
 
-  server.setRequestHandler('tools/list', () => ({ tools: o.router.list(allowed) }));
-
-  server.setRequestHandler('tools/call', async (req, ctx) => {
-    const started = performance.now();
-    const name = req.params.name.slice(0, MAX_NAME_ECHO);
-    const args = req.params.arguments;
-    const route = o.router.resolve(req.params.name);
-    const [slugPart = '', ...rest] = name.split('__');
-    const row: AuditRow = {
-      requestId: randomUUID(),
-      userId: o.principal.userId,
-      userEmail: o.principal.email,
-      via: o.principal.via,
-      apiKeyId: o.principal.apiKeyId,
-      serverId: route?.upstream.record.id ?? null,
-      serverSlug: route?.upstream.record.slug ?? (rest.length > 0 ? slugPart : ''),
-      toolName: route?.toolName ?? (rest.length > 0 ? rest.join('__') : name),
-      exposedName: name,
-      outcome: 'bad_request',
-      durationMs: 0,
-      errorMessage: null,
-      argsSha256: null,
-      replica: o.replica,
-      protocolVersion: auditVersion(ctx.http?.req?.headers.get('mcp-protocol-version')),
+  server.setRequestHandler('tools/list', () => {
+    const visible = o.router.list(allowed);
+    // SPEC 17: the mode is chosen after policy, so a member is counted on what they can see.
+    return {
+      tools: effectiveToolMode(o.toolMode, visible.length) === 'search' ? META_TOOLS : visible,
     };
+  });
+
+  const newRow = (name: string, protocolVersion: string | null, metaTool: MetaTool): AuditRow => ({
+    requestId: randomUUID(),
+    userId: o.principal.userId,
+    userEmail: o.principal.email,
+    via: o.principal.via,
+    apiKeyId: o.principal.apiKeyId,
+    serverId: null,
+    serverSlug: '',
+    toolName: name,
+    exposedName: name,
+    metaTool,
+    outcome: 'bad_request',
+    durationMs: 0,
+    errorMessage: null,
+    argsSha256: null,
+    replica: o.replica,
+    protocolVersion,
+  });
+
+  const writeAudit = async (row: AuditRow, started: number) => {
+    row.durationMs = Math.round(performance.now() - started);
+    await o.audit
+      .write(row)
+      .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
+  };
+
+  // A tree deeper than the limit would overflow the recursive canonicalJson.
+  const hashArgs = (row: AuditRow, args: unknown) => {
+    if (nestsDeeperThan(args, MAX_ARGS_DEPTH)) {
+      row.errorMessage = 'arguments nested too deeply';
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Arguments are nested too deeply');
+    }
+    row.argsSha256 = sha256Hex(canonicalJson(args ?? {}));
+  };
+
+  // Issue paths and zod messages only: a message never repeats the submitted value.
+  const invalidArguments = (row: AuditRow, tool: string, error: z.ZodError): ProtocolError => {
+    const issues = error.issues.map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`);
+    const message = `Invalid arguments for ${tool}: ${issues.join('; ')}`.slice(
+      0,
+      MAX_ERROR_MESSAGE,
+    );
+    row.errorMessage = message;
+    return new ProtocolError(ProtocolErrorCode.InvalidParams, message);
+  };
+
+  // The one path for a tool call. A direct `tools/call` and `call_tool` both come through here, so
+  // policy, the enabled flag, timeouts and the audit row cannot differ between them.
+  const callRouted = async (
+    rawName: string,
+    args: Record<string, unknown> | undefined,
+    signal: AbortSignal,
+    protocolVersion: string | null,
+    metaTool: MetaTool,
+  ): Promise<CallToolResult> => {
+    const started = performance.now();
+    const name = rawName.slice(0, MAX_NAME_ECHO);
+    const route = o.router.resolve(rawName);
+    const [slugPart = '', ...rest] = name.split('__');
+    const row = newRow(name, protocolVersion, metaTool);
+    row.serverId = route?.upstream.record.id ?? null;
+    row.serverSlug = route?.upstream.record.slug ?? (rest.length > 0 ? slugPart : '');
+    row.toolName = route?.toolName ?? (rest.length > 0 ? rest.join('__') : name);
     const toolError = (message: string): CallToolResult => {
       row.errorMessage = message.slice(0, MAX_ERROR_MESSAGE);
       return { content: [{ type: 'text', text: message }], isError: true };
     };
     try {
-      // A tree deeper than the limit would overflow the recursive canonicalJson.
-      if (nestsDeeperThan(args, MAX_ARGS_DEPTH)) {
-        row.errorMessage = 'arguments nested too deeply';
-        throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Arguments are nested too deeply');
-      }
-      row.argsSha256 = sha256Hex(canonicalJson(args ?? {}));
+      hashArgs(row, args);
       if (!route) {
         row.errorMessage = 'unknown tool';
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
@@ -94,17 +147,74 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         return toolError(`Server ${record.slug} is disabled`);
       }
       row.outcome = 'upstream_error';
-      const r = await route.upstream.call(route.toolName, args, ctx.mcpReq.signal);
+      const r = await route.upstream.call(route.toolName, args, signal);
       row.outcome = r.outcome;
       // As received (SPEC 6.5 step 6): projectCallToolResult could append a content block.
       if ('result' in r) return r.result;
       return toolError(r.message);
     } finally {
-      row.durationMs = Math.round(performance.now() - started);
-      await o.audit
-        .write(row)
-        .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
+      await writeAudit(row, started);
     }
+  };
+
+  const runSearch = async (
+    args: Record<string, unknown> | undefined,
+    protocolVersion: string | null,
+  ): Promise<CallToolResult> => {
+    const started = performance.now();
+    const row = newRow(SEARCH_TOOLS, protocolVersion, SEARCH_TOOLS);
+    try {
+      hashArgs(row, args);
+      const parsed = searchToolsInput.safeParse(args ?? {});
+      if (!parsed.success) throw invalidArguments(row, SEARCH_TOOLS, parsed.error);
+      // The same filter as tools/list, so search never shows what the caller could not list.
+      const found = searchTools(o.router.list(allowed), parsed.data.query, parsed.data.limit);
+      const payload = {
+        tools: found.map(({ name, description, inputSchema }) => ({
+          name,
+          description,
+          inputSchema,
+        })),
+      };
+      row.outcome = 'ok';
+      // Many clients pass only the text block to the model, so it carries the same JSON.
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
+    } finally {
+      await writeAudit(row, started);
+    }
+  };
+
+  const runCallTool = async (
+    args: Record<string, unknown> | undefined,
+    signal: AbortSignal,
+    protocolVersion: string | null,
+  ): Promise<CallToolResult> => {
+    const parsed = callToolInput.safeParse(args ?? {});
+    if (!parsed.success) {
+      const started = performance.now();
+      const row = newRow(CALL_TOOL, protocolVersion, CALL_TOOL);
+      try {
+        hashArgs(row, args);
+        throw invalidArguments(row, CALL_TOOL, parsed.error);
+      } finally {
+        await writeAudit(row, started);
+      }
+    }
+    // The inner call writes the audit row: one row per tools/call (SPEC 9), naming the real tool.
+    return callRouted(parsed.data.name, parsed.data.arguments, signal, protocolVersion, CALL_TOOL);
+  };
+
+  server.setRequestHandler('tools/call', (req, ctx) => {
+    const version = auditVersion(ctx.http?.req?.headers.get('mcp-protocol-version'));
+    const signal = ctx.mcpReq.signal;
+    // Meta-tools work in every mode: under `auto` a client that listed in search mode must keep
+    // working if the count falls to 40 before its next call.
+    if (req.params.name === SEARCH_TOOLS) return runSearch(req.params.arguments, version);
+    if (req.params.name === CALL_TOOL) return runCallTool(req.params.arguments, signal, version);
+    return callRouted(req.params.name, req.params.arguments, signal, version, null);
   });
 
   return server;

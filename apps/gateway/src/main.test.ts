@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { encryptSecret, generateApiKey } from '@woo/core';
 import { schema } from '@woo/core/db';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startGateway } from './main.js';
@@ -150,6 +150,31 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       serverSlug: 'main',
     });
     expect(row?.argsSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('stores meta_tool on search and call_tool audit rows', async () => {
+    const c = new Client({ name: 'e2e', version: '0.0.0' });
+    await c.connect(
+      new StreamableHTTPClientTransport(new URL(`${mcpUrl.href}?toolMode=search`), {
+        requestInit: { headers: { Authorization: `Bearer ${key}` } },
+      }),
+    );
+    expect((await c.listTools()).tools.map((t) => t.name)).toEqual(['call_tool', 'search_tools']);
+    await c.callTool({ name: 'search_tools', arguments: { query: 'get info' } });
+    await c.callTool({ name: 'call_tool', arguments: { name: 'main__get_info' } });
+    await c.close();
+    const rows = await db
+      .select({
+        tool: schema.auditEvents.toolName,
+        meta: schema.auditEvents.metaTool,
+        slug: schema.auditEvents.serverSlug,
+      })
+      .from(schema.auditEvents)
+      .where(inArray(schema.auditEvents.metaTool, ['search_tools', 'call_tool']));
+    expect(rows.sort((a, b) => a.meta!.localeCompare(b.meta!))).toEqual([
+      { tool: 'get_info', meta: 'call_tool', slug: 'main' },
+      { tool: 'search_tools', meta: 'search_tools', slug: '' },
+    ]);
   });
 
   it('persists tools and writes status rows', async () => {
