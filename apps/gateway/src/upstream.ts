@@ -162,6 +162,7 @@ export class Upstream {
     name: string,
     args: Record<string, unknown> | undefined,
     signal: AbortSignal,
+    traceparent?: string,
   ): Promise<CallOutcome> {
     const { slug, timeoutMs } = this.record;
     const client = this.client;
@@ -171,7 +172,11 @@ export class Upstream {
     const combined = AbortSignal.any([signal, timeout]);
     try {
       const result = await this.bulkhead.run(
-        () => client.callTool({ name, arguments: args }, { signal: combined, timeout: timeoutMs }),
+        () =>
+          client.callTool(
+            { name, arguments: args, ...(traceparent ? { _meta: { traceparent } } : {}) },
+            { signal: combined, timeout: timeoutMs },
+          ),
         combined,
       );
       this.breaker.success();

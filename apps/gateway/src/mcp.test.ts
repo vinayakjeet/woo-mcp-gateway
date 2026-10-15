@@ -22,6 +22,7 @@ type Call = (
   name: string,
   args: Record<string, unknown> | undefined,
   signal: AbortSignal,
+  traceparent?: string,
 ) => Promise<CallOutcome>;
 
 function route(slug: string, call: Call, enabled = true, toolName = 'tool'): Route {
@@ -57,6 +58,7 @@ async function connect(
     rules?: PolicyRule[];
     principal?: Principal;
     limiter?: CallLimiter;
+    requestId?: string;
   } = {},
 ) {
   const audit: AuditRow[] = [];
@@ -78,6 +80,7 @@ async function connect(
       : allowAll,
     router,
     limiter: o.limiter ?? unlimited,
+    requestId: o.requestId,
     replica: 'r1',
     log: o.log ?? quietLog,
     audit: {
@@ -507,5 +510,126 @@ describe('createGatewayServer', () => {
       expect(call).toHaveBeenCalledOnce();
       expect(audit.map((a) => a.outcome)).toEqual(['ok']);
     });
+  });
+});
+
+describe('trace context and the call log line', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const CLIENT_TP = `00-${TRACE}-00f067aa0ba902b7-01`;
+
+  it("sends the upstream the client's trace id with a new parent id", async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, _s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, _s);
+      }),
+    });
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: {},
+      _meta: { traceparent: CLIENT_TP },
+    });
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE}-[0-9a-f]{16}-01$`));
+    expect(seen[0]).not.toContain('00f067aa0ba902b7');
+  });
+
+  it.each([
+    ['an invalid traceparent', { traceparent: `00-${TRACE.toUpperCase()}-00f067aa0ba902b7-01` }],
+    ['no traceparent', {}],
+  ])('starts a new trace for %s', async (_name, meta) => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({ name: 'fx__tool', arguments: {}, _meta: meta });
+    expect(seen[0]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(seen[0]).not.toContain(TRACE.toUpperCase());
+  });
+
+  it('does not forward tracestate or any other client _meta key', async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: {},
+      _meta: { traceparent: CLIENT_TP, tracestate: 'v=secret-state', 'x-user': 'someone' },
+    });
+    // The only thing handed to an upstream call is one traceparent string.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain('secret-state');
+    expect(seen[0]).not.toContain('someone');
+  });
+
+  it('keeps the trace for call_tool inner calls', async () => {
+    const seen: Array<string | undefined> = [];
+    const { client } = await connect({
+      fx__tool: route('fx', async (_n, _a, s, tp) => {
+        seen.push(tp);
+        return okCall('x', {}, s);
+      }),
+    });
+    await client.callTool({
+      name: 'call_tool',
+      arguments: { name: 'fx__tool', arguments: {} },
+      _meta: { traceparent: CLIENT_TP },
+    });
+    expect(seen[0]).toMatch(new RegExp(`^00-${TRACE}-`));
+  });
+
+  it('uses the request id for the audit row', async () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    const { client, audit } = await connect({ fx__tool: route('fx', okCall) }, { requestId: id });
+    await client.callTool({ name: 'fx__tool', arguments: {} });
+    expect(audit[0]?.requestId).toBe(id);
+  });
+
+  it('logs one info line per tools/call with ids and no arguments', async () => {
+    const log = captureLog();
+    const { client } = await connect(
+      { fx__tool: route('fx', okCall) },
+      { log, requestId: '11111111-2222-4333-8444-555555555555' },
+    );
+    await client.callTool({
+      name: 'fx__tool',
+      arguments: { secret: 'argument-value-42' },
+      _meta: { traceparent: CLIENT_TP },
+    });
+    const lines = log.lines.map((l) => JSON.parse(l)).filter((l) => l.msg === 'tool call');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      level: 'info',
+      request_id: '11111111-2222-4333-8444-555555555555',
+      trace_id: TRACE,
+      user_id: principal.userId,
+      server: 'fx',
+      tool: 'tool',
+      outcome: 'ok',
+      ms: expect.any(Number),
+    });
+    const text = log.lines.join('\n');
+    expect(text).not.toContain('argument-value-42');
+    expect(text).not.toContain(principal.email);
+  });
+
+  it('logs _unknown instead of echoing an unknown name, and _search for search_tools', async () => {
+    const log = captureLog();
+    const { client } = await connect({}, { log });
+    await client.callTool({ name: 'evil__"inject', arguments: {} }).catch(() => {});
+    await client.callTool({ name: 'search_tools', arguments: { query: 'x' } });
+    const lines = log.lines.map((l) => JSON.parse(l)).filter((l) => l.msg === 'tool call');
+    expect(lines.map((l) => [l.server, l.tool])).toEqual([
+      ['_unknown', '_unknown'],
+      ['_search', 'search_tools'],
+    ]);
+    expect(log.lines.join('\n')).not.toContain('inject');
   });
 });

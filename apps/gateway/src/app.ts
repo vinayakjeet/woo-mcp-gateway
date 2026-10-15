@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
@@ -30,7 +31,13 @@ const rpcError = (code: number, message: string) => ({
 });
 
 export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
-  const app = Fastify({ logger: o.logger ?? false });
+  // Ids are ours alone: a client header cannot choose what appears in the logs or the audit log.
+  const app = Fastify({
+    logger: o.logger ?? false,
+    genReqId: () => randomUUID(),
+    requestIdHeader: false,
+    requestIdLogLabel: 'request_id',
+  });
   const log: Log = app.log;
   const allowed = new Set(o.allowedOrigins);
 
@@ -46,6 +53,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         policies: o.policies,
         audit: o.audit,
         limiter: o.limiter,
+        requestId: ctx.authInfo?.extra?.requestId as string | undefined,
         replica: o.replica,
         log,
       });
@@ -66,6 +74,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
   app.addHook('onRequest', async (req, reply) => {
     // setHeader on the raw response, so hijacked SDK responses carry it too.
     reply.raw.setHeader('x-gateway-replica', o.replica);
+    reply.raw.setHeader('x-request-id', req.id);
     const origin = req.headers.origin;
     if (origin !== undefined && !allowed.has(origin)) {
       return reply.code(403).send(rpcError(-32000, 'Origin not allowed'));
@@ -96,7 +105,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         token: '',
         clientId: principal.userId,
         scopes: [],
-        extra: { principal, toolModeOverride },
+        extra: { principal, toolModeOverride, requestId: req.id },
       };
       (req.raw as IncomingMessage & { auth?: AuthInfo }).auth = auth;
       reply.raw.setHeader('x-accel-buffering', 'no');

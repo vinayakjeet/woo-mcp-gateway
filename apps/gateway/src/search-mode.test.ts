@@ -258,7 +258,12 @@ describe('call_tool', () => {
       arguments: { name: 'fx__get_info', arguments: { b: 2, a: 1 } },
     });
     expect(r.structuredContent).toEqual({ ran: 'get_info' });
-    expect(call).toHaveBeenCalledWith('get_info', { b: 2, a: 1 }, expect.anything());
+    expect(call).toHaveBeenCalledWith(
+      'get_info',
+      { b: 2, a: 1 },
+      expect.anything(),
+      expect.stringMatching(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/),
+    );
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({
       outcome: 'ok',

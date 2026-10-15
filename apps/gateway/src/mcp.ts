@@ -5,7 +5,13 @@ import {
   Server,
   type CallToolResult,
 } from '@modelcontextprotocol/server';
-import { errorCode } from '@woo/core';
+import {
+  childTraceparent,
+  errorCode,
+  newTraceparent,
+  parseTraceparent,
+  type TraceParent,
+} from '@woo/core';
 import type { z } from 'zod';
 import { canonicalJson, nestsDeeperThan, sha256Hex } from './canonical.js';
 import type { PolicyView } from './policies.js';
@@ -43,11 +49,20 @@ export type GatewayServerOptions = {
   policies: PolicyView;
   audit: AuditSink;
   limiter: CallLimiter;
+  // The HTTP request id, so the audit row, the log line and the x-request-id header agree.
+  requestId?: string;
   replica: string;
   log: Log;
 };
 
 type MetaTool = AuditRow['metaTool'];
+
+// The client's trace if it sent a valid one (_meta first, then the HTTP header), else a new one.
+// Anything invalid is dropped, so client text never reaches a log line or an upstream.
+export function traceFor(meta: unknown, header: string | null | undefined): TraceParent {
+  const fromMeta = parseTraceparent((meta as { traceparent?: unknown } | undefined)?.traceparent);
+  return fromMeta ?? parseTraceparent(header) ?? parseTraceparent(newTraceparent())!;
+}
 
 export function createGatewayServer(o: GatewayServerOptions): Server {
   const server = new Server(
@@ -66,7 +81,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
   });
 
   const newRow = (name: string, protocolVersion: string | null, metaTool: MetaTool): AuditRow => ({
-    requestId: randomUUID(),
+    requestId: o.requestId ?? randomUUID(),
     userId: o.principal.userId,
     userEmail: o.principal.email,
     via: o.principal.via,
@@ -84,11 +99,29 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     protocolVersion,
   });
 
-  const writeAudit = async (row: AuditRow, started: number) => {
+  const writeAudit = async (row: AuditRow, started: number, trace: TraceParent) => {
     row.durationMs = Math.round(performance.now() - started);
     await o.audit
       .write(row)
       .catch((err: unknown) => o.log.error({ code: errorCode(err) }, 'audit write failed'));
+    // Ids, names from our own registry, outcome and time only: never arguments, results or emails.
+    // A name the registry did not resolve came from the client, so it is logged as _unknown.
+    o.log.info(
+      {
+        request_id: row.requestId,
+        trace_id: trace.traceId,
+        user_id: row.userId,
+        server: row.serverId
+          ? row.serverSlug
+          : row.metaTool === 'search_tools'
+            ? '_search'
+            : '_unknown',
+        tool: row.serverId || row.metaTool === 'search_tools' ? row.toolName : '_unknown',
+        outcome: row.outcome,
+        ms: row.durationMs,
+      },
+      'tool call',
+    );
   };
 
   // Seconds until the window resets when the caller is over the limit, else null. A broken or slow
@@ -143,6 +176,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     signal: AbortSignal,
     protocolVersion: string | null,
     metaTool: MetaTool,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const started = performance.now();
     const name = rawName.slice(0, MAX_NAME_ECHO);
@@ -181,19 +215,20 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         return toolError(`Server ${record.slug} is disabled`);
       }
       row.outcome = 'upstream_error';
-      const r = await route.upstream.call(route.toolName, args, signal);
+      const r = await route.upstream.call(route.toolName, args, signal, childTraceparent(trace));
       row.outcome = r.outcome;
       // As received (SPEC 6.5 step 6): projectCallToolResult could append a content block.
       if ('result' in r) return r.result;
       return toolError(r.message);
     } finally {
-      await writeAudit(row, started);
+      await writeAudit(row, started, trace);
     }
   };
 
   const runSearch = async (
     args: Record<string, unknown> | undefined,
     protocolVersion: string | null,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const started = performance.now();
     const row = newRow(SEARCH_TOOLS, protocolVersion, SEARCH_TOOLS);
@@ -223,7 +258,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         structuredContent: payload,
       };
     } finally {
-      await writeAudit(row, started);
+      await writeAudit(row, started, trace);
     }
   };
 
@@ -231,6 +266,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
     args: Record<string, unknown> | undefined,
     signal: AbortSignal,
     protocolVersion: string | null,
+    trace: TraceParent,
   ): Promise<CallToolResult> => {
     const parsed = callToolInput.safeParse(args ?? {});
     if (!parsed.success) {
@@ -240,21 +276,30 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         hashArgs(row, args);
         throw invalidArguments(row, CALL_TOOL, parsed.error);
       } finally {
-        await writeAudit(row, started);
+        await writeAudit(row, started, trace);
       }
     }
     // The inner call writes the audit row: one row per tools/call (SPEC 9), naming the real tool.
-    return callRouted(parsed.data.name, parsed.data.arguments, signal, protocolVersion, CALL_TOOL);
+    return callRouted(
+      parsed.data.name,
+      parsed.data.arguments,
+      signal,
+      protocolVersion,
+      CALL_TOOL,
+      trace,
+    );
   };
 
   server.setRequestHandler('tools/call', (req, ctx) => {
     const version = auditVersion(ctx.http?.req?.headers.get('mcp-protocol-version'));
     const signal = ctx.mcpReq.signal;
+    const trace = traceFor(req.params._meta, ctx.http?.req?.headers.get('traceparent'));
     // Meta-tools work in every mode: under `auto` a client that listed in search mode must keep
     // working if the count falls to 40 before its next call.
-    if (req.params.name === SEARCH_TOOLS) return runSearch(req.params.arguments, version);
-    if (req.params.name === CALL_TOOL) return runCallTool(req.params.arguments, signal, version);
-    return callRouted(req.params.name, req.params.arguments, signal, version, null);
+    if (req.params.name === SEARCH_TOOLS) return runSearch(req.params.arguments, version, trace);
+    if (req.params.name === CALL_TOOL)
+      return runCallTool(req.params.arguments, signal, version, trace);
+    return callRouted(req.params.name, req.params.arguments, signal, version, null, trace);
   });
 
   return server;
