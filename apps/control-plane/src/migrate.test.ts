@@ -1,7 +1,12 @@
 import { randomBytes } from 'node:crypto';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import pg from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { decryptSecret, encryptSecret } from '@woo/core';
-import { SCHEMA_VERSION } from '@woo/core/db';
+import { SCHEMA_VERSION, migrationsFolder } from '@woo/core/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MIGRATION_LOCK, MigrateStepError, migrateAndSeed } from './migrate-run.js';
 import type { SeedServer } from './seed.js';
@@ -125,6 +130,48 @@ describe.skipIf(!base)('migrateAndSeed (needs TEST_DATABASE_URL)', () => {
   it('records every migration', async () => {
     const r = await client.query('select count(*)::int as n from drizzle.__drizzle_migrations');
     expect(r.rows[0].n).toBe(SCHEMA_VERSION);
+  });
+});
+
+describe.skipIf(!base)('migration 0002 (needs TEST_DATABASE_URL)', () => {
+  let dir: string;
+  let client: pg.Client;
+  beforeAll(async () => {
+    const dbUrl = await freshDatabase(base!, 'woo_migrate_0002_test');
+    client = new pg.Client({ connectionString: dbUrl });
+    await client.connect();
+    // The same folder with a journal cut after 0001, so the test can insert rows before 0002 runs.
+    dir = mkdtempSync(join(tmpdir(), 'woo-migrations-'));
+    cpSync(migrationsFolder, dir, { recursive: true });
+    const journal = JSON.parse(readFileSync(join(dir, 'meta/_journal.json'), 'utf8')) as {
+      entries: { tag: string }[];
+    };
+    journal.entries = journal.entries.filter((e) => e.tag < '0002');
+    writeFileSync(join(dir, 'meta/_journal.json'), JSON.stringify(journal));
+    await migrate(drizzle(client), { migrationsFolder: dir });
+  }, 30_000);
+  afterAll(async () => {
+    await client.end();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('0002 backfills tools_synced_at for servers with tool rows and leaves the others null', async () => {
+    await client.query(`insert into mcp_servers (slug, name, url, kind) values
+      ('withtools', 'W', 'http://w.test/mcp', 'hosted'),
+      ('removedonly', 'R', 'http://r.test/mcp', 'hosted'),
+      ('empty', 'E', 'http://e.test/mcp', 'hosted')`);
+    await client.query(`insert into mcp_tools (server_id, name, exposed_name, input_schema, definition_hash, state)
+      select id, 't', slug || '__t', '{}', 'h', case when slug = 'removedonly' then 'removed' else 'active' end::tool_state
+      from mcp_servers where slug in ('withtools', 'removedonly')`);
+    await migrate(drizzle(client), { migrationsFolder });
+    const r = await client.query(
+      'select slug, tools_synced_at is not null as synced from mcp_servers order by slug',
+    );
+    expect(r.rows).toEqual([
+      { slug: 'empty', synced: false },
+      { slug: 'removedonly', synced: true },
+      { slug: 'withtools', synced: true },
+    ]);
   });
 });
 
