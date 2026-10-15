@@ -2,7 +2,7 @@
 # Live checks against the cluster: login, keys, a revoked key rejected within 1 s, server disable
 # and enable, the store name, a dead upstream (fx-mcp at zero), woo-mcp reachable only from the
 # gateway, invites, audit attribution and member scoping, role policies (hidden tools, a deny rule
-# added and removed), tool search mode, disabling a member, and one agent turn.
+# added and removed), tool search mode, a per-key rate limit, disabling a member, and one agent turn.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -343,6 +343,37 @@ body "$(req admin.jar GET /api/keys)" | jq -e --arg id "$k5_id" 'any(.keys[]; .i
   fail "GET /api/keys lacks the key's toolMode"
 pass "a key created in search mode lists two tools; ?toolMode=full lists them all"
 
+# SPEC 19: a key limited to 3 calls a minute. All counted calls must share one window, so wait
+# for the start of a minute when fewer than 15 seconds of this one are left.
+while [ "$((10#$(date +%S)))" -ge 45 ]; do sleep 1; done
+since_rl=$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)
+r=$(req admin.jar POST /api/keys "{\"name\":\"$run-limited\"}")
+[ "$(code "$r")" = 201 ] || fail "create limited key gave $(code "$r")"
+k6_id=$(body "$r" | jq -r .key.id)
+save_key "$(body "$r")" k6
+r=$(req admin.jar PATCH "/api/keys/$k6_id" '{"rateLimitPerMin":3}')
+[ "$(code "$r")" = 200 ] && [ "$(body "$r" | jq -r .key.rateLimitPerMin)" = 3 ] || fail "set the limit to 3 gave $(code "$r")"
+rate_text='^Rate limit exceeded, retry in [0-9]+ s$'
+for i in 1 2 3; do
+  out=$(tools k6 main__get_info 2>&1) || fail "limited key, call $i of 3 failed: $out"
+done
+out=$(tools k6 main__get_info 2>&1) && fail "the 4th call on a key limited to 3 was not refused"
+grep -Eq "$rate_text" <<<"$out" || fail "the 4th call answered: $out"
+pass "a key limited to 3 gets 3 ok calls, then 'Rate limit exceeded, retry in N s' as a tool error"
+out=$(tools k6 call_tool '{"name":"main__get_info"}' 2>&1) && fail "call_tool got past the limit"
+grep -Eq "$rate_text" <<<"$out" || fail "call_tool answered: $out"
+[ -n "$(list_names k6)" ] || fail "tools/list was refused for the limited key"
+pass "call_tool is refused the same way, and tools/list still answers"
+tools k2 main__get_info >/dev/null || fail "k2 main__get_info was limited"
+pass "another key of the same user is not limited"
+t0=$(date +%s%N)
+until body "$(req admin.jar GET "/api/audit?user=$admin_id&outcome=rate_limited&from=$since_rl")" |
+  jq -e 'any(.items[]; .exposedName == "main__get_info") and any(.items[]; (.errorMessage // "") | test("^Rate limit exceeded"))' >/dev/null; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "no rate_limited audit row for the limited key"
+  sleep 0.2
+done
+pass "the audit API shows rate_limited rows"
+
 # Disabling the member ends their session and drops both of their cached keys in the gateway at once.
 for k in k3 k4; do [ "$(mcp_status "$k")" != 401 ] || fail "member key $k rejected before disable"; done
 t0=$(date +%s%N)
@@ -382,7 +413,7 @@ else
   pass "the agent answered one tool-calling turn, audited via agent to $admin_email"
 fi
 
-for id in "$k2_id" "$k3_id" "$k4_id" "$k5_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
-rm -f "$S"/k[1-5] "$S"/k[1-5].hdr "$S"/admin.jar "$S"/member.jar
+for id in "$k2_id" "$k3_id" "$k4_id" "$k5_id" "$k6_id"; do req admin.jar DELETE "/api/keys/$id" >/dev/null; done
+rm -f "$S"/k[1-6] "$S"/k[1-6].hdr "$S"/admin.jar "$S"/member.jar
 pass "cleanup: e2e keys revoked, member disabled"
 echo OK
