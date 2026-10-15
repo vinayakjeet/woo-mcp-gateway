@@ -1,0 +1,40 @@
+# SPEC 16: default deny of all ingress and egress, then DNS. Every other rule is its own policy.
+# Ports in all platform policies are pod ports: kube-router matches after the Service DNAT.
+# mcp-hosted is created by the Makefile (decision E); M11 only adds workloads and their rules.
+{{- range $ns := list .Release.Namespace "mcp-hosted" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "platform.labels" (list $ "network") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: {{ $ns }}
+  labels:
+    {{- include "platform.labels" (list $ "network") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

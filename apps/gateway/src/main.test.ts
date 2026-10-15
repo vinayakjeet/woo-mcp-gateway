@@ -70,7 +70,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
           slug: 'fx',
           name: 'FX',
           url: fx.url,
-          kind: 'external',
+          kind: 'system',
           authType: 'bearer',
           authSecretEnc: encryptSecret('fx-token', kek, 'fx'),
         },
@@ -88,6 +88,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
         allowedOrigins: [],
         port: 0,
         healthPort: 0,
+        allowInsecureUpstreams: false,
       },
       { host: '127.0.0.1', logger: false, upstream: { healthIntervalMs: 200 } },
     );

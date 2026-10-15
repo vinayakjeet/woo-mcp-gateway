@@ -8,8 +8,11 @@ export type Route = {
   toolName: string;
 };
 
+// Called with the server slug and the upstream's own tool name, not the exposed name.
+export type ToolFilter = (serverSlug: string, toolName: string) => boolean;
+
 export interface Router {
-  list(): Tool[];
+  list(keep?: ToolFilter): Tool[];
   resolve(exposedName: string): Route | undefined;
 }
 
@@ -83,13 +86,14 @@ export class Registry implements Router {
     return [...this.entries.values()].map((e) => e.upstream);
   }
 
-  list(): Tool[] {
+  list(keep?: ToolFilter): Tool[] {
     const out: Tool[] = [];
     for (const [serverId, { upstream, states }] of this.entries) {
       const r = upstream.record;
       if (!r.enabled || r.approval !== 'approved' || upstream.state !== 'connected') continue;
       for (const t of upstream.tools()) {
         if ((states.get(t.name) ?? 'active') !== 'active') continue;
+        if (keep && !keep(r.slug, t.name)) continue;
         const name = exposedToolName(r.slug, t.name);
         const route = this.routes.get(name);
         if (route?.serverId !== serverId || route.toolName !== t.name) continue;

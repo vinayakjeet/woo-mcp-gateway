@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # SPEC 16 proofs for store namespaces, with throwaway curl pods.
 #   scripts/netpol-check.sh <slug-a> [<slug-b>]
+#   scripts/netpol-check.sh platform
 # Each probe sleeps 5 s first: kube-router admits a new pod's IP late, so the first request of a
 # brand new pod is refused even where a policy allows it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-A=${1:?usage: $0 <slug-a> [<slug-b>]}
+A=${1:?usage: $0 <slug-a> [<slug-b>] | platform}
 B=${2:-}
 IMAGE=curlimages/curl:8.17.0
 fail() {
@@ -16,11 +17,20 @@ fail() {
 pass() { echo "PASS: $*"; }
 
 # probe NS LABELS URL: prints "<http code> exit=<curl exit>". Exit 28 is a timeout, 7 a refusal.
+# The pod passes PodSecurity restricted. The image's user is a name (curl_user), which runAsNonRoot
+# cannot verify, so the uid is set. --overrides replaces the containers list, so it carries the
+# whole container, including small limits: the store quota caps limits.cpu and the LimitRange
+# default would give each probe 500m.
 probe() {
-  local pod=probe-$$-$RANDOM labels=()
+  local pod=probe-$$-$RANDOM labels=() script overrides
   [ "$2" = - ] || labels=(--labels "$2")
-  kubectl -n "$1" run "$pod" --restart=Never --image="$IMAGE" "${labels[@]}" --command -- \
-    sh -c "sleep 5; c=\$(curl -m 5 -s -o /dev/null -w '%{http_code}' '$3'); echo \"\$c exit=\$?\"" >/dev/null
+  script="sleep 5; c=\$(curl -m 5 -s -o /dev/null -w '%{http_code}' '$3'); echo \"\$c exit=\$?\""
+  overrides=$(jq -cn --arg name "$pod" --arg image "$IMAGE" --arg script "$script" '{spec: {
+    securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 101, seccompProfile: {type: "RuntimeDefault"}},
+    containers: [{name: $name, image: $image, command: ["sh", "-c", $script],
+      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}},
+      resources: {requests: {cpu: "10m", memory: "16Mi"}, limits: {cpu: "100m", memory: "64Mi"}}}]}}')
+  kubectl -n "$1" run "$pod" --restart=Never --image="$IMAGE" "${labels[@]}" --overrides="$overrides" >/dev/null
   kubectl -n "$1" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=90s >/dev/null ||
     fail "probe pod $1/$pod did not finish"
   kubectl -n "$1" logs "$pod"
@@ -35,6 +45,59 @@ opened() {
     exit=28 | exit=7) return 1 ;;
   esac
 }
+
+if [ "$A" = platform ]; then
+  # A probe takes the labels of the workload it stands in for, so it gets that workload's policies.
+  L=app.kubernetes.io/instance=platform,app.kubernetes.io/name
+  pg=http://postgres.platform.svc.cluster.local:5432/
+  gw=http://gateway.platform.svc.cluster.local:8080/healthz
+  fx=http://fx-mcp.platform.svc.cluster.local:8080/healthz
+  cp=http://control-plane-internal.platform.svc.cluster.local:3001/readyz
+  gwpod=$(kubectl -n platform get pod -l app.kubernetes.io/name=gateway -o jsonpath='{.items[0].status.podIP}')
+  [ -n "$gwpod" ] || fail "no gateway pod IP"
+
+  for who in agent web fx-mcp; do
+    r=$(probe platform "$L=$who" "$pg")
+    blocked "$r" || fail "a $who-labeled pod reached postgres: $r"
+  done
+  r=$(probe platform "$L=control-plane" "$pg")
+  opened "$r" || fail "a control-plane-labeled pod cannot reach postgres: $r"
+  r=$(probe platform "$L=gateway" "$pg")
+  opened "$r" || fail "a gateway-labeled pod cannot reach postgres: $r"
+  pass "postgres: open to control-plane and gateway, closed to agent, web and fx-mcp"
+
+  for target in "$gw" "$cp" "$fx"; do
+    r=$(probe default - "$target")
+    blocked "$r" || fail "the default namespace reached $target: $r"
+  done
+  r=$(probe platform - "$gw")
+  blocked "$r" || fail "an unlabeled platform pod reached the gateway: $r"
+  pass "gateway, control-plane internal port and fx-mcp: closed to the default namespace and to unlabeled pods"
+
+  r=$(probe platform - https://example.com)
+  blocked "$r" || fail "an unlabeled platform pod reached https://example.com: $r"
+  r=$(probe platform "$L=fx-mcp" "$pg")
+  blocked "$r" || fail "an fx-mcp-labeled pod reached postgres: $r"
+  pass "unlabeled pods have no egress except DNS"
+
+  r=$(probe platform "$L=gateway" "$fx")
+  opened "$r" || fail "a gateway-labeled pod cannot reach fx-mcp: $r"
+  r=$(probe platform "$L=gateway" "http://woo-mcp.store-main.svc.cluster.local:8080/healthz")
+  opened "$r" || fail "a gateway-labeled pod cannot reach woo-mcp in store-main: $r"
+  pass "gateway reaches fx-mcp and the store woo-mcp"
+
+  r=$(probe platform "$L=agent" "$gw")
+  opened "$r" || fail "an agent-labeled pod cannot reach the gateway on 8080: $r"
+  r=$(probe platform "$L=agent" "http://$gwpod:9090/healthz")
+  blocked "$r" || fail "an agent-labeled pod reached the gateway health port 9090: $r"
+  r=$(probe platform "$L=agent" "$cp")
+  opened "$r" || fail "an agent-labeled pod cannot reach the control-plane on 3001: $r"
+  r=$(probe platform "$L=web" "$cp")
+  blocked "$r" || fail "a web-labeled pod reached the control-plane on 3001: $r"
+  pass "agent reaches gateway 8080 and control-plane 3001 only"
+  echo OK
+  exit 0
+fi
 
 wp=http://wordpress.store-$A.svc.cluster.local/
 db=http://mariadb.store-$A.svc.cluster.local:3306/
@@ -55,6 +118,24 @@ pass "store-$A MariaDB: open to its WordPress, closed to the default namespace"
 r=$(probe default - "$mcp")
 blocked "$r" || fail "the default namespace reached store-$A woo-mcp: $r"
 pass "store-$A woo-mcp: closed to the default namespace"
+
+# Default deny leaves a store no way out: no public address, no other pod in the namespace.
+for labels in app.kubernetes.io/name=woo-mcp,app.kubernetes.io/component=woo-mcp app.kubernetes.io/component=wordpress; do
+  r=$(probe "store-$A" "$labels" https://example.com)
+  blocked "$r" || fail "a store-$A pod labeled $labels reached https://example.com: $r"
+done
+r=$(probe "store-$A" app.kubernetes.io/name=woo-mcp,app.kubernetes.io/component=woo-mcp "$db")
+blocked "$r" || fail "a store-$A pod labeled woo-mcp reached MariaDB: $r"
+r=$(probe "store-$A" - "$wp")
+blocked "$r" || fail "an unlabeled store-$A pod reached WordPress: $r"
+r=$(probe "store-$A" app.kubernetes.io/component=cron "$db")
+opened "$r" || fail "a store-$A pod labeled cron cannot reach MariaDB: $r"
+for target in "$wp" https://example.com; do
+  r=$(probe "store-$A" app.kubernetes.io/component=cron "$target")
+  blocked "$r" || fail "a store-$A pod labeled cron reached $target: $r"
+done
+pass "store-$A wp-cron pod: MariaDB only"
+pass "store-$A egress: no public address for woo-mcp and WordPress, no MariaDB for woo-mcp, nothing for unlabeled pods"
 
 if [ -n "$B" ]; then
   r=$(probe "store-$B" app.kubernetes.io/name=woo-mcp "$wp")

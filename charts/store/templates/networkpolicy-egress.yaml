@@ -1,0 +1,43 @@
+# SPEC 16 outbound paths inside one store. WordPress gets no other egress, so its update checks
+# and marketplace calls fail until they time out (measured in M10 task 13).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: woo-mcp-egress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: woo-mcp
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: wordpress
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-clients-egress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [wordpress, bootstrap, cron]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: mariadb
+      ports:
+        - port: 3306
+          protocol: TCP

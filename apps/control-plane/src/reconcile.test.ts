@@ -85,7 +85,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('provisionStore (needs TEST_DATA
       expect(kube.namespaces.get('store-alpha')).toEqual({
         'urumi.io/store': 'alpha',
         'urumi.io/managed': 'true',
-        'pod-security.kubernetes.io/enforce': 'baseline',
+        'pod-security.kubernetes.io/enforce': 'restricted',
+        'pod-security.kubernetes.io/warn': 'restricted',
       });
       expect(helm.calls).toEqual([
         'status store-alpha/store-alpha',

@@ -1,0 +1,87 @@
+# Runs due wp-cron events every minute. That includes action_scheduler_run_queue, so WooCommerce's
+# Action Scheduler drains here too. WordPress cannot do this itself: its loopback request goes to
+# the public store name, which resolves to 127.0.0.1 inside the pod while Apache listens on 8080.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: wp-cron
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 60
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            {{- include "store.labels" . | nindent 12 }}
+            app.kubernetes.io/component: cron
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          # The html volume is ReadWriteOnce: run on the node that already mounts it.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/component: wordpress
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 33
+            runAsGroup: 33
+            fsGroup: 33
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: wp-cron
+              image: {{ include "store.image" (list . .Values.images.wordpress) }}
+              imagePullPolicy: IfNotPresent
+              # A new pod's address reaches MariaDB a few seconds late (kube-router admits it late),
+              # so wait for the database and fail loudly if it never comes. Before the first install
+              # there is no site yet and the bootstrap Job creates it.
+              command:
+                - sh
+                - -c
+                - |
+                  [ -f /var/www/html/wp-config.php ] || exit 0
+                  n=0
+                  until php /usr/src/wordpress/healthz.php >/dev/null 2>&1; do
+                    n=$((n + 1))
+                    [ "$n" -lt 20 ] || { echo "wp-cron: database not reachable after 40 s" >&2; exit 1; }
+                    sleep 2
+                  done
+                  wp --path=/var/www/html core is-installed || exit 0
+                  exec wp --path=/var/www/html cron event run --due-now
+              env:
+                {{- include "store.wordpressEnv" . | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              # The store quota caps limits.cpu at 3. A run lasts seconds, so a low limit keeps headroom
+              # for the bootstrap Job and a rolling WordPress update.
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              volumeMounts:
+                - name: html
+                  mountPath: /var/www/html
+                  subPath: html
+          volumes:
+            - name: html
+              persistentVolumeClaim:
+                claimName: wordpress-html

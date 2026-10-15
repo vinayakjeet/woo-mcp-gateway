@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Live checks against the cluster: login, keys, a revoked key rejected within 1 s, server disable
 # and enable, the store name, a dead upstream (fx-mcp at zero), woo-mcp reachable only from the
-# gateway, invites, audit attribution and member scoping, disabling a member, and one agent turn.
+# gateway, invites, audit attribution and member scoping, role policies (hidden tools, a deny rule
+# added and removed), disabling a member, and one agent turn.
 # Needs kubectl, curl, jq and pnpm. Secrets go to files under $S (mode 600) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -145,6 +146,20 @@ p=$(kubectl -n store-main exec deploy/wordpress -c wordpress -- \
 [ "$p" = blocked ] || fail "the WordPress pod reached woo-mcp ($p)"
 pass "woo-mcp accepts the gateway and refuses control-plane and WordPress"
 
+# WordPress cannot run wp-cron itself (its loopback goes to 127.0.0.1 inside the pod), so the
+# wp-cron CronJob must have run in the last 3 minutes and nothing may be more than 5 minutes overdue.
+last=$(kubectl -n store-main get cronjob wp-cron -o jsonpath='{.status.lastSuccessfulTime}')
+[ -n "$last" ] || fail "the wp-cron CronJob has never succeeded"
+age=$(($(date +%s) - $(date -d "$last" +%s)))
+[ "$age" -lt 180 ] || fail "the wp-cron CronJob last succeeded ${age}s ago"
+overdue=$(kubectl -n store-main exec deploy/wordpress -c wordpress -- wp --path=/var/www/html eval '
+  global $wpdb;
+  echo (int) $wpdb->get_var("select count(*) from {$wpdb->prefix}actionscheduler_actions
+    where status = \"pending\" and scheduled_date_gmt < UTC_TIMESTAMP() - interval 5 minute")
+  + count(array_filter(_get_cron_array(), fn($t) => $t < time() - 300, ARRAY_FILTER_USE_KEY));')
+[ "$overdue" = 0 ] || fail "store-main has $overdue cron events or Action Scheduler actions overdue by more than 5 minutes"
+pass "wp-cron ran ${age}s ago and nothing is overdue"
+
 # Invite a member and accept once.
 r=$(req admin.jar POST /api/invites "{\"email\":\"$run@example.com\",\"role\":\"member\"}")
 [ "$(code "$r")" = 201 ] || fail "invite"
@@ -201,6 +216,65 @@ rows=$(body "$(req admin.jar GET "/api/audit?user=$member_id&from=$since")")
 jq -e --arg e "$run@example.com" '(.items | length) > 0 and all(.items[]; .userEmail == $e and .via == "api_key")' \
   <<<"$rows" >/dev/null || fail "the member's calls are not audited to the member via api_key"
 pass "audit attributes each key call to its user, via api_key, failures included"
+
+# SPEC 8: the seeded member rules hide write tools and answer a call to them like a missing tool.
+# Output is captured first: grep -q can close the pipe early, and pipefail would call that a failure.
+list_names() {
+  local out
+  out=$(tools "$1") || return 1
+  cut -f1 <<<"$out"
+}
+has_tool() { grep -qx "$2" <<<"$(list_names "$1")"; }
+member_names=$(list_names k3) || fail "member tools/list"
+admin_names=$(list_names k2) || fail "admin tools/list"
+grep -qx 'fx__get_info' <<<"$member_names" || fail "member list lacks fx__get_info"
+grep -qx 'main__list_orders' <<<"$member_names" || fail "member list lacks main__list_orders"
+! grep -qx 'main__create_product' <<<"$member_names" || fail "member list shows main__create_product"
+grep -qx 'main__create_product' <<<"$admin_names" || fail "admin list lacks main__create_product"
+[ -z "$(comm -23 <(sort <<<"$member_names") <(sort <<<"$admin_names"))" ] ||
+  fail "the member sees a tool the admin does not"
+pass "the member list hides main__create_product; the admin list keeps every tool"
+
+denied=$(tools k3 main__create_product '{"name":"x"}' 2>&1) && fail "member called main__create_product"
+grep -q 'Unknown tool: main__create_product' <<<"$denied" || fail "member call error was: $denied"
+missing=$(tools k3 main__no_such_tool 2>&1) && fail "member called a missing tool"
+[ "${denied//main__create_product/<n>}" = "${missing//main__no_such_tool/<n>}" ] ||
+  fail "a hidden tool and a missing tool answer differently"
+pass "a member call of a hidden tool fails like a missing tool"
+
+policy_id=""
+cleanup_policy() {
+  [ -z "$policy_id" ] || req admin.jar DELETE "/api/policies/$policy_id" >/dev/null 2>&1 || true
+}
+trap cleanup_policy EXIT
+r=$(req admin.jar POST /api/policies \
+  '{"role":"member","serverPattern":"fx","toolPattern":"get_info","effect":"deny","priority":10}')
+[ "$(code "$r")" = 201 ] || fail "create policy gave $(code "$r")"
+policy_id=$(body "$r" | jq -r .policy.id)
+t0=$(date +%s%N)
+until ! has_tool k3 fx__get_info; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "fx__get_info still listed 3 s after a member deny rule"
+  sleep 0.1
+done
+pass "a member deny rule hides fx__get_info after $(ms_since "$t0") ms"
+has_tool k2 fx__get_info || fail "the member deny rule hid fx__get_info from the admin"
+[ "$(code "$(req admin.jar DELETE "/api/policies/$policy_id")")" = 204 ] || fail "delete policy"
+policy_id=""
+t0=$(date +%s%N)
+until has_tool k3 fx__get_info; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "fx__get_info not back 3 s after the rule was deleted"
+  sleep 0.1
+done
+trap - EXIT
+pass "deleting the rule brings fx__get_info back after $(ms_since "$t0") ms"
+
+t0=$(date +%s%N)
+until body "$(req member.jar GET '/api/audit?server=main&outcome=denied')" |
+  jq -e '[.items[] | select(.exposedName == "main__create_product")] | length == 1' >/dev/null; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || fail "the member's audit view lacks one denied row for main__create_product"
+  sleep 0.2
+done
+pass "the member's audit view has one denied row for main__create_product"
 
 # Disabling the member ends their session and drops both of their cached keys in the gateway at once.
 for k in k3 k4; do [ "$(mcp_status "$k")" != 401 ] || fail "member key $k rejected before disable"; done

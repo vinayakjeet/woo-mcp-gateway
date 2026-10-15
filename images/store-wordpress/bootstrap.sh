@@ -30,6 +30,16 @@ set_option blogname "$STORE_NAME"
 # The WooCommerce REST API needs pretty permalinks.
 wp rewrite structure '/%postname%/' --hard >/dev/null 2>&1
 
+# A killed install (helm uninstall --wait during crash recovery) leaves the wc_installing lock on
+# the database volume, and WooCommerce takes a lock over only after 10 minutes. Every retry inside
+# that window fails. An install takes seconds, so a lock older than 2 minutes is dead.
+lock=$(wp option get wc_installing 2>/dev/null || true)
+if [[ "$lock" =~ ^[0-9]+$ ]] && [ $(($(date +%s) - lock)) -gt 120 ]; then
+  wp option delete wc_installing >/dev/null
+  wp transient delete wc_installing >/dev/null 2>&1 || true
+  echo "store-bootstrap: removed a stale WooCommerce install lock" >&2
+fi
+
 wp plugin activate woocommerce >/dev/null 2>&1
 wp wc update >/dev/null
 

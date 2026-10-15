@@ -51,7 +51,7 @@ store:
 	@mkdir -p deploy/secrets
 	@test -f $(STORE_SECRETS) || (umask 077 && printf 'mcp:\n  sharedToken: "%s"\n' "$$(openssl rand -hex 32)" > $(STORE_SECRETS))
 	kubectl create namespace store-$(SLUG) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl label namespace store-$(SLUG) --overwrite urumi.io/store=$(SLUG) urumi.io/managed=true pod-security.kubernetes.io/enforce=baseline
+	kubectl label namespace store-$(SLUG) --overwrite urumi.io/store=$(SLUG) urumi.io/managed=true pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
 	helm upgrade --install store-$(SLUG) charts/store --namespace store-$(SLUG) \
 		-f deploy/store-values-local.yaml -f $(STORE_SECRETS) \
 		--set slug=$(SLUG) --set-string storeName="$(subst $(comma),\$(comma),$(NAME))" \
@@ -61,7 +61,9 @@ store:
 platform:
 	@test -f $(STORE_SECRETS) || (echo "missing $(STORE_SECRETS): run make store SLUG=$(SLUG) first" >&2; exit 1)
 	kubectl create namespace platform --dry-run=client -o yaml | kubectl apply -f -
-	kubectl label namespace platform --overwrite pod-security.kubernetes.io/enforce=baseline pod-security.kubernetes.io/warn=restricted
+	kubectl label namespace platform --overwrite pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+	kubectl create namespace mcp-hosted --dry-run=client -o yaml | kubectl apply -f -
+	kubectl label namespace mcp-hosted --overwrite pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
 	helm upgrade --install platform charts/platform --namespace platform \
 		-f deploy/values-local.yaml -f $(STORE_SECRETS) \
 		--set global.imageTag=$(IMAGE_TAG) \

@@ -186,7 +186,8 @@ rel_status() {
 main_snapshot() {
   {
     kubectl -n store-main get secret -l owner=helm,name=store-main --no-headers -o custom-columns='N:.metadata.name,S:.metadata.labels.status'
-    kubectl -n store-main get pods --no-headers -o custom-columns='P:.metadata.name,U:.metadata.uid,R:.status.containerStatuses[*].restartCount'
+    # wp-cron pods come and go every minute, so they are not part of the identity.
+    kubectl -n store-main get pods -l 'app.kubernetes.io/component!=cron' --no-headers -o custom-columns='P:.metadata.name,U:.metadata.uid,R:.status.containerStatuses[*].restartCount'
   } | sort
 }
 

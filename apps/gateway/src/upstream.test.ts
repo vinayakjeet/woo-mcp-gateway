@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
+import type { FetchLike } from '@modelcontextprotocol/client';
 import { Server } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Bulkhead } from './resilience.js';
@@ -141,6 +142,35 @@ describe('Upstream', () => {
     u.start();
     await vi.waitFor(() => expect(u.state).toBe('unreachable'), { timeout: 3000, interval: 10 });
     expect(hits).toEqual([]);
+  });
+
+  it('sends an external upstream through the pinned fetch and a managed one through the default', async () => {
+    const spy = () => {
+      const used: string[] = [];
+      const externalFetch: FetchLike = (url, init) => {
+        used.push(String(url));
+        return fetch(url, init);
+      };
+      return { used, externalFetch };
+    };
+    const tools = new Map([['t', async () => text('ok')]]);
+    const ext = spy();
+    const external = await upstreamFor(tools, { kind: 'external' }, ext);
+    await vi.waitFor(() => expect(external.u.state).toBe('connected'));
+    expect(ext.used.length).toBeGreaterThan(0);
+    const own = spy();
+    const managed = await upstreamFor(tools, { kind: 'system', slug: 'sys' }, own);
+    await vi.waitFor(() => expect(managed.u.state).toBe('connected'));
+    expect(own.used).toEqual([]);
+  });
+
+  it('reports a blocked address as its own failure kind', async () => {
+    const externalFetch: FetchLike = () =>
+      Promise.reject(Object.assign(new Error('x'), { code: 'ERR_UPSTREAM_BLOCKED' }));
+    const { u } = await upstreamFor(new Map(), {}, { externalFetch });
+    await vi.waitFor(() =>
+      expect(u.status().lastError).toEqual({ kind: 'blocked', message: 'address not allowed' }),
+    );
   });
 
   it('does not follow a redirect to the same origin either', async () => {

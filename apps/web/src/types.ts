@@ -25,7 +25,20 @@ export type Tool = {
   exposedName: string;
   title: string | null;
   description: string | null;
+  // An upstream hint, shown only. Policy never reads it.
   readOnly: boolean;
+  state: 'active' | 'changed';
+  // The roles whose policy rules allow this tool, computed by the API with the gateway's evaluator.
+  roles: Role[];
+};
+export type Policy = {
+  id: string;
+  role: Role;
+  serverPattern: string;
+  toolPattern: string;
+  effect: 'allow' | 'deny';
+  priority: number;
+  createdAt: string;
 };
 export type Server = {
   id: string;
@@ -82,3 +95,29 @@ export type Store = {
   deletable: boolean;
   seeded: boolean;
 };
+
+export type ScreenFlag = {
+  kind: 'hidden_unicode' | 'long_description' | 'suspicious_phrase';
+  detail: string;
+};
+export type ApprovalTool = {
+  name: string;
+  exposedName: string;
+  state: 'active' | 'changed';
+  title: string | null;
+  definitionHash: string;
+  approvedHash: string | null;
+  current: { description: string | null; inputSchema: unknown; annotations: unknown };
+  approved: { description: string | null; inputSchema: unknown; annotations: unknown } | null;
+  flags: ScreenFlag[];
+};
+export type ApprovalServer = {
+  id: string;
+  slug: string;
+  name: string;
+  url: string;
+  kind: 'external';
+  approval: 'approved' | 'pending';
+  tools: ApprovalTool[];
+};
+export type ApproveResult = { approved: string[]; stale: string[] };

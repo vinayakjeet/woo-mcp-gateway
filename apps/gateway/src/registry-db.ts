@@ -1,5 +1,5 @@
 import type { Tool } from '@modelcontextprotocol/client';
-import { decryptSecret, exposedToolName } from '@woo/core';
+import { decryptSecret, exposedToolName, type ServerKind } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { and, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
 import { canonicalJson, sha256Hex } from './canonical.js';
@@ -17,6 +17,16 @@ export function definitionHash(t: Tool): string {
       annotations: t.annotations ?? null,
     }),
   );
+}
+
+// The shape the approvals page diffs against; the migration backfill writes the same keys.
+function approvedDefinition(t: Tool) {
+  return {
+    name: t.name,
+    description: t.description ?? null,
+    inputSchema: t.inputSchema,
+    annotations: t.annotations ?? null,
+  };
 }
 
 // The slug is the AAD, so a ciphertext copied from another server's row fails here and the
@@ -90,9 +100,13 @@ export async function upsertTools(
   db: Db,
   serverId: string,
   slug: string,
+  kind: ServerKind,
   tools: readonly Tool[],
 ): Promise<Map<string, ToolState>> {
   const t = schema.mcpTools;
+  // Our own servers (store, hosted, system) are approved as they are. Only an external server
+  // can change a tool behind the admin's back.
+  const managed = kind !== 'external';
   return db.transaction(async (tx) => {
     const now = new Date();
     const names = tools.map((x) => x.name);
@@ -109,6 +123,9 @@ export async function upsertTools(
             inputSchema: x.inputSchema,
             annotations: x.annotations ?? null,
             definitionHash: definitionHash(x),
+            approvedHash: managed ? definitionHash(x) : null,
+            approvedDefinition: managed ? approvedDefinition(x) : null,
+            state: managed ? ('active' as const) : ('changed' as const),
             lastSeenAt: now,
           })),
         )
@@ -122,8 +139,17 @@ export async function upsertTools(
             annotations: sql`excluded.annotations`,
             definitionHash: sql`excluded.definition_hash`,
             lastSeenAt: sql`excluded.last_seen_at`,
-            // A tool that comes back is active again; "changed" belongs to tool approval and stays.
-            state: sql`case when "mcp_tools"."state" = 'removed' then 'active'::tool_state else "mcp_tools"."state" end`,
+            ...(managed
+              ? {
+                  approvedHash: sql`excluded.approved_hash`,
+                  approvedDefinition: sql`excluded.approved_definition`,
+                  state: sql`'active'::tool_state`,
+                }
+              : {
+                  // Only the Approve button writes approved_hash, so an edited definition stays
+                  // hidden until an admin has seen it, and an undone edit comes back by itself.
+                  state: sql`case when "mcp_tools"."approved_hash" = excluded.definition_hash then 'active'::tool_state else 'changed'::tool_state end`,
+                }),
           },
         });
     }

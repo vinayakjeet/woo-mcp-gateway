@@ -94,6 +94,7 @@ describe.each(['legacy', 'auto'] as const)('gateway isolation, %s client era', (
     );
     app = buildGatewayApp({
       router: registry,
+      policies: { allows: () => true },
       audit: { write: async (row) => void audit.push(row) },
       authenticate: async (h) => (h === 'Bearer good' ? principal : null),
       replica: 'test-replica',

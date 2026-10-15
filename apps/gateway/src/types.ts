@@ -12,6 +12,7 @@ export type ErrorKind =
   | 'refused'
   | 'timeout'
   | 'tls'
+  | 'blocked'
   | 'http_401'
   | 'http_403'
   | 'http_404'

@@ -27,6 +27,7 @@ async function start(
 ) {
   const a = buildGatewayApp({
     router,
+    policies: { allows: () => true },
     audit: { write: async () => {} },
     authenticate,
     replica: 'gw-test-0',

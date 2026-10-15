@@ -113,6 +113,24 @@ placeholder_url=$(wpc eval 'echo wp_get_attachment_url(get_option("woocommerce_p
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$placeholder_url")" = "200" ] || fail "placeholder image $placeholder_url"
 pass "bootstrap restores a missing placeholder image"
 
+# A crash during the WooCommerce install leaves the wc_installing lock row on the database volume.
+# WooCommerce takes a lock over only after 10 minutes, so without a cleanup every retry fails.
+now=$(date +%s)
+wpc plugin deactivate woocommerce >/dev/null 2>&1
+wpc option add wc_installing $((now - 300)) --autoload=no >/dev/null
+line=$(run_bootstrap || true)
+[ "$line" = "store-bootstrap: ok url=http://127.0.0.1:$PORT products=3 cod=yes mcp_feature=no" ] \
+  || fail "bootstrap with a stale install lock: $line"
+[ "$(wpc option list --search=wc_installing --format=count)" = "0" ] || fail "stale install lock still present"
+pass "bootstrap clears an install lock older than 2 minutes"
+
+# A recent lock may belong to a running install, so it stays.
+wpc option add wc_installing "$(date +%s)" --autoload=no >/dev/null
+run_bootstrap >/dev/null || true
+[ "$(wpc option list --search=wc_installing --format=count)" = "1" ] || fail "recent install lock was removed"
+wpc option delete wc_installing >/dev/null
+pass "bootstrap keeps a recent install lock"
+
 # WordPress stores blogname HTML-escaped (&#039;), so compare the decoded value.
 title=$(wpc eval 'echo html_entity_decode(get_option("blogname"), ENT_QUOTES);')
 [ "$title" = "$TEST_TITLE" ] || fail "title: $title"

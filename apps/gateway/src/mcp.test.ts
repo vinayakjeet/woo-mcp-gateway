@@ -1,4 +1,5 @@
 import { Client, InMemoryTransport, type Tool } from '@modelcontextprotocol/client';
+import { SEED_POLICIES, evaluatePolicy, type PolicyRule } from '@woo/core';
 import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import { auditVersion, createGatewayServer } from './mcp.js';
@@ -20,7 +21,7 @@ type Call = (
   signal: AbortSignal,
 ) => Promise<CallOutcome>;
 
-function route(slug: string, call: Call, enabled = true): Route {
+function route(slug: string, call: Call, enabled = true, toolName = 'tool'): Route {
   const record: ServerRecord = {
     id: `id-${slug}`,
     slug,
@@ -33,17 +34,43 @@ function route(slug: string, call: Call, enabled = true): Route {
     protocolMode: 'legacy',
     auth: { type: 'none' },
   };
-  return { upstream: { record, call }, toolName: 'tool' };
+  return { upstream: { record, call }, toolName };
 }
+
+const seeded: PolicyRule[] = SEED_POLICIES.map((r, i) => ({
+  ...r,
+  id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+  createdAt: new Date(2026, 0, 1),
+}));
+// Nothing hidden: the tests that are not about policy do not depend on the seed.
+const allowAll = { allows: () => true };
 
 async function connect(
   routes: Record<string, Route>,
-  o: { tools?: Tool[]; log?: Log; failAudit?: boolean } = {},
+  o: {
+    tools?: Tool[];
+    log?: Log;
+    failAudit?: boolean;
+    rules?: PolicyRule[];
+    principal?: Principal;
+  } = {},
 ) {
   const audit: AuditRow[] = [];
-  const router: Router = { list: () => o.tools ?? [], resolve: (n) => routes[n] };
+  const router: Router = {
+    // Exposed names are <slug>__<tool>, as the real registry builds them.
+    list: (keep) =>
+      (o.tools ?? []).filter((t) => {
+        const [slug = '', ...rest] = t.name.split('__');
+        return keep ? keep(slug, rest.join('__')) : true;
+      }),
+    resolve: (n) => routes[n],
+  };
+  const rules = o.rules;
   const server = createGatewayServer({
-    principal,
+    principal: o.principal ?? principal,
+    policies: rules
+      ? { allows: (role, slug, tool) => evaluatePolicy(rules, role, slug, tool) }
+      : allowAll,
     router,
     replica: 'r1',
     log: o.log ?? quietLog,
@@ -233,5 +260,123 @@ describe('createGatewayServer', () => {
     expect(auditVersion('2025-11-25')).toBe('2025-11-25');
     expect(auditVersion(null)).toBeNull();
     expect(auditVersion('')).toBeNull();
+  });
+
+  describe('role policy', () => {
+    const tool = (name: string): Tool => ({ name, inputSchema: { type: 'object' } });
+    const tools = [
+      tool('fx__get_info'),
+      tool('main__list_orders'),
+      tool('main__create_product'),
+      tool('gh__create_issue'),
+    ];
+    const routes = {
+      main__create_product: route('main', okCall, true, 'create_product'),
+      main__list_orders: route('main', okCall, true, 'list_orders'),
+    };
+
+    it('hides tools from a member that the seeded rules do not allow', async () => {
+      const { client } = await connect(routes, { tools, rules: seeded });
+      expect((await client.listTools()).tools.map((t) => t.name)).toEqual([
+        'fx__get_info',
+        'main__list_orders',
+      ]);
+    });
+
+    it('lists every tool for an admin', async () => {
+      const { client } = await connect(routes, {
+        tools,
+        rules: seeded,
+        principal: { ...principal, role: 'admin' },
+      });
+      expect((await client.listTools()).tools).toHaveLength(4);
+    });
+
+    it('filters an agent principal by its user role', async () => {
+      const { client } = await connect(routes, {
+        tools,
+        rules: seeded,
+        principal: { ...principal, via: 'agent', apiKeyId: null },
+      });
+      expect((await client.listTools()).tools.map((t) => t.name)).not.toContain(
+        'main__create_product',
+      );
+    });
+
+    it('answers a hidden tool exactly like a missing one', async () => {
+      const call = vi.fn(okCall);
+      const { client } = await connect(
+        { main__create_product: route('main', call, true, 'create_product') },
+        { rules: seeded },
+      );
+      const fail = async (name: string) => {
+        try {
+          await client.callTool({ name, arguments: {} });
+        } catch (err) {
+          const e = err as { code: number; message: string; data?: unknown };
+          return JSON.stringify({
+            code: e.code,
+            message: e.message.replace(name, '<name>'),
+            data: e.data,
+          });
+        }
+        throw new Error('expected a protocol error');
+      };
+      const hidden = await fail('main__create_product');
+      const missing = await fail('main__does_not_exist');
+      expect(hidden).toBe(missing);
+      expect(JSON.parse(hidden)).toMatchObject({
+        code: -32602,
+        message: expect.stringContaining('Unknown tool'),
+      });
+      expect(call).not.toHaveBeenCalled();
+    });
+
+    it('audits a hidden tool as denied with server and tool filled in', async () => {
+      const { client, audit } = await connect(
+        { main__create_product: route('main', okCall, true, 'create_product') },
+        { rules: seeded },
+      );
+      await client.callTool({ name: 'main__create_product', arguments: {} }).catch(() => {});
+      expect(audit).toEqual([
+        expect.objectContaining({
+          outcome: 'denied',
+          serverId: 'id-main',
+          serverSlug: 'main',
+          toolName: 'create_product',
+          exposedName: 'main__create_product',
+        }),
+      ]);
+    });
+
+    it('audits a missing tool as bad_request', async () => {
+      const { client, audit } = await connect({}, { rules: seeded });
+      await client.callTool({ name: 'main__nope', arguments: {} }).catch(() => {});
+      expect(audit.map((a) => a.outcome)).toEqual(['bad_request']);
+    });
+
+    it('does not reveal that a hidden tool sits on a disabled server', async () => {
+      const { client, audit } = await connect(
+        { main__create_product: route('main', okCall, false, 'create_product') },
+        { rules: seeded },
+      );
+      await expect(
+        client.callTool({ name: 'main__create_product', arguments: {} }),
+      ).rejects.toMatchObject({
+        code: -32602,
+      });
+      expect(audit.map((a) => a.outcome)).toEqual(['denied']);
+    });
+
+    it('lets an allowed member call through', async () => {
+      const call = vi.fn(okCall);
+      const { client, audit } = await connect(
+        { main__list_orders: route('main', call, true, 'list_orders') },
+        { rules: seeded },
+      );
+      await client.callTool({ name: 'main__list_orders', arguments: {} });
+      expect(call).toHaveBeenCalledOnce();
+      expect(audit.map((a) => a.outcome)).toEqual(['ok']);
+    });
   });
 });

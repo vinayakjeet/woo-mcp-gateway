@@ -1,0 +1,142 @@
+# SPEC 16 inbound paths. Traefik is the public entry; the rest is pod to pod inside platform.
+{{- $tr := .Values.networkPolicy.ingressController }}
+{{- define "platform.fromTraefik" }}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .namespace }}
+  podSelector:
+    matchLabels:
+      {{- toYaml .podLabels | nindent 6 }}
+{{- end }}
+{{- define "platform.fromPod" }}
+- podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list (index . 0) (index . 1)) | nindent 6 }}
+{{- end }}
+{{- range $c := list (dict "name" "web" "port" 8080) (dict "name" "agent" "port" 3100) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $c.name }}-ingress
+  labels:
+    {{- include "platform.labels" (list $ $c.name) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list $ $c.name) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromTraefik" $tr | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $c.port }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane-ingress
+  labels:
+    {{- include "platform.labels" (list . "control-plane") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "control-plane") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromTraefik" $tr | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3000
+    - from:
+        {{- include "platform.fromPod" (list . "agent") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  labels:
+    {{- include "platform.labels" (list . "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "gateway") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromTraefik" $tr | nindent 8 }}
+        {{- include "platform.fromPod" (list . "agent") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fx-mcp-ingress
+  labels:
+    {{- include "platform.labels" (list . "fx-mcp") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "fx-mcp") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromPod" (list . "gateway") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  labels:
+    {{- include "platform.labels" (list . "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform.selectorLabels" (list . "postgres") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromPod" (list . "control-plane") | nindent 8 }}
+        {{- include "platform.fromPod" (list . "gateway") | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- if .Values.ingress.tls.enabled }}
+---
+# cert-manager HTTP-01 solver pods start in the namespace of each TLS Ingress. Without this rule
+# default deny blocks Traefik from reaching them and no certificate is issued.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acme-solver-ingress
+  labels:
+    {{- include "platform.labels" (list . "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "platform.fromTraefik" $tr | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8089
+{{- end }}

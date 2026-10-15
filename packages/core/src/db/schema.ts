@@ -176,6 +176,7 @@ export const mcpTools = pgTable(
     annotations: jsonb('annotations'),
     definitionHash: text('definition_hash').notNull(),
     approvedHash: text('approved_hash'),
+    approvedDefinition: jsonb('approved_definition'),
     state: toolStateEnum('state').notNull().default('active'),
     firstSeenAt: ts('first_seen_at').notNull().defaultNow(),
     lastSeenAt: ts('last_seen_at').notNull().defaultNow(),

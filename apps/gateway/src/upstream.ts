@@ -1,4 +1,9 @@
-import { Client, StreamableHTTPClientTransport, type Tool } from '@modelcontextprotocol/client';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  type FetchLike,
+  type Tool,
+} from '@modelcontextprotocol/client';
 import { errorCode } from '@woo/core';
 import { canonicalJson } from './canonical.js';
 import { classifyError, isConnectionReset } from './classify.js';
@@ -26,6 +31,8 @@ export type UpstreamOptions = {
   backoffMaxMs?: number;
   breaker?: CircuitBreaker;
   bulkhead?: Bulkhead;
+  // Used for external servers only; our own servers keep the default fetch.
+  externalFetch?: FetchLike;
 };
 
 // A real call that cannot reach the upstream at all proves it is down; no need to wait for three health checks.
@@ -242,6 +249,9 @@ export class Upstream {
       client = created;
       const transport = new StreamableHTTPClientTransport(new URL(this.record.url), {
         requestInit: { headers: authHeaders(this.record.auth), redirect: 'error' },
+        ...(this.record.kind === 'external' && this.o.externalFetch
+          ? { fetch: this.o.externalFetch }
+          : {}),
       });
       await created.connect(transport, { timeout: this.healthTimeoutMs });
       const { tools } = await created.listTools(undefined, {

@@ -132,7 +132,7 @@ done
 rb=$(show rbac-provisioner.yaml)
 for want in "kind: ClusterRole" "kind: ClusterRoleBinding" "name: control-plane" "namespace: platform" \
   "- namespaces" "- deployments" "- statefulsets" "- services" "- configmaps" "- secrets" \
-  "- persistentvolumeclaims" "- jobs" "- ingresses" "- networkpolicies" "- resourcequotas" \
+  "- persistentvolumeclaims" "- jobs" "- cronjobs" "- ingresses" "- networkpolicies" "- resourcequotas" \
   "- limitranges" "- pods" "- replicasets" "- events"; do
   has "$rb" "$want" rbac
 done
@@ -142,6 +142,27 @@ if render --set provisioner.enabled=false --show-only templates/rbac-provisioner
   fail "rbac rendered with the provisioner off"
 fi
 pass "control-plane"
+
+# SPEC 18: the ClusterRole is wide because Helm's --wait lists and watches everything, so this policy is
+# the wall that keeps the control-plane to store-* and mcp-hosted.
+vap=$(show admission-policy.yaml)
+for want in "kind: ValidatingAdmissionPolicy" "kind: ValidatingAdmissionPolicyBinding" \
+  "name: control-plane-namespaces" "policyName: control-plane-namespaces" "failurePolicy: Fail" \
+  "request.userInfo.username == 'system:serviceaccount:platform:control-plane'" \
+  "startsWith('store-')" "'mcp-hosted'" "oldObject.metadata.name" "- CREATE" "- UPDATE" "- DELETE"; do
+  has "$vap" "$want" "admission policy"
+done
+[ "$(grep -c 'kind: ValidatingAdmissionPolicyBinding' <<<"$vap")" -eq 1 ] || fail "admission policy: one binding"
+bind=$(awk 'BEGIN{RS="---\n"} /kind: ValidatingAdmissionPolicyBinding/' <<<"$vap")
+has "$bind" "- Deny" "binding actions"
+lacks "$bind" "- Warn" "binding actions"
+lacks "$bind" "- Audit" "binding actions"
+other=$(show admission-policy.yaml --namespace other-ns 2>&1 || true)
+has "$other" "system:serviceaccount:other-ns:control-plane" "admission policy follows the release namespace"
+if render --set provisioner.enabled=false --show-only templates/admission-policy.yaml >/dev/null 2>&1; then
+  fail "admission policy rendered with the provisioner off"
+fi
+pass "admission policy"
 
 gw=$(show gateway.yaml)
 for want in "app.kubernetes.io/name: gateway" "containerPort: 9090" "containerPort: 8080" "path: /readyz" "path: /healthz" \
@@ -156,6 +177,16 @@ done
 [ "$(probe_port "$gw" livenessProbe)" = "9090" ] || fail "gateway liveness port"
 has "$(show gateway.yaml --set 'gateway.allowedOrigins={https://a.example,https://b.example}')" \
   'value: "https://a.example,https://b.example"' "gateway origins override"
+# The gateway connects and the control-plane validates: both must read the one value.
+for f in gateway.yaml control-plane.yaml; do
+  has "$(show "$f")" 'name: ALLOW_INSECURE_UPSTREAMS' "$f insecure upstreams env"
+  [ "$(show "$f" | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"false"' ] ||
+    fail "$f: ALLOW_INSECURE_UPSTREAMS is not false by default"
+  [ "$(show "$f" --set gateway.allowInsecureUpstreams=true | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"true"' ] ||
+    fail "$f: gateway.allowInsecureUpstreams=true does not reach ALLOW_INSECURE_UPSTREAMS"
+done
+[ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -c '"true"')" = 0 ] ||
+  fail "values-local.yaml turns on insecure upstreams"
 pass "gateway"
 
 fx=$(show fx-mcp.yaml)
@@ -191,9 +222,90 @@ lacks "$na" "Ingress" agent-netpol
 lacks "$na" "5432" agent-netpol
 pass "agent networkpolicy"
 
-# No policy selects every pod in the namespace (default-deny is M10).
-lacks "$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')" "podSelector: {}" "netpol"
-pass "no empty podSelector"
+# SPEC 16 default deny: one default-deny and one allow-dns in platform and in mcp-hosted (decision E).
+netpols=$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}')
+npdoc() { awk -v n="  name: $1" 'BEGIN{RS="---\n"} index($0, n "\n") && /kind: NetworkPolicy/' <<<"${2:-$netpols}"; }
+for ns in platform mcp-hosted; do
+  d=$(awk -v ns="  namespace: $ns" 'BEGIN{RS="---\n"} index($0, "name: default-deny\n") && index($0, ns "\n")' <<<"$netpols")
+  [ -n "$d" ] || fail "no default-deny in $ns"
+  has "$d" "podSelector: {}" "default-deny $ns"
+  has "$d" "- Ingress" "default-deny $ns"
+  has "$d" "- Egress" "default-deny $ns"
+  lacks "$d" "ingress:" "default-deny $ns"
+  lacks "$d" "egress:" "default-deny $ns"
+  a=$(awk -v ns="  namespace: $ns" 'BEGIN{RS="---\n"} index($0, "name: allow-dns\n") && index($0, ns "\n")' <<<"$netpols")
+  [ -n "$a" ] || fail "no allow-dns in $ns"
+  has "$a" "kubernetes.io/metadata.name: kube-system" "allow-dns $ns"
+  [ "$(count "$a" 'port: 53')" -eq 2 ] || fail "allow-dns $ns: port 53 for UDP and TCP"
+done
+[ "$(count "$netpols" 'podSelector: {}')" -eq 4 ] || fail "only default-deny and allow-dns select every pod"
+pass "default deny in platform and mcp-hosted"
+
+# One policy per workload and direction. Ports are pod ports (kube-router matches after the Service DNAT).
+traefik="kubernetes.io/metadata.name: kube-system"
+ingress_policy() { # name, selected pod label, port line
+  local d
+  d=$(npdoc "$1")
+  [ -n "$d" ] || fail "missing NetworkPolicy $1"
+  has "$d" "- Ingress" "$1"
+  lacks "$d" "- Egress" "$1"
+  has "$d" "$2" "$1"
+  has "$d" "$3" "$1"
+}
+ingress_policy web-ingress "app.kubernetes.io/name: web" "port: 8080"
+ingress_policy control-plane-ingress "app.kubernetes.io/name: control-plane" "port: 3000"
+ingress_policy agent-ingress "app.kubernetes.io/name: agent" "port: 3100"
+ingress_policy gateway-ingress "app.kubernetes.io/name: gateway" "port: 8080"
+ingress_policy fx-mcp-ingress "app.kubernetes.io/name: fx-mcp" "port: 8080"
+ingress_policy postgres-ingress "app.kubernetes.io/name: postgres" "port: 5432"
+for n in web-ingress control-plane-ingress agent-ingress gateway-ingress; do
+  d=$(npdoc "$n")
+  has "$d" "$traefik" "$n"
+  has "$d" "app.kubernetes.io/name: traefik" "$n"
+done
+has "$(npdoc control-plane-ingress)" "port: 3001" control-plane-ingress
+has "$(npdoc control-plane-ingress)" "app.kubernetes.io/name: agent" control-plane-ingress
+has "$(npdoc gateway-ingress)" "app.kubernetes.io/name: agent" gateway-ingress
+has "$(npdoc fx-mcp-ingress)" "app.kubernetes.io/name: gateway" fx-mcp-ingress
+d=$(npdoc postgres-ingress)
+has "$d" "app.kubernetes.io/name: control-plane" postgres-ingress
+has "$d" "app.kubernetes.io/name: gateway" postgres-ingress
+lacks "$d" "app.kubernetes.io/name: agent" postgres-ingress
+lacks "$d" "app.kubernetes.io/name: web" postgres-ingress
+pass "platform ingress policies"
+
+d=$(npdoc gateway-egress)
+for want in "- Egress" "app.kubernetes.io/name: postgres" "port: 5432" "app.kubernetes.io/name: fx-mcp" "port: 8080" \
+  "urumi.io/managed: \"true\"" "app.kubernetes.io/name: woo-mcp" "kubernetes.io/metadata.name: mcp-hosted" \
+  "cidr: 0.0.0.0/0" "port: 443"; do
+  has "$d" "$want" gateway-egress
+done
+lacks "$d" "- Ingress" gateway-egress
+d=$(npdoc control-plane-egress)
+for want in "- Egress" "app.kubernetes.io/name: postgres" "port: 5432" "cidr: 0.0.0.0/0" "port: 6443" "port: 443"; do
+  has "$d" "$want" control-plane-egress
+done
+lacks "$d" "- Ingress" control-plane-egress
+lacks "$d" "app.kubernetes.io/name: gateway" control-plane-egress
+pass "platform egress policies"
+
+# The public 443 rule must exclude the five private ranges, in every policy that opens it.
+for n in gateway-egress agent-egress fx-mcp-egress; do
+  d=$(npdoc "$n")
+  for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+    has "$d" "- $r" "$n public 443"
+  done
+done
+# The control-plane may reach the API server on any address, so it has no except list.
+lacks "$(npdoc control-plane-egress)" "except:" control-plane-egress
+pass "public 443 rules exclude the private ranges"
+
+# cert-manager HTTP-01 solver pods are created in the Ingress namespace and need Traefik to reach them.
+lacks "$netpols" "http01-solver" "solver rule without tls"
+tls=$(render --set ingress.tls.enabled=true --set ingress.tls.clusterIssuer=x | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/')
+has "$tls" "acme.cert-manager.io/http01-solver" "solver rule with tls"
+has "$tls" "port: 8089" "solver rule with tls"
+pass "solver rule follows ingress.tls.enabled"
 
 # Every workload file: one probe pair per Deployment or StatefulSet, and the pod and container hardening.
 for f in postgres control-plane gateway fx-mcp web agent; do

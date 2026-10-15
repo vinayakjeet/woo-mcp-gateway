@@ -40,7 +40,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end }}
 
-{{/* Shared by the WordPress Deployment and the bootstrap Job so wp-cli sees the same config as Apache. */}}
+{{/* Shared by the WordPress Deployment, the bootstrap Job and the wp-cron CronJob so wp-cli sees the same config as Apache. */}}
 {{- define "store.wordpressEnv" -}}
 - name: WORDPRESS_DB_HOST
   value: mariadb:3306
@@ -70,6 +70,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
     define('WP_HOME', '{{ include "store.url" . }}');
     define('WP_SITEURL', '{{ include "store.url" . }}');
     define('FS_METHOD', 'direct');
+    // The loopback to the public name reaches 127.0.0.1 inside the pod, so the CronJob runs the events.
+    define('DISABLE_WP_CRON', true);
+    // Egress is denied, so update checks can never succeed. Fail them at once instead of waiting for a timeout.
+    define('WP_HTTP_BLOCK_EXTERNAL', true);
     define('DISALLOW_FILE_EDIT', true);
     define('WP_ENVIRONMENT_TYPE', '{{ .Values.wordpress.environmentType }}');
 {{- end }}

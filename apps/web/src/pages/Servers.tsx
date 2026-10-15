@@ -134,7 +134,7 @@ function ToolTable({ server }: { server: Server }) {
     <table className="w-full border-collapse">
       <thead>
         <tr>
-          {['Exposed name', 'Description', 'Read-only'].map((h) => (
+          {['Exposed name', 'Description', 'Roles', 'Read-only hint'].map((h) => (
             <th key={h} className={th}>
               {h}
             </th>
@@ -146,6 +146,7 @@ function ToolTable({ server }: { server: Server }) {
           <tr key={t.exposedName}>
             <td className={`${td} font-mono`}>{t.exposedName}</td>
             <td className={td}>{t.description ?? ''}</td>
+            <td className={td}>{t.roles.join(', ') || 'none'}</td>
             <td className={td}>{t.readOnly ? 'yes' : ''}</td>
           </tr>
         ))}

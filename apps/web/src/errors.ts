@@ -29,6 +29,9 @@ const MESSAGES: Record<string, string> = {
   secret_required: 'This auth type needs a secret.',
   managed_server:
     'This server is managed by the platform. Only enable, disable and timeout can change.',
+  invalid_policy:
+    'Patterns: the server pattern is 1 to 24 characters of a-z, 0-9, - and *; the tool pattern is 1 to 128 characters without spaces. Priority is a whole number from -1000 to 1000.',
+  policy_exists: 'That exact rule exists already.',
   url_rejected: 'That URL is not allowed.',
   bad_request: 'Some fields are invalid. Check them and try again.',
   internal_error: 'The server failed. Try again in a moment.',
