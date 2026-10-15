@@ -1,11 +1,12 @@
 import type { Tool } from '@modelcontextprotocol/client';
 import { decryptSecret, exposedToolName, type ServerKind } from '@woo/core';
 import { schema } from '@woo/core/db';
-import { and, eq, inArray, ne, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { canonicalJson, sha256Hex } from './canonical.js';
 import type { Db, PersistedTool, ServerRecord, ToolState, UpstreamAuth } from './types.js';
 
-export type LoadedServer = { record: ServerRecord; tools: PersistedTool[] };
+// synced is false until the first tool list was recorded (mcp_servers.tools_synced_at).
+export type LoadedServer = { record: ServerRecord; tools: PersistedTool[]; synced: boolean };
 type ServerRow = typeof schema.mcpServers.$inferSelect;
 
 export function definitionHash(t: Tool): string {
@@ -84,6 +85,7 @@ export async function loadServers(db: Db, kek: Buffer, id?: string): Promise<Loa
     };
     return {
       record,
+      synced: row.toolsSyncedAt !== null,
       tools: tools
         .filter((x) => x.serverId === row.id)
         .map(({ name, exposedName, state, definitionHash }) => ({
@@ -104,19 +106,20 @@ export async function upsertTools(
   tools: readonly Tool[],
 ): Promise<Map<string, ToolState>> {
   const t = schema.mcpTools;
+  const s = schema.mcpServers;
   return db.transaction(async (tx) => {
     // Store and system servers are ours and approved as they are. A hosted server is approved
     // only on its first sync, because creating it was the admin's review of that image. A later
-    // sync can come from a replaced image, so it follows the external rules.
-    let managed = kind === 'store' || kind === 'system';
-    if (kind === 'hosted') {
-      const [seen] = await tx
-        .select({ name: t.name })
-        .from(t)
-        .where(eq(t.serverId, serverId))
-        .limit(1);
-      managed = !seen;
-    }
+    // sync can come from a replaced image, so it follows the external rules. The guarded update
+    // claims the first sync under the row lock: of two replicas, exactly one gets a row back, and
+    // the other waits for its commit and then sees the flag.
+    const claimed = await tx
+      .update(s)
+      .set({ toolsSyncedAt: sql`now()` })
+      .where(and(eq(s.id, serverId), isNull(s.toolsSyncedAt)))
+      .returning({ id: s.id });
+    const managed =
+      kind === 'store' || kind === 'system' || (kind === 'hosted' && claimed.length > 0);
     const now = new Date();
     const names = tools.map((x) => x.name);
     if (tools.length > 0) {

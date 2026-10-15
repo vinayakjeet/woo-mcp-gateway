@@ -21,7 +21,7 @@ const tool = (name: string, extra: Partial<Tool> = {}): Tool => ({
 });
 
 class FakeRegistry {
-  applied: LoadedServer[] = [];
+  applied: Pick<LoadedServer, 'record' | 'tools'>[] = [];
   removed: string[] = [];
   states = new Map<string, Map<string, ToolState>>();
   private present = new Set<string>();
@@ -82,7 +82,18 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
     await addServer('pend', { approval: 'pending' });
     await addServer('shop', { kind: 'store' });
     await addServer('shop2', { kind: 'store' });
+    await addServer('sys', { kind: 'system' });
+    await addServer('hzero', { kind: 'hosted' });
+    await addServer('hpair', { kind: 'hosted' });
+    await addServer('hrace', { kind: 'hosted' });
   });
+  const syncedAt = async (id: string) =>
+    (
+      await db
+        .select({ v: schema.mcpServers.toolsSyncedAt })
+        .from(schema.mcpServers)
+        .where(eq(schema.mcpServers.id, id))
+    )[0]?.v ?? null;
   afterAll(() => pool.end());
 
   it('decrypts bearer and header credentials with the slug as AAD', async () => {
@@ -187,11 +198,39 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
       expect(states.get('p')).toBe('changed');
     });
 
-    it('the first sync of a hosted server approves its tools', async () => {
+    it('a hosted first sync with tools approves them and sets tools_synced_at', async () => {
       const id = ids.hst!;
+      expect(await syncedAt(id)).toBeNull();
       const states = await upsertTools(db, id, 'hst', 'hosted', [tool('h')]);
       expect(states.get('h')).toBe('active');
       expect((await row(id, 'h')).approvedHash).toBe(definitionHash(tool('h')));
+      const first = await syncedAt(id);
+      expect(first).toBeInstanceOf(Date);
+      await upsertTools(db, id, 'hst', 'hosted', [tool('h')]);
+      expect(await syncedAt(id)).toEqual(first);
+    });
+
+    it('two concurrent first syncs of a hosted server with different lists approve only one', async () => {
+      const id = ids.hrace!;
+      const a = tool('r');
+      const b = tool('r', { description: 'a different image' });
+      // Hold the server row until both syncs are inside their transactions, so they truly overlap.
+      const holder = await pool.connect();
+      await holder.query('begin');
+      await holder.query('select 1 from mcp_servers where id = $1 for update', [id]);
+      const both = Promise.all([
+        upsertTools(db, id, 'hrace', 'hosted', [a]),
+        upsertTools(db, id, 'hrace', 'hosted', [b]),
+      ]);
+      await new Promise((r) => setTimeout(r, 200));
+      await holder.query('commit');
+      holder.release();
+      await both;
+      const stored = await row(id, 'r');
+      // The second writer found the flag set, so its definition did not match the approved one.
+      expect(stored.state).toBe('changed');
+      expect([definitionHash(a), definitionHash(b)]).toContain(stored.approvedHash);
+      expect(stored.approvedHash).not.toBe(stored.definitionHash);
     });
 
     it('a hosted tool whose definition changes later is hidden until approved', async () => {
@@ -241,6 +280,20 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
         },
       });
     });
+  });
+
+  it('store and system servers stay auto-approved and get the flag, external ones get it too', async () => {
+    for (const [slug, kind] of [
+      ['shop', 'store'],
+      ['sys', 'system'],
+    ] as const) {
+      const id = ids[slug]!;
+      expect((await upsertTools(db, id, slug, kind, [tool('k')])).get('k')).toBe('active');
+      expect(await syncedAt(id)).toBeInstanceOf(Date);
+      const edited = tool('k', { description: 'changed later' });
+      expect((await upsertTools(db, id, slug, kind, [edited])).get('k')).toBe('active');
+    }
+    expect(await syncedAt(ids.ext!)).toBeInstanceOf(Date);
   });
 
   it('hashes a definition the same whatever the key order', () => {
@@ -463,6 +516,43 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
       await vi.waitFor(() => expect(a.registry.states.get(id)?.get('d')).toBe('changed'));
       await vi.waitFor(() => expect(b.registry.states.get(id)?.get('d')).toBe('changed'));
       await upsertTools(db, id, 'ext', 'external', [tool('d')]);
+      await a.sync.close();
+      await b.sync.close();
+    });
+
+    it('a hosted first sync with zero tools sets tools_synced_at, and a tool that appears later is changed and hidden', async () => {
+      const id = ids.hzero!;
+      const upstream = (tools: Tool[]) => ({
+        record: { id, slug: 'hzero', kind: 'hosted' } as ServerRecord,
+        tools: () => tools,
+      });
+      const { registry, sync } = start();
+      await sync.start();
+      expect(await syncedAt(id)).toBeNull();
+      sync.persistTools(upstream([]));
+      await vi.waitFor(async () => expect(await syncedAt(id)).toBeInstanceOf(Date));
+      sync.persistTools(upstream([tool('late')]));
+      await vi.waitFor(() => expect(registry.states.get(id)?.get('late')).toBe('changed'));
+      await sync.close();
+    });
+
+    it('two replicas syncing a new hosted server at once end with the same states', async () => {
+      const id = ids.hpair!;
+      const upstream = () => ({
+        record: { id, slug: 'hpair', kind: 'hosted' } as ServerRecord,
+        tools: () => [tool('x'), tool('y')],
+      });
+      const a = start();
+      const b = start();
+      await a.sync.start();
+      await b.sync.start();
+      a.sync.persistTools(upstream());
+      b.sync.persistTools(upstream());
+      for (const r of [a.registry, b.registry])
+        await vi.waitFor(() =>
+          expect(Object.fromEntries(r.states.get(id) ?? [])).toEqual({ x: 'active', y: 'active' }),
+        );
+      expect(await syncedAt(id)).toBeInstanceOf(Date);
       await a.sync.close();
       await b.sync.close();
     });
