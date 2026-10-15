@@ -27,6 +27,16 @@ count_prefix() {
   out=$(tools "$1") || true
   grep -c "^${2}__" <<<"$out" || true
 }
+psql_one() { kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c "$1"; }
+# fx_answered KEY KEY_ID: calls fx__get_info and is true when the gateway reached fx-mcp and it
+# answered (audit outcome ok or tool_error), so a rates API outage does not fail e2e.
+fx_answered() {
+  local outcome
+  tools "$1" fx__get_info >/dev/null 2>&1 || true
+  outcome=$(psql_one "select outcome from audit_events where api_key_id = '$2'
+    and exposed_name = 'fx__get_info' order by ts desc, id desc limit 1")
+  [ "$outcome" = ok ] || [ "$outcome" = tool_error ]
+}
 
 admin_login admin.jar
 me=$(body "$(req admin.jar GET /api/me)")
@@ -122,7 +132,7 @@ pass "fx shown unreachable; tools/list took $t s with main tools and no fx tools
 restore_fx
 kubectl -n platform rollout status deploy/fx-mcp --timeout=120s >/dev/null
 t0=$(date +%s%N)
-until tools k2 fx__get_info >/dev/null 2>&1; do
+until fx_answered k2 "$k2_id"; do
   [ "$(ms_since "$t0")" -lt 60000 ] || fail "fx not answering 60 s after scaling back"
   sleep 1
 done
@@ -182,8 +192,8 @@ save_key "$(body "$r")" k3
 r=$(req member.jar POST /api/keys "{\"name\":\"$run-member-2\"}")
 k4_id=$(body "$r" | jq -r .key.id)
 save_key "$(body "$r")" k4
-tools k3 fx__get_info >/dev/null || fail "member call fx__get_info"
-tools k2 fx__get_info >/dev/null || fail "admin call fx__get_info"
+fx_answered k3 "$k3_id" || fail "member call fx__get_info"
+fx_answered k2 "$k2_id" || fail "admin call fx__get_info"
 
 t0=$(date +%s%N)
 until body "$(req member.jar GET /api/audit)" |
@@ -278,7 +288,6 @@ pass "the member's audit view has one denied row for main__create_product"
 
 # SPEC 17: tool search mode. ?toolMode=search lists only the two meta-tools, search_tools ranks the
 # principal's visible tools, and call_tool goes through the same checks and audit as a direct call.
-psql_one() { kubectl -n platform exec postgres-0 -- psql -U platform -d platform -At -c "$1"; }
 search_tools() { MCP="$MCP?toolMode=search" tools "$@"; }
 search_names=$(MCP="$MCP?toolMode=search" list_names k2) || fail "search-mode tools/list"
 [ "$search_names" = $'call_tool\nsearch_tools' ] || fail "search mode listed: $search_names"
@@ -289,10 +298,12 @@ found=$(search_tools k2 search_tools '{"query":"convert currency"}' | head -n1)
 [ "$(jq -r '.tools[0].name' <<<"$found")" = fx__convert_currency ] || fail "search ranked: $(jq -c '[.tools[].name]' <<<"$found")"
 pass "search_tools 'convert currency' puts fx__convert_currency first"
 
-search_tools k2 call_tool '{"name":"fx__get_info"}' >/dev/null || fail "call_tool fx__get_info"
+# A tool error (rates API down) still proves call_tool reached fx-mcp; the audit row decides.
+search_tools k2 call_tool '{"name":"fx__get_info"}' >/dev/null 2>&1 || true
 t0=$(date +%s%N)
 until [ "$(psql_one "select count(*) from audit_events where api_key_id = '$k2_id' and meta_tool = 'call_tool'
-  and tool_name = 'get_info' and exposed_name = 'fx__get_info' and server_slug = 'fx' and outcome = 'ok'")" -ge 1 ]; do
+  and tool_name = 'get_info' and exposed_name = 'fx__get_info' and server_slug = 'fx'
+  and outcome in ('ok', 'tool_error')")" -ge 1 ]; do
   [ "$(ms_since "$t0")" -lt 3000 ] || fail "no audit row for get_info with meta_tool = call_tool"
   sleep 0.2
 done
