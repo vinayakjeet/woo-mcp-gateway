@@ -31,6 +31,14 @@ row() { # slug, jq filter on that slug's row
   hosted_list | jq -r --arg s "$1" ".servers[]? | select(.slug == \$s) | $2" 2>/dev/null || true
 }
 labeled() { kubectl -n "$NS" get all,secret,netpol -l "urumi.io/hosted=$1" -o name 2>/dev/null || true; }
+# One login per run: the control-plane allows 5 logins per email per minute, and all followed by
+# offline would otherwise make 6.
+logged_in=
+login() {
+  [ -z "$logged_in" ] || return 0
+  admin_login hosted.jar
+  logged_in=1
+}
 
 KEY_IDS=()
 trap revoke_keys EXIT
@@ -50,7 +58,7 @@ revoke_keys() {
 create() { # slug [NAME=VALUE ...] as plain env
   local slug=$1 r t0 state
   shift
-  admin_login hosted.jar
+  login
   head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$S/hosted-demo-secret"
   jq -n --arg slug "$slug" --rawfile secret "$S/hosted-demo-secret" '{
     slug: $slug, image: "fx-mcp:dev", port: 8080, path: "/mcp", cpu: "200m", memory: "128Mi",
@@ -91,7 +99,7 @@ answered() {
 
 check() { # slug [WANT for the tool calls, see answered]
   local slug=$1 want=${2:-} r names n t0 count uid ro since out
-  admin_login hosted.jar
+  login
   [ -s "$S/hosted-demo-secret" ] || fail "no $S/hosted-demo-secret: run create first"
   with_key
 
@@ -165,7 +173,7 @@ check() { # slug [WANT for the tool calls, see answered]
 
 delete() {
   local slug=$1 id t0 before after names
-  admin_login hosted.jar
+  login
   with_key
   id=$(row "$slug" .id)
   [ -n "$id" ] || fail "no hosted server $slug"
