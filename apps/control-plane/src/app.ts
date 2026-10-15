@@ -2,6 +2,7 @@ import { hash, verify } from '@node-rs/argon2';
 import rateLimit from '@fastify/rate-limit';
 import {
   errorCode,
+  METRICS_CONTENT_TYPE,
   generateSessionToken,
   requestIdOptions,
   sessionCookie,
@@ -129,6 +130,7 @@ export function buildPublicApp(
 export function buildInternalApp(
   deps: Deps,
   logger: FastifyServerOptions['logger'] = false,
+  metrics?: { render(): Promise<string> },
 ): FastifyInstance {
   const app = Fastify({ logger, ...requestIdOptions });
   installErrorHandler(app);
@@ -137,5 +139,11 @@ export function buildInternalApp(
     const ready = await deps.ping().catch(() => false);
     return reply.code(ready ? 200 : 503).send(ready ? 'ready' : 'not ready');
   });
+  // Port 3001 only: no Ingress routes it, and the NetworkPolicy admits Prometheus and the kubelet.
+  if (metrics) {
+    app.get('/metrics', async (_req, reply) =>
+      reply.header('content-type', METRICS_CONTENT_TYPE).send(await metrics.render()),
+    );
+  }
   return app;
 }
