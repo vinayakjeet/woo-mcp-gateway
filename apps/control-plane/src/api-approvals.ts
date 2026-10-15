@@ -40,7 +40,7 @@ export function approvalRoutes(scope: FastifyInstance, o: ApiOptions): void {
     const s = await o.pool.query<ApprovalRow>(
       `select s.id as "serverId", s.slug, s.name, s.url, s.kind, s.approval
        from mcp_servers s
-       where s.kind = 'external' and (s.approval = 'pending'
+       where s.kind in ('external', 'hosted') and (s.approval = 'pending'
          or exists (select 1 from mcp_tools t where t.server_id = s.id and t.state = 'changed'))
        order by s.name`,
     );
@@ -94,8 +94,9 @@ export function approvalRoutes(scope: FastifyInstance, o: ApiOptions): void {
       );
       const s = cur.rows[0];
       if (!s) return 'not_found' as const;
-      // Our own servers are approved as they are (SPEC 22.7), so there is nothing to approve.
-      if (s.managed || s.kind !== 'external') return 'auto_approved' as const;
+      // Store and system servers are approved as they are (SPEC 22.7). A hosted server is approved
+      // on its first sync only, so a later change goes through here like an external one.
+      if (s.kind !== 'external' && s.kind !== 'hosted') return 'auto_approved' as const;
       await c.query(
         "update mcp_servers set approval = 'approved', updated_at = now() where id = $1",
         [id],
