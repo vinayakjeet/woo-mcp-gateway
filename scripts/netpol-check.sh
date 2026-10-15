@@ -96,6 +96,27 @@ if [ "$A" = platform ]; then
   r=$(probe platform "$L=web" "$cp")
   blocked "$r" || fail "a web-labeled pod reached the control-plane on 3001: $r"
   pass "agent reaches gateway 8080 and control-plane 3001 only"
+
+  # Only when monitoring.enabled is on: Prometheus reaches the two metrics ports and nothing else.
+  if kubectl -n platform get deploy prometheus >/dev/null 2>&1; then
+    gwm=http://$gwpod:9090/metrics
+    cpm=http://control-plane-internal.platform.svc.cluster.local:3001/metrics
+    r=$(probe platform "$L=prometheus" "$gwm")
+    [ "${r%% *}" = 200 ] || fail "a prometheus-labeled pod got '$r' from gateway /metrics, expected 200"
+    r=$(probe platform "$L=prometheus" "$cpm")
+    [ "${r%% *}" = 200 ] || fail "a prometheus-labeled pod got '$r' from control-plane /metrics, expected 200"
+    r=$(probe platform - "$gwm")
+    blocked "$r" || fail "an unlabeled platform pod reached gateway /metrics: $r"
+    r=$(probe platform "$L=web" "$gwm")
+    blocked "$r" || fail "a web-labeled pod reached gateway /metrics: $r"
+    r=$(probe default - "$gwm")
+    blocked "$r" || fail "the default namespace reached gateway /metrics: $r"
+    for target in "$pg" "$gw" "$fx"; do
+      r=$(probe platform "$L=prometheus" "$target")
+      blocked "$r" || fail "a prometheus-labeled pod reached $target: $r"
+    done
+    pass "prometheus reaches gateway 9090 and control-plane 3001 only; other pods cannot read the gateway metrics"
+  fi
   echo OK
   exit 0
 fi
