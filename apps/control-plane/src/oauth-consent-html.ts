@@ -28,11 +28,15 @@ function page(title: string, body: string): string {
 
 // No script, no form target but ours and the redirect origin, no framing (decision 9). form-action
 // names the redirect origin because Chrome applies it to the redirect that follows a form POST.
+// The referrer policy is same-origin, not no-referrer: a form post is a navigation, and with
+// no-referrer a browser sends "Origin: null", which the Origin check in app.ts rightly refuses.
+// Same-origin still sends nothing to the client's redirect URI, which is another origin.
 export function consentHeaders(redirectOrigin: string): Record<string, string> {
   return {
     'content-type': 'text/html; charset=utf-8',
     'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}; frame-ancestors 'none'; base-uri 'none'`,
     ...commonHeaders(),
+    'referrer-policy': 'same-origin',
   };
 }
 

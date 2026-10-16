@@ -12,6 +12,68 @@ const pkce = () => {
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
 };
 
+// The Origin a browser sends when a form on a page posts. A form submission is a navigation, not a
+// CORS request, so the Fetch spec ("append a request Origin header") lets the page's own headers
+// decide: no-referrer hides the origin as the string "null", a sandbox without allow-same-origin
+// gives the page an opaque origin, and same-origin only hides it from another origin. The first
+// version of the consent page sent no-referrer, which no test noticed because every test posted the
+// real origin by hand.
+export function browserFormOrigin(
+  page: Record<string, unknown>,
+  pageOrigin: string,
+  actionOrigin: string,
+): string {
+  const csp = String(page['content-security-policy'] ?? '');
+  const sandbox = csp
+    .split(';')
+    .map((d) => d.trim().split(/\s+/))
+    .find((d) => d[0] === 'sandbox');
+  if (sandbox && !sandbox.includes('allow-same-origin')) return 'null';
+  // With no header a browser uses strict-origin-when-cross-origin.
+  const policy = String(page['referrer-policy'] ?? 'strict-origin-when-cross-origin');
+  if (policy === 'no-referrer') return 'null';
+  if (policy === 'same-origin' && pageOrigin !== actionOrigin) return 'null';
+  const downgrade = pageOrigin.startsWith('https:') && !actionOrigin.startsWith('https:');
+  if (
+    downgrade &&
+    ['no-referrer-when-downgrade', 'strict-origin', 'strict-origin-when-cross-origin'].includes(
+      policy,
+    )
+  )
+    return 'null';
+  return pageOrigin;
+}
+
+describe('browserFormOrigin models the Fetch rule', () => {
+  const o = 'http://app.127.0.0.1.nip.io';
+  it('sends null for no-referrer and for a sandbox without allow-same-origin', () => {
+    expect(browserFormOrigin({ 'referrer-policy': 'no-referrer' }, o, o)).toBe('null');
+    expect(
+      browserFormOrigin(
+        { 'content-security-policy': "default-src 'none'; sandbox allow-forms" },
+        o,
+        o,
+      ),
+    ).toBe('null');
+  });
+  it('sends the real origin for same-origin and for a sandbox that allows it', () => {
+    expect(browserFormOrigin({ 'referrer-policy': 'same-origin' }, o, o)).toBe(o);
+    expect(browserFormOrigin({}, o, o)).toBe(o);
+    expect(
+      browserFormOrigin(
+        { 'content-security-policy': 'sandbox allow-forms allow-same-origin' },
+        o,
+        o,
+      ),
+    ).toBe(o);
+  });
+  it('same-origin hides the origin from another origin', () => {
+    expect(browserFormOrigin({ 'referrer-policy': 'same-origin' }, o, 'http://other.example')).toBe(
+      'null',
+    );
+  });
+});
+
 describe.skipIf(!base)('GET and POST /oauth/authorize (needs TEST_DATABASE_URL)', () => {
   let t: Awaited<ReturnType<typeof testApi>>;
   const logLines: string[] = [];
@@ -255,7 +317,9 @@ describe.skipIf(!base)('GET and POST /oauth/authorize (needs TEST_DATABASE_URL)'
       );
       expect(res.headers['x-frame-options']).toBe('DENY');
       expect(res.headers['cache-control']).toBe('no-store');
-      expect(res.headers['referrer-policy']).toBe('no-referrer');
+      // same-origin, not no-referrer: no-referrer makes a browser send Origin: null on the form post.
+      // It still sends nothing to the client's redirect URI, which is another origin.
+      expect(res.headers['referrer-policy']).toBe('same-origin');
       expect(res.headers['x-content-type-options']).toBe('nosniff');
     });
 
@@ -360,6 +424,55 @@ describe.skipIf(!base)('GET and POST /oauth/authorize (needs TEST_DATABASE_URL)'
         (await post(ok, { cookie: asha.cookie, origin: 'http://evil.example' })).statusCode,
       ).toBe(403);
       expect((await post(ok, { cookie: asha.cookie, origin: null })).statusCode).toBe(403);
+    });
+
+    it('accepts the Origin a browser sends for the form post, taken from the headers the page set', async () => {
+      for (const decision of ['approve', 'deny']) {
+        const { page, fields } = await consent();
+        const origin = browserFormOrigin(page.headers, ORIGIN, ORIGIN);
+        expect(origin).toBe(ORIGIN);
+        const res = await post({ ...fields, decision }, { cookie: asha.cookie, origin });
+        expect(res.statusCode, decision).toBe(303);
+        const to = location(res);
+        if (decision === 'approve') expect(to.searchParams.get('code')).toBeTruthy();
+        else expect(to.searchParams.get('error')).toBe('access_denied');
+      }
+    });
+
+    it('still refuses Origin: null, which a no-referrer or sandboxed page sends, with a valid token', async () => {
+      const { fields } = await consent();
+      for (const decision of ['approve', 'deny']) {
+        const res = await post({ ...fields, decision }, { cookie: asha.cookie, origin: 'null' });
+        expect(res.statusCode, decision).toBe(403);
+        expect(res.json()).toEqual({ error: 'bad_origin' });
+      }
+      const rows = await t.pool.query(
+        'select count(*) as n from oauth_codes where code_challenge = $1',
+        [fields.code_challenge],
+      );
+      expect(Number(rows.rows[0].n)).toBe(0);
+    });
+
+    it('logs the refused Origin and only the origin of the Referer, never its path', async () => {
+      const { fields } = await consent();
+      logLines.length = 0;
+      await t.app.inject({
+        method: 'POST',
+        url: AUTH,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          cookie: asha.cookie,
+          origin: 'null',
+          referer: `${ORIGIN}/invite/SECRET-INVITE-TOKEN?x=1`,
+        },
+        payload: new URLSearchParams({ ...fields, decision: 'approve' }).toString(),
+      });
+      const line = logLines.map((l) => JSON.parse(l)).find((l) => l.msg === 'origin refused');
+      expect(line).toMatchObject({ origin: 'null', refererOrigin: ORIGIN });
+      const all = logLines.join('\n');
+      expect(all).not.toContain('SECRET-INVITE-TOKEN');
+      expect(all).not.toContain(fields.csrf!);
+      expect(all).not.toContain(asha.cookie.split('=')[1]!);
     });
 
     it('with changed parameters after the GET is refused', async () => {
