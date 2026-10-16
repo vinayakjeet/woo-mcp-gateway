@@ -169,6 +169,10 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       'resource_metadata="http://mcp.test/.well-known/oauth-protected-resource"',
     );
 
+    // The user approved this client, which is what the gateway checks next to the signature.
+    await db
+      .insert(schema.oauthConsents)
+      .values({ userId, clientId: 'dcr_main_test', scope: 'mcp:tools' });
     // The control-plane signs with the same JWT_SIGNING_KEY the gateway was started with ('jwt').
     const token = signAccessToken({
       keys: oauthKeys('jwt'),

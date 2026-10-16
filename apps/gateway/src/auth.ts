@@ -228,32 +228,50 @@ export class Authenticator {
     token: string,
     oauth: { keys: OAuthKeys; issuer: string },
   ): Promise<Principal | null> {
-    let sub: string;
+    let claims: { sub: string; client_id: string; iat: number };
     try {
-      sub = verifyAccessToken(token, {
+      claims = verifyAccessToken(token, {
         publicKey: oauth.keys.publicKey,
         kid: oauth.keys.kid,
         iss: oauth.issuer,
         aud: this.o.audience,
         now: Math.floor(this.now() / 1000),
-      }).sub;
+      });
     } catch (err) {
       if (err instanceof OAuthJwtError) return null;
       throw err;
     }
-    return this.withoutKey(sub, 'oauth');
+    return this.withoutKey(claims.sub, 'oauth', { clientId: claims.client_id, iat: claims.iat });
   }
 
   // Agent and OAuth tokens outlive a disabled user, so the user row is read on every request.
-  private async withoutKey(sub: string, via: 'agent' | 'oauth'): Promise<Principal | null> {
+  // An access token also needs its consent row (Connected apps, Revoke), read in the same query.
+  private async withoutKey(
+    sub: string,
+    via: 'agent' | 'oauth',
+    grant?: { clientId: string; iat: number },
+  ): Promise<Principal | null> {
     if (!UUID_RE.test(sub)) return null;
     const u = schema.users;
+    const c = schema.oauthConsents;
     const [user] = await this.o.db
-      .select({ id: u.id, email: u.email, role: u.role, status: u.status })
+      .select({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        approvedAt: c.createdAt,
+      })
       .from(u)
+      .leftJoin(c, and(eq(c.userId, u.id), eq(c.clientId, grant?.clientId ?? '')))
       .where(eq(u.id, sub))
       .limit(1);
     if (!user || user.status !== 'active') return null;
+    if (grant) {
+      // No row: the user revoked the app. A token minted before the latest approval belongs to a
+      // grant that was revoked and approved again. iat has whole seconds, so compare whole seconds.
+      if (!user.approvedAt || grant.iat < Math.floor(user.approvedAt.getTime() / 1000)) return null;
+    }
     // No key to carry a mode, so these follow the visible-count rule (SPEC 17).
     return {
       userId: user.id,
