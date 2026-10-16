@@ -4,13 +4,13 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { withTx } from './db.js';
 import { sessionUser, sidFromCookie } from './api-session.js';
 import { redirectMatches } from './oauth-clients.js';
+import { isForm, one, type Fields } from './oauth-form.js';
 import { consentHeaders, consentPage, errorHeaders, errorPage } from './oauth-consent-html.js';
 import type { OAuthOptions } from './oauth.js';
 
 const AUTHORIZE_PATH = '/oauth/authorize';
 const CODE_TTL = '60 seconds';
 const MAX_STATE = 1000;
-const MAX_FIELDS = 40;
 // base64url of a SHA-256 digest (RFC 7636 4.2).
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 
@@ -34,14 +34,6 @@ type Checked =
       description: string;
     }
   | { kind: 'ok'; req: AuthRequest };
-
-type Fields = Record<string, unknown>;
-
-// undefined: not sent. null: sent more than once or not as text, which is never valid.
-const one = (f: Fields, k: string): string | undefined | null => {
-  const v = f[k];
-  return v === undefined ? undefined : typeof v === 'string' ? v : null;
-};
 
 // RFC 6749 4.1.2.1. Until the client and the redirect URI are trusted nothing is redirected: the
 // user sees a page. After that every error goes back to the client with state and iss.
@@ -146,28 +138,8 @@ function html(reply: FastifyReply, status: number, headers: Record<string, strin
 const pageError = (reply: FastifyReply, status: number, message: string) =>
   html(reply, status, errorHeaders(), errorPage(message));
 
-function parseForm(raw: string): Fields | null {
-  const out: Fields = Object.create(null) as Fields;
-  let count = 0;
-  for (const [k, v] of new URLSearchParams(raw)) {
-    if (++count > MAX_FIELDS) return null;
-    out[k] = k in out ? [out[k]] : v;
-  }
-  return out;
-}
-
 export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): Promise<void> {
   const csrfKey = oauthSubKey(o.jwtKey, OAUTH_CSRF_INFO);
-
-  scope.addContentTypeParser(
-    'application/x-www-form-urlencoded',
-    { parseAs: 'string', bodyLimit: 16_384 },
-    (_req, body, done) => {
-      const fields = parseForm(body as string);
-      if (fields) done(null, fields);
-      else done(Object.assign(new Error('too many fields'), { statusCode: 400 }));
-    },
-  );
 
   const sessionOf = async (cookie: string | undefined) => {
     const sid = sidFromCookie(cookie);
@@ -207,7 +179,7 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
 
   scope.post(AUTHORIZE_PATH, { bodyLimit: 16_384 }, async (req, reply) => {
     // Only the consent form posts here. Fastify still has its JSON and text parsers in this scope.
-    if (!req.headers['content-type']?.toLowerCase().startsWith('application/x-www-form-urlencoded'))
+    if (!isForm(req))
       return pageError(reply, 415, 'This form must be posted from the consent page.');
     const f = (req.body ?? {}) as Fields;
     const c = await check(o, f);

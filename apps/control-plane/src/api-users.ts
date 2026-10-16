@@ -52,6 +52,11 @@ export function userRoutes(scope: FastifyInstance, o: ApiOptions): void {
       );
       if (body.data.status === 'disabled') {
         await c.query('delete from sessions where user_id = $1', [id]);
+        // Access tokens end at the gateway's next active-user check; refresh tokens end here.
+        await c.query(
+          'update oauth_refresh_tokens set revoked_at = now() where user_id = $1 and revoked_at is null',
+          [id],
+        );
       }
       // The gateway caches each key with its user's role and status for 10 s; key_revoked drops
       // the cached entry now. The keys stay valid.

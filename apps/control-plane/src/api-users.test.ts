@@ -57,6 +57,40 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('users API (needs TEST_DATABASE_
     expect(k.rows[0].n).toBe(2);
   });
 
+  it('disabling revokes every live OAuth refresh token of that user and no one else', async () => {
+    const m = await userWithSession(t.pool, 'dis-oauth@example.com');
+    const bystander = await userWithSession(t.pool, 'dis-oauth-other@example.com');
+    const add = async (userId: string, hash: string, revoked: string | null) =>
+      t.pool.query(
+        `insert into oauth_refresh_tokens (token_hash, client_id, user_id, resource, scope, expires_at, revoked_at)
+         values ($1, 'dcr_x', $2, 'http://mcp.test/mcp', 'mcp:tools', now() + interval '30 days', $3)`,
+        [hash, userId, revoked],
+      );
+    await add(m.id, 'live-1', null);
+    await add(m.id, 'live-2', null);
+    await add(m.id, 'old-revoked', '2026-01-01T00:00:00Z');
+    await add(bystander.id, 'bystander-live', null);
+    expect((await patch(m.id, { status: 'disabled' })).statusCode).toBe(200);
+    const rows = await t.pool.query<{ token_hash: string; revoked_at: Date | null }>(
+      `select token_hash, revoked_at from oauth_refresh_tokens
+        where token_hash in ('live-1','live-2','old-revoked','bystander-live') order by token_hash`,
+    );
+    const by = Object.fromEntries(rows.rows.map((r) => [r.token_hash, r.revoked_at]));
+    expect(by['live-1']).not.toBeNull();
+    expect(by['live-2']).not.toBeNull();
+    expect(by['bystander-live']).toBeNull();
+    // A token that was already revoked keeps the time it was revoked.
+    expect(by['old-revoked']?.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    // Enabling the user again does not bring a grant back: the app must be authorized again.
+    await t.pool.query(`update users set password_hash = 'x' where id = $1`, [m.id]);
+    expect((await patch(m.id, { status: 'active' })).statusCode).toBe(200);
+    const again = await t.pool.query(
+      `select count(*)::int as n from oauth_refresh_tokens where user_id = $1 and revoked_at is null`,
+      [m.id],
+    );
+    expect(again.rows[0].n).toBe(0);
+  });
+
   it('a role change also drops the gateway key cache', async () => {
     const m = await userWithSession(t.pool, 'role@example.com');
     const k = await rawKey(t.pool, m.id);
