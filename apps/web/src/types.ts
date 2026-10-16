@@ -1,7 +1,7 @@
 export type Role = 'admin' | 'member';
 export type Tone = 'ok' | 'bad' | 'warn' | 'off' | 'idle';
 export type Me = { id: string; email: string; name: string | null; role: Role };
-export type Config = { gatewayUrl: string; version: string };
+export type Config = { gatewayUrl: string; version: string; oauthEnabled?: boolean };
 export type ToolMode = 'auto' | 'search' | 'full';
 export type ApiKey = {
   id: string;

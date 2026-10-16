@@ -31,8 +31,10 @@ function renderKeys() {
 describe('My keys page through the real routes', () => {
   let posts: unknown[];
   let listed: ReturnType<typeof key>[];
+  let oauthEnabled: boolean;
   beforeEach(() => {
     posts = [];
+    oauthEnabled = false;
     listed = [key('a1', 'auto'), key('b2', 'search')];
     vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
     vi.stubGlobal(
@@ -49,7 +51,7 @@ describe('My keys page through the real routes', () => {
         }
         const answers: Record<string, unknown> = {
           '/api/me': { user: me },
-          '/api/config': { gatewayUrl: 'http://mcp.test/mcp', version: 'test' },
+          '/api/config': { gatewayUrl: 'http://mcp.test/mcp', version: 'test', oauthEnabled },
           '/api/keys': { keys: listed },
         };
         return new Response(JSON.stringify(answers[url] ?? {}), { status: 200 });
@@ -59,6 +61,19 @@ describe('My keys page through the real routes', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it('shows the OAuth connect command, with no key, only when oauthEnabled', async () => {
+    renderKeys();
+    await screen.findByRole('table');
+    expect(screen.queryByText(/urumi-oauth/)).toBeNull();
+    cleanup();
+
+    oauthEnabled = true;
+    renderKeys();
+    const cmd = await screen.findByText(/urumi-oauth/);
+    expect(cmd.textContent).toBe('claude mcp add --transport http urumi-oauth http://mcp.test/mcp');
+    expect(screen.getByText(/No key needed/)).toBeTruthy();
   });
 
   it('shows a mode column with each key mode', async () => {
