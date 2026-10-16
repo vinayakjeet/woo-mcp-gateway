@@ -97,6 +97,48 @@ if [ "$A" = platform ]; then
   blocked "$r" || fail "a web-labeled pod reached the control-plane on 3001: $r"
   pass "agent reaches gateway 8080 and control-plane 3001 only"
 
+  # The real control-plane pod, not a labeled probe: its image has Node and no curl. The node IP is
+  # a private address that answers on 443 (Traefik), so it shows whether the 443 rule really
+  # excludes the private ranges, and on 6443 (the API) it must stay open.
+  cppod=$(kubectl -n platform get pod -l app.kubernetes.io/name=control-plane -o jsonpath='{.items[0].metadata.name}')
+  [ -n "$cppod" ] || fail "no control-plane pod"
+  node_ip=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+  [ -n "$node_ip" ] || fail "no node InternalIP"
+  # The 443 rule excludes only private ranges. A node whose InternalIP is public (some VPS images)
+  # is allowed by design, so this row cannot prove anything there.
+  IFS=. read -r o1 o2 _ <<<"$node_ip"
+  case "$o1" in
+    10) ;;
+    192) [ "$o2" = 168 ] || fail "node InternalIP $node_ip is not in a private range: the private-address row cannot run here" ;;
+    172) { [ "$o2" -ge 16 ] && [ "$o2" -le 31 ]; } || fail "node InternalIP $node_ip is not in a private range: the private-address row cannot run here" ;;
+    169) [ "$o2" = 254 ] || fail "node InternalIP $node_ip is not in a private range: the private-address row cannot run here" ;;
+    100) { [ "$o2" -ge 64 ] && [ "$o2" -le 127 ]; } || fail "node InternalIP $node_ip is not in a private range: the private-address row cannot run here" ;;
+    *) fail "node InternalIP $node_ip is not in a private range: the private-address row cannot run here" ;;
+  esac
+  # reach HOST PORT: prints open, refused, timeout or error <code>. HOST "-" is the API Service
+  # address from the pod's own environment.
+  reach() {
+    kubectl -n platform exec "$cppod" -c control-plane -- node -e '
+const net = process.getBuiltinModule("node:net");
+const host = process.argv[1] === "-" ? process.env.KUBERNETES_SERVICE_HOST : process.argv[1];
+const port = process.argv[2] === "-" ? Number(process.env.KUBERNETES_SERVICE_PORT) : Number(process.argv[2]);
+const s = net.connect({ host, port, timeout: 3000 });
+s.on("connect", () => { console.log("open"); s.destroy(); });
+s.on("timeout", () => { console.log("timeout"); s.destroy(); });
+s.on("error", (e) => console.log(e.code === "ECONNREFUSED" ? "refused" : "error " + e.code));
+' "$1" "$2"
+  }
+  r=$(probe default - "http://$node_ip:443/")
+  opened "$r" || fail "positive control: the node address $node_ip:443 does not answer from an unrestricted pod: $r"
+  [ "$(reach - -)" = open ] || fail "the control-plane cannot reach the API through its Service address"
+  [ "$(reach "$node_ip" 6443)" = open ] || fail "the control-plane cannot reach the API server at $node_ip:6443"
+  [ "$(reach 1.1.1.1 443)" = open ] || fail "the control-plane cannot reach a public host on 443"
+  case $(reach "$node_ip" 443) in
+    timeout | refused) ;;
+    *) fail "the control-plane reached the private address $node_ip on 443" ;;
+  esac
+  pass "control-plane reaches the API and public 443, and not a private address on 443 ($node_ip)"
+
   # Only when monitoring.enabled is on: Prometheus reaches the two metrics ports and nothing else.
   if kubectl -n platform get deploy prometheus >/dev/null 2>&1; then
     gwm=http://$gwpod:9090/metrics

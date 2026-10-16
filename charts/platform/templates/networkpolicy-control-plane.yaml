@@ -1,5 +1,8 @@
-# SPEC 16: the control-plane reaches its state and the Kubernetes API. k3s serves the API on the
-# node IP at 6443 after the Service DNAT, so the rule names ports and no address.
+# SPEC 16: the control-plane reaches its state, the Kubernetes API and public hosts on 443.
+# k3s serves the API on the node IP at 6443 after the Service DNAT, and the node IP is a private
+# address, so the 6443 rule names a port and no address. The only other outbound 443 caller is the
+# fetch of a client's OAuth metadata document, which must reach public hosts and nothing inside
+# the cluster or the node network, so that rule carries the same exclusions as the gateway's.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,5 +29,15 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
         - protocol: TCP
           port: 443

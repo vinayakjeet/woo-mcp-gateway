@@ -324,15 +324,20 @@ lacks "$d" "app.kubernetes.io/name: gateway" control-plane-egress
 pass "platform egress policies"
 
 # The public 443 rule must exclude the five private ranges, in every policy that opens it.
-for n in gateway-egress agent-egress fx-mcp-egress; do
+for n in gateway-egress agent-egress fx-mcp-egress control-plane-egress; do
   d=$(npdoc "$n")
   for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
     has "$d" "- $r" "$n public 443"
   done
 done
-# The control-plane may reach the API server on any address, so it has no except list.
-lacks "$(npdoc control-plane-egress)" "except:" control-plane-egress
-pass "public 443 rules exclude the private ranges"
+# The API server sits on the node IP, a private address, so the control-plane's 6443 rule must
+# stay open. awk reads the rule that names port 6443 on its own, so an except list added there fails.
+d=$(npdoc control-plane-egress)
+api=$(awk '/^    - to:/ { if (blk ~ /port: 6443/) { print blk; exit } blk = "" } { blk = blk $0 "\n" } END { if (blk ~ /port: 6443/) print blk }' <<<"$d")
+has "$api" "port: 6443" "control-plane API rule"
+lacks "$api" "except:" "control-plane API rule"
+lacks "$api" "port: 443" "control-plane API rule"
+pass "public 443 rules exclude the private ranges, the control-plane API rule does not"
 
 # cert-manager HTTP-01 solver pods are created in the Ingress namespace and need Traefik to reach them.
 lacks "$netpols" "http01-solver" "solver rule without tls"
