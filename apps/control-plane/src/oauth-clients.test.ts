@@ -29,6 +29,8 @@ describe('validateRedirectUri', () => {
     'http://localhost/cb',
     'http://127.0.0.1:8080/cb',
     'http://[::1]/cb',
+    'https://bücher.example/cb',
+    'https://client.example:8443/cb',
   ])('accepts %s', (u) => expect(validateRedirectUri(u)).toBe(true));
 
   it.each([
@@ -47,6 +49,11 @@ describe('validateRedirectUri', () => {
     ['newline inside', 'https://client.example/cb\n.evil'],
     ['tab inside', 'https://client.example/\tcb'],
     ['space around', ' https://client.example/cb'],
+    ['semicolon in the host', 'https://a;b.example/cb'],
+    ['comma in the host', 'https://a,b.example/cb'],
+    ['quote in the host', "https://a'b.example/cb"],
+    ['underscore in the host', 'https://a_b.example/cb'],
+    ['an IPv6 host that is not ::1', 'https://[2001:db8::1]/cb'],
     ['over 2000 characters', `https://client.example/${'a'.repeat(2000)}`],
   ])('refuses %s', (_name, u) => expect(validateRedirectUri(u)).toBe(false));
 

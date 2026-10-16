@@ -8,6 +8,7 @@ import {
   GRANT_TYPES,
   RESPONSE_TYPES,
 } from './oauth-clients.js';
+import { authorizeRoutes } from './oauth-authorize.js';
 import { authorizationServerMetadata } from './oauth-metadata.js';
 
 const METADATA_PATH = '/.well-known/oauth-authorization-server';
@@ -20,7 +21,14 @@ export const OAUTH_ORIGIN_EXEMPT: ReadonlySet<string> = new Set([REGISTER_PATH, 
 const REGISTER_PER_IP = 10;
 const WINDOW = '1 minute';
 
-export type OAuthOptions = { pool: pg.Pool; issuer: string };
+export type OAuthOptions = {
+  pool: pg.Pool;
+  issuer: string;
+  // JWT_SIGNING_KEY: the consent CSRF key is derived from it.
+  jwtKey: string;
+  // The gateway URL: the only `resource` a request may name (RFC 8707).
+  resource: string;
+};
 
 export const pathOf = (url: string): string => url.split('?', 1)[0] ?? '';
 
@@ -63,6 +71,7 @@ export async function oauthRoutes(scope: FastifyInstance, o: OAuthOptions): Prom
   });
 
   scope.get(METADATA_PATH, async () => authorizationServerMetadata(o.issuer));
+  await authorizeRoutes(scope, o);
 
   scope.post(
     REGISTER_PATH,

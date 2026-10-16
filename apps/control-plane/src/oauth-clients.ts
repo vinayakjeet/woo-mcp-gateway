@@ -4,6 +4,8 @@ import type pg from 'pg';
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const MAX_REDIRECT_URIS = 5;
 const MAX_URI_LENGTH = 2000;
+// What a plain DNS name or IPv4 address looks like once the URL parser has applied punycode.
+const PLAIN_HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i;
 const MAX_NAME_CHARS = 100;
 const GRANT_TYPES = ['authorization_code', 'refresh_token'] as const;
 const RESPONSE_TYPES = ['code'] as const;
@@ -30,6 +32,9 @@ export function validateRedirectUri(raw: unknown): raw is string {
   if (/[\p{Cc}\s]/u.test(raw) || raw.includes('#')) return false;
   const u = parse(raw);
   if (!u || u.username !== '' || u.password !== '') return false;
+  // The URL parser accepts hosts such as a;b.example. The consent page puts the origin into a CSP
+  // directive, so only hosts that cannot carry a separator are allowed.
+  if (!PLAIN_HOST.test(u.hostname) && u.hostname !== '[::1]') return false;
   return u.protocol === 'https:' || isLoopback(raw);
 }
 

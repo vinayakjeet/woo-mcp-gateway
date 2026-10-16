@@ -13,6 +13,7 @@ import { freshDatabase } from './test-db.js';
 export const ORIGIN = 'http://app.127.0.0.1.nip.io';
 export const TEST_PEPPER = 'test-pepper';
 export const ADMIN_PASSWORD = 'pw-admin-12345';
+export const TEST_JWT_KEY = 'test-jwt-signing-key-for-the-oauth-tests-0123456789';
 
 // Built the same way as index.ts, so the routes inherit the real Origin check and error handler.
 export async function testApi(
@@ -49,7 +50,15 @@ export async function testApi(
     checkUrl: async () => null,
     ...over,
   });
-  if (oauth) await app.register(oauthRoutes, { pool, issuer: ORIGIN, ...oauth });
+  if (oauth) {
+    await app.register(oauthRoutes, {
+      pool,
+      issuer: ORIGIN,
+      jwtKey: TEST_JWT_KEY,
+      resource: 'http://mcp.127.0.0.1.nip.io/mcp',
+      ...oauth,
+    });
+  }
   await app.ready();
   return {
     app,

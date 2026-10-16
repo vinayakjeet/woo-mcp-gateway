@@ -51,7 +51,14 @@ await pub.register(apiRoutes, {
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
 });
-if (oauth.enabled) await pub.register(oauthRoutes, { pool, issuer: oauth.issuer });
+if (oauth.enabled) {
+  await pub.register(oauthRoutes, {
+    pool,
+    issuer: oauth.issuer,
+    jwtKey: env.JWT_SIGNING_KEY,
+    resource: env.GATEWAY_URL,
+  });
+}
 const metrics = createProvisionerMetrics(pool);
 const internal = buildInternalApp(deps, logger, metrics);
 // The agent JWT audience is the gateway's public URL, the same GATEWAY_URL the gateway checks.
