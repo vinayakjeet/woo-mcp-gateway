@@ -141,6 +141,21 @@ describe.skipIf(!base)('POST /oauth/token (needs TEST_DATABASE_URL)', () => {
         [hashToken(refresh)],
       )
     ).rows[0];
+  // Moves a token's rotation time back. The grace window is measured in Postgres time, so a test
+  // ages the row instead of waiting.
+  const ageRotation = (refresh: string, seconds: number) =>
+    t.pool.query(
+      `update oauth_refresh_tokens set revoked_at = now() - $2::interval where token_hash = $1`,
+      [hashToken(refresh), `${seconds} seconds`],
+    );
+  const rowsOf = async (userId: string) =>
+    Number(
+      (
+        await t.pool.query('select count(*) as n from oauth_refresh_tokens where user_id = $1', [
+          userId,
+        ])
+      ).rows[0].n,
+    );
   const liveRefreshCount = async (userId: string) =>
     Number(
       (
@@ -531,17 +546,6 @@ describe.skipIf(!base)('POST /oauth/token (needs TEST_DATABASE_URL)', () => {
       ).toMatchObject({ sub: asha.id, client_id: clientId });
     });
 
-    it('two parallel refreshes of one token give one 200', async () => {
-      const first = await firstGrant();
-      const [a, b] = await Promise.all([
-        token(refreshFields(first.refresh_token)),
-        token(refreshFields(first.refresh_token)),
-      ]);
-      expect([a.statusCode, b.statusCode].sort()).toEqual([200, 400]);
-      const failed = a.statusCode === 400 ? a : b;
-      expect(failed.json().error).toBe('invalid_grant');
-    });
-
     it('reusing the first token of a chain of four answers invalid_grant and revokes every row in it, including the live one', async () => {
       const t1 = (await firstGrant()).refresh_token;
       const t2 = (await token(refreshFields(t1))).json().refresh_token as string;
@@ -563,6 +567,7 @@ describe.skipIf(!base)('POST /oauth/token (needs TEST_DATABASE_URL)', () => {
       const t1 = (await firstGrant()).refresh_token;
       const t2 = (await token(refreshFields(t1))).json().refresh_token as string;
       const t3 = (await token(refreshFields(t2))).json().refresh_token as string;
+      await ageRotation(t2, 31);
       await token(refreshFields(t2));
       expect((await rowOf(t3)).revoked_at).not.toBeNull();
       expect((await rowOf(bystander)).revoked_at).toBeNull();
@@ -573,9 +578,148 @@ describe.skipIf(!base)('POST /oauth/token (needs TEST_DATABASE_URL)', () => {
       const a = (await firstGrant()).refresh_token;
       const b = (await firstGrant()).refresh_token;
       const a2 = (await token(refreshFields(a))).json().refresh_token as string;
+      await ageRotation(a, 31);
       await token(refreshFields(a));
       expect((await rowOf(a2)).revoked_at).not.toBeNull();
       expect((await rowOf(b)).revoked_at).toBeNull();
+    });
+
+    describe('reuse grace window of 30 s', () => {
+      const fresh = async (email: string) => {
+        const u = await userWithSession(t.pool, email, 'member');
+        return { u, first: await firstGrant(u.id) };
+      };
+      const pairOf = (res: { json: () => unknown }) =>
+        res.json() as { access_token: string; refresh_token: string; scope: string };
+
+      it('two concurrent refreshes of one token both succeed with the same pair and rotate once', async () => {
+        const { u, first } = await fresh('grace-parallel@example.com');
+        const res = await Promise.all(
+          [1, 2, 3, 4].map(() => token(refreshFields(first.refresh_token))),
+        );
+        expect(res.map((r) => r.statusCode)).toEqual([200, 200, 200, 200]);
+        const pairs = res.map(pairOf);
+        for (const p of pairs.slice(1)) expect(p).toEqual(pairs[0]);
+        expect(await rowsOf(u.id)).toBe(2);
+        const head = await rowOf(pairs[0]!.refresh_token);
+        expect(head.revoked_at).toBeNull();
+        expect((await rowOf(first.refresh_token)).replaced_by).toBe(head.id);
+        expect((await token(refreshFields(pairs[0]!.refresh_token))).statusCode).toBe(200);
+      });
+
+      it('a replay 29 s after the rotation returns the same pair again and changes nothing', async () => {
+        const { u, first } = await fresh('grace-29s@example.com');
+        const a = pairOf(await token(refreshFields(first.refresh_token)));
+        await ageRotation(first.refresh_token, 29);
+        const b = await token(refreshFields(first.refresh_token));
+        expect(b.statusCode).toBe(200);
+        expect(pairOf(b)).toEqual(a);
+        expect(b.headers['cache-control']).toBe('no-store');
+        expect(await rowsOf(u.id)).toBe(2);
+        const head = await rowOf(a.refresh_token);
+        expect(head.revoked_at).toBeNull();
+        const keys = oauthKeys(TEST_JWT_KEY);
+        const claims = verifyAccessToken(a.access_token, {
+          publicKey: keys.publicKey,
+          kid: keys.kid,
+          iss: ORIGIN,
+          aud: RESOURCE,
+        });
+        expect(claims).toMatchObject({ sub: u.id, client_id: clientId, jti: head.id });
+      });
+
+      it('a reuse 31 s after the rotation is invalid_grant and revokes the whole grant', async () => {
+        const { u, first } = await fresh('grace-31s@example.com');
+        const a = pairOf(await token(refreshFields(first.refresh_token)));
+        await ageRotation(first.refresh_token, 31);
+        const reuse = await token(refreshFields(first.refresh_token));
+        expect(reuse.statusCode).toBe(400);
+        expect(reuse.json().error).toBe('invalid_grant');
+        expect(await liveRefreshCount(u.id)).toBe(0);
+        expect((await rowOf(a.refresh_token)).revoked_at).not.toBeNull();
+        expect((await token(refreshFields(a.refresh_token))).json().error).toBe('invalid_grant');
+      });
+
+      it('a token two generations old is a reuse even inside the 30 s, and revokes the live token', async () => {
+        const { u, first } = await fresh('grace-two-gen@example.com');
+        const t2 = pairOf(await token(refreshFields(first.refresh_token)));
+        const t3 = pairOf(await token(refreshFields(t2.refresh_token)));
+        expect((await rowOf(t3.refresh_token)).revoked_at).toBeNull();
+        const reuse = await token(refreshFields(first.refresh_token));
+        expect(reuse.statusCode).toBe(400);
+        expect(reuse.json().error).toBe('invalid_grant');
+        expect(await liveRefreshCount(u.id)).toBe(0);
+        expect((await token(refreshFields(t3.refresh_token))).json().error).toBe('invalid_grant');
+      });
+
+      it('the previous token of the live one is still inside the window', async () => {
+        const { first } = await fresh('grace-middle@example.com');
+        const t2 = pairOf(await token(refreshFields(first.refresh_token)));
+        const t3 = pairOf(await token(refreshFields(t2.refresh_token)));
+        const again = await token(refreshFields(t2.refresh_token));
+        expect(again.statusCode).toBe(200);
+        expect(pairOf(again)).toEqual(t3);
+      });
+
+      it('inside the window a different client_id is a reuse and revokes the chain', async () => {
+        const { u, first } = await fresh('grace-client@example.com');
+        await token(refreshFields(first.refresh_token));
+        const res = await token(refreshFields(first.refresh_token, { client_id: otherClientId }));
+        expect(res.statusCode).toBe(400);
+        expect(res.json().error).toBe('invalid_grant');
+        expect(await liveRefreshCount(u.id)).toBe(0);
+      });
+
+      it('a replay never revives a grant that was revoked after the rotation', async () => {
+        const { u, first } = await fresh('grace-revoked@example.com');
+        const a = pairOf(await token(refreshFields(first.refresh_token)));
+        await t.pool.query(
+          'update oauth_refresh_tokens set revoked_at = now() where token_hash = $1',
+          [hashToken(a.refresh_token)],
+        );
+        const res = await token(refreshFields(first.refresh_token));
+        expect(res.statusCode).toBe(400);
+        expect(res.json().error).toBe('invalid_grant');
+        expect(await liveRefreshCount(u.id)).toBe(0);
+      });
+
+      it('a replay for a disabled user is invalid_grant and returns no token', async () => {
+        const { u, first } = await fresh('grace-disabled@example.com');
+        await token(refreshFields(first.refresh_token));
+        await t.pool.query(`update users set status = 'disabled' where id = $1`, [u.id]);
+        const res = await token(refreshFields(first.refresh_token));
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).not.toHaveProperty('refresh_token');
+        expect(res.json().error).toBe('invalid_grant');
+      });
+
+      it('a successor that is not the derived one is never returned', async () => {
+        const parent = await mintRefresh({ revoked: true });
+        const stranger = await mintRefresh();
+        await t.pool.query(
+          'update oauth_refresh_tokens set replaced_by = (select id from oauth_refresh_tokens where token_hash = $2) where token_hash = $1',
+          [hashToken(parent), hashToken(stranger)],
+        );
+        const res = await token(refreshFields(parent));
+        expect(res.statusCode).toBe(400);
+        expect(res.json().error).toBe('invalid_grant');
+        expect((await rowOf(stranger)).revoked_at).not.toBeNull();
+      });
+
+      it('a replay can narrow to what the first answer had, never widen it', async () => {
+        const wide = await mintRefresh({ scope: 'mcp:tools extra:read' });
+        const a = pairOf(await token(refreshFields(wide, { scope: 'mcp:tools' })));
+        expect(a.scope).toBe('mcp:tools');
+        const same = await token(refreshFields(wide, { scope: 'mcp:tools' }));
+        expect(same.statusCode).toBe(200);
+        expect(pairOf(same)).toEqual(a);
+        const wider = await token(refreshFields(wide, { scope: 'mcp:tools extra:read' }));
+        expect(wider.statusCode).toBe(400);
+        expect(wider.json().error).toBe('invalid_grant');
+        const foreign = await token(refreshFields(wide, { scope: 'other:scope' }));
+        expect(foreign.json().error).toBe('invalid_scope');
+        expect((await rowOf(a.refresh_token)).revoked_at).toBeNull();
+      });
     });
 
     it('refresh can narrow scope, never widen', async () => {
@@ -685,6 +829,11 @@ describe.skipIf(!base)('POST /oauth/token (needs TEST_DATABASE_URL)', () => {
     secrets.push(bad.code, bad.verifier);
     await token(codeFields(bad, { code_verifier: 'z'.repeat(50) }));
     await token(refreshFields(ok.refresh_token));
+    const old = (await firstGrant()).refresh_token;
+    const newer = (await token(refreshFields(old))).json();
+    secrets.push(old, newer.access_token, newer.refresh_token);
+    await ageRotation(old, 31);
+    await token(refreshFields(old));
     await token(codeFields(await mintCode(), { client_id: 'dcr_doesnotexist' }));
     const json = await mintCode();
     secrets.push(json.code, json.verifier);
