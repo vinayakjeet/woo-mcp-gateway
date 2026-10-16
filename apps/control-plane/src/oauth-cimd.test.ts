@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { oauthKeys, pinnedFetch, verifyAccessToken, type PinnedFetch } from '@woo/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CIMD_MAX_BYTES, fetchClientMetadata, isCimdId, type CimdResult } from './oauth-cimd.js';
@@ -151,6 +153,32 @@ describe('fetchClientMetadata', () => {
         ),
       ),
     ).toBe('status');
+  });
+
+  it('with the real pinned fetch a 302 is an error and its target is never requested', async () => {
+    const hits: string[] = [];
+    const srv = http.createServer((req, res) => {
+      hits.push(req.url ?? '');
+      if (req.url === '/oauth/metadata.json') res.writeHead(302, { location: '/other.json' }).end();
+      else res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(doc()));
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const { port } = srv.address() as AddressInfo;
+      const real = pinnedFetch({
+        allowInsecure: true,
+        resolve: async () => ['127.0.0.1'],
+        isAllowed: (ip) => ip === '127.0.0.1',
+      });
+      // The metadata URL is https, so the test sends it to a local http server through the real agent.
+      // The name stays, because the pinned fetch refuses an IP literal before it asks the resolver.
+      const viaLocal: PinnedFetch = (u, init) =>
+        real(String(u).replace('https://client.example', `http://client.example:${port}`), init);
+      expect(fail(await get(viaLocal))).toBe('fetch');
+      expect(hits).toEqual(['/oauth/metadata.json']);
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
   });
 
   it.each([404, 500, 204, 201])('a %i answer is refused', async (status) => {
