@@ -239,6 +239,15 @@ Stops: a stolen refresh token being used quietly for 30 days.
   - Proof: `pnpm --filter @woo/control-plane exec vitest run oauth-grants` and `pnpm --filter @woo/gateway exec vitest run auth` (rows "revoke ends access on the next call" and "revoke then approve again within 15 minutes does not revive the old token").
 - Proof: `pnpm --filter @woo/control-plane exec vitest run oauth-token` (rows under "reuse grace window of 30 s": four concurrent refreshes give one pair and one new row; a replay at 29 s is identical; a reuse at 31 s revokes; a token two generations old revokes inside the window).
 
+## 15. Listen streams (M13)
+
+Stops: a stream opened with a credential that later dies, and one key holding the gateway's connections open.
+
+- A `subscriptions/listen` stream is authenticated once, when it opens. The gateway authenticates the stored header again before every send and every 60 s (`apps/gateway/src/listen.ts`). A revoked or expired key, a revoked grant (the consent row is gone), a disabled user or an expired access token ends the stream within 60 s, or at the next event if that comes first, and the stream never gets that event. A failed check (database down) keeps the stream.
+- The event carries no data. A client that hears `tools/list_changed` lists again and gets its own filtered list, so a member learns nothing about a server it cannot see. Cost of the hint itself: one extra `tools/list` per client per change.
+- At most 3 open listen streams per API key (per user for a token without a key) on one replica. The 4th is answered `429` before the stream starts. The cap is per gateway replica: with N replicas one key can hold 3N. A keep-alive comment every 25 s keeps the stream through Traefik.
+- Proof: `pnpm --filter @woo/gateway exec vitest run listen main sync status` and `pnpm --filter @woo/control-plane exec vitest run tools-changed`; `scripts/e2e.sh` (a stream hears `list_changed` within 3 s of disabling fx).
+
 ## Known limitations
 
 - Audit events reuse the tool-call table; a dedicated events table would need a migration. A revoked OAuth grant is stored as an `audit_events` row with an empty server slug, tool `oauth_grant_revoked` and the actor in `error_message`. The Audit page shows it as an event (server "OAuth", a neutral "Revoked by <email>" detail, no duration), and Health ignores it. Anything that counts or filters `audit_events` rows by tool or outcome would count it as a call, so a new reader of the table has to know this.
