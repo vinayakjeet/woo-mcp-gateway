@@ -95,16 +95,15 @@ open_consent() {
   BROWSER_REFERER=''
   [ "$(hdr "$S/oc-az.hdr" referrer-policy)" = no-referrer ] || BROWSER_REFERER="$APP/oauth/authorize?$Q"
 }
-# post_consent FORM_SUFFIX [ORIGIN]: the consent form, with the headers a browser sends for it
-# (Origin and Referer from the page's policy, Sec-Fetch-*). An explicit ORIGIN replaces them, for
-# the rows that send a foreign or null one. Headers go to oc-az.hdr, the body to oc-az.out.
+# post_consent FORM_SUFFIX [ORIGIN]: the consent form, with the headers Chrome sends for it
+# (Origin and Referer from the page's policy; it adds no Sec-Fetch-* to a plain-http host that is
+# not localhost). An explicit ORIGIN replaces them, for the rows that send a foreign or null one. Headers go to oc-az.hdr, the body to oc-az.out.
 post_consent() {
   local origin=${2-$BROWSER_ORIGIN} referer=()
   if [ $# -lt 2 ] && [ -n "$BROWSER_REFERER" ]; then referer=(-H "referer: $BROWSER_REFERER"); fi
   printf '%s&%s' "$Q" "$1" >"$S/oc-az.body"
   curl -s -D "$S/oc-az.hdr" -o "$S/oc-az.out" -w '%{http_code}' -b "$S/oc-member.jar" \
-    -H "origin: $origin" ${referer[@]+"${referer[@]}"} -H 'sec-fetch-site: same-origin' \
-    -H 'sec-fetch-mode: navigate' -H 'sec-fetch-dest: document' \
+    -H "origin: $origin" ${referer[@]+"${referer[@]}"} \
     -H 'content-type: application/x-www-form-urlencoded' \
     --data-binary @"$S/oc-az.body" "$APP/oauth/authorize"
 }
