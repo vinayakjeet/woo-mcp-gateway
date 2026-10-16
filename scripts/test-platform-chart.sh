@@ -588,4 +588,25 @@ for f in gateway.yaml control-plane.yaml; do
 done
 pass "oauth on: Ingress paths, and OAUTH_ENABLED and OAUTH_ISSUER on both pods"
 
+# Production values for the VM. The tag is passed on the command line, as the installer does.
+prod() {
+  helm template platform charts/platform --namespace platform \
+    -f deploy/values-prod.yaml --set mcp.sharedToken=test-token --set global.imageTag=1.0.0-abc1234 "$@"
+}
+helm lint charts/platform -f deploy/values-prod.yaml --set mcp.sharedToken=test-token --set global.imageTag=1.0.0-abc1234 >/dev/null || fail "prod: helm lint"
+p=$(prod)
+lacks "$p" ":latest" "prod"
+lacks "$p" "nip.io" "prod"
+lacks "$p" "127.0.0.1" "prod"
+for want in "host: app.vinayak-urum.me" "host: mcp.vinayak-urum.me" "secretName: app-tls" "secretName: mcp-tls" \
+  "cert-manager.io/cluster-issuer: letsencrypt-staging" "image: ghcr.io/vinayakjeet/gateway:1.0.0-abc1234" \
+  "image: ghcr.io/vinayakjeet/control-plane:1.0.0-abc1234" "kind: PodDisruptionBudget" "replicas: 2" \
+  '"https://app.vinayak-urum.me"' '"https://mcp.vinayak-urum.me/mcp"' '[\"ghcr.io/vinayakjeet/\"]' \
+  '\"environmentType\":\"production\"' '\"scheme\":\"https\"'; do
+  has "$p" "$want" "prod"
+done
+[ "$(grep -c 'cert-manager.io/cluster-issuer' <<<"$p")" -eq 2 ] || fail "prod: expected two annotated Ingresses"
+[ "$(grep -c 'kind: HorizontalPodAutoscaler' <<<"$p")" -eq 0 ] || fail "prod: HPA is off until M8 Task 10"
+pass "prod values: hosts, TLS, GHCR images, 2 gateway replicas, PDB, https issuer"
+
 echo "OK"

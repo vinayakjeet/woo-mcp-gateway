@@ -1,0 +1,58 @@
+# Platform values for the Azure VM (SPEC 28). Pass the image tag on the command line:
+# --set global.imageTag=<version>-<git sha>. It is not set here so a missing --set cannot deploy a stale tag.
+global:
+  domain: vinayak-urum.me
+  scheme: https
+
+images:
+  registry: ghcr.io/vinayakjeet
+
+ingress:
+  className: traefik
+  tls:
+    enabled: true
+    # Staging first. Task 7 of the M8 plan switches this to letsencrypt-prod.
+    clusterIssuer: letsencrypt-staging
+
+storage:
+  className: local-path
+  postgres: 5Gi
+
+agent:
+  llm:
+    baseUrl: https://generativelanguage.googleapis.com/v1beta/openai/
+    model: gemini-3.5-flash-lite
+    fallbackBaseUrl: https://api.groq.com/openai/v1
+    fallbackModel: openai/gpt-oss-120b
+
+# Stays true only if the Claude Code proof passes over TLS by 18:00 Fri 23 Oct 2026 (SPEC 24).
+oauth:
+  enabled: true
+
+gateway:
+  allowInsecureUpstreams: false
+  rateLimitPerMinute: 60
+  replicas: 2
+  pdb:
+    enabled: true
+  # Off until the VM headroom is known (M8 Task 10). If it is turned on, keep minReplicas at 2 or
+  # more from the first deploy: switching from a fixed count drops the gateway to one pod until the HPA acts.
+  hpa:
+    enabled: false
+
+provisioner:
+  enabled: true
+  maxStoresPerUser: 3
+  store:
+    # 2Gi + 2Gi per store fits the 8Gi store quota (M9 decision A, a deliberate change from SPEC 28).
+    storage:
+      mariadb: 2Gi
+      wordpress: 2Gi
+    environmentType: production
+
+# fx-mcp is pushed here by CI. maxCpu and maxMemory stay at the chart defaults until M8 Task 10 reads the node headroom.
+hosted:
+  allowedImagePrefixes: ['ghcr.io/vinayakjeet/']
+
+monitoring:
+  enabled: true

@@ -1,0 +1,20 @@
+# Store chart values for the main store on the VM, used by make store ENV=prod. Stores made from the
+# dashboard get the same settings from the platform release (provisioner.store in values-prod.yaml).
+# Pass the image tag on the command line: --set global.imageTag=<version>-<git sha>.
+global:
+  domain: vinayak-urum.me
+  scheme: https
+images:
+  registry: ghcr.io/vinayakjeet
+ingress:
+  className: traefik
+  tls:
+    enabled: true
+    # Staging first. Task 7 of the M8 plan switches this to letsencrypt-prod.
+    clusterIssuer: letsencrypt-staging
+storage:
+  className: local-path
+  mariadb: 2Gi
+  wordpress: 2Gi
+wordpress:
+  environmentType: production

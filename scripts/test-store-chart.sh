@@ -262,4 +262,21 @@ lacks "$c" ":latest" cronjob
 lacks "$c" "test-token" cronjob
 pass "wp-cron CronJob"
 
+# Production values for the VM.
+prod() {
+  helm template store-main charts/store --namespace store-main \
+    -f deploy/store-values-prod.yaml --set slug=main --set-string storeName="Main Store" --set mcp.sharedToken=test-token \
+    --set global.imageTag=1.0.0-abc1234 "$@"
+}
+helm lint charts/store -f deploy/store-values-prod.yaml --set slug=main --set mcp.sharedToken=test-token --set global.imageTag=1.0.0-abc1234 >/dev/null || fail "prod: helm lint"
+p=$(prod)
+lacks "$p" ":latest" "prod"
+lacks "$p" "nip.io" "prod"
+for want in "host: main.shop.vinayak-urum.me" "secretName: wordpress-tls" "cert-manager.io/cluster-issuer: letsencrypt-staging" \
+  "image: ghcr.io/vinayakjeet/store-wordpress:1.0.0-abc1234" "image: ghcr.io/vinayakjeet/woo-mcp:1.0.0-abc1234" \
+  "https://main.shop.vinayak-urum.me" "WP_ENVIRONMENT_TYPE', 'production'" "storage: 2Gi"; do
+  has "$p" "$want" "prod"
+done
+pass "prod values: host, TLS, GHCR images, production environment type"
+
 echo "OK"
