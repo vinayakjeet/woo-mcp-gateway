@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { errorCode } from '@woo/core';
+import { errorCode, pinnedFetch } from '@woo/core';
 import { schema, schemaReady } from '@woo/core/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { FastifyServerOptions } from 'fastify';
@@ -13,7 +13,6 @@ import { buildHealthApp } from './health.js';
 import { createGatewayMetrics } from './metrics.js';
 import { gatewayLogger } from './logger.js';
 import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
-import { pinnedFetch } from './pinned-fetch.js';
 import { PolicyStore } from './policies.js';
 import { callLimiter, RateLimiter } from './rate-limit.js';
 import { Registry, type RegistryOptions } from './registry.js';

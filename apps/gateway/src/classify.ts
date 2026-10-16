@@ -1,5 +1,5 @@
 import { ProtocolError, SdkErrorCode, SdkHttpError } from '@modelcontextprotocol/client';
-import { errorCode } from '@woo/core';
+import { BLOCKED_CODE, errorCode } from '@woo/core';
 import type { ErrorKind, Failure } from './types.js';
 
 const DNS = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NONAME']);
@@ -20,9 +20,6 @@ const PROTOCOL = new Set<string>([
   SdkErrorCode.ClientHttpUnexpectedContent,
   'SyntaxError',
 ]);
-
-// Raised by pinned-fetch when an upstream name or address is not a public one.
-export const BLOCKED_CODE = 'ERR_UPSTREAM_BLOCKED';
 
 const RESET = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET']);
 
