@@ -3,6 +3,15 @@ export type Tone = 'ok' | 'bad' | 'warn' | 'off' | 'idle';
 export type Me = { id: string; email: string; name: string | null; role: Role };
 export type Config = { gatewayUrl: string; version: string; oauthEnabled?: boolean };
 export type ToolMode = 'auto' | 'search' | 'full';
+export type OAuthGrant = {
+  clientId: string;
+  name: string;
+  // cimd: the app is named by a document at an https URL, host says where. dcr: it registered itself.
+  kind: 'dcr' | 'cimd';
+  host: string | null;
+  approvedAt: string;
+  lastRefreshedAt: string | null;
+};
 export type ApiKey = {
   id: string;
   name: string;
