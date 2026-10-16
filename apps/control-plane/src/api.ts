@@ -23,6 +23,8 @@ export type ApiOptions = {
   kek: Buffer;
   gatewayUrl: string;
   version: string;
+  // Lets the dashboard show the OAuth connect command only when the flow exists.
+  oauthEnabled?: boolean;
   checkUrl?: UrlCheck;
   // Null when provisioner.enabled is false: the Stores page lists, creates answer 503.
   provisioner?: ProvisionerConfig | null;

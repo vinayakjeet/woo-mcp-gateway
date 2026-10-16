@@ -81,6 +81,20 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('session API (needs TEST_DATABAS
 
   it('GET /api/config is public', async () => {
     const r = await call(t.app, 'GET', '/api/config');
-    expect(r.json()).toEqual({ gatewayUrl: 'http://mcp.127.0.0.1.nip.io/mcp', version: 'test' });
+    expect(r.json()).toEqual({
+      gatewayUrl: 'http://mcp.127.0.0.1.nip.io/mcp',
+      version: 'test',
+      oauthEnabled: false,
+    });
+  });
+
+  it('GET /api/config says oauthEnabled true when the OAuth routes are on', async () => {
+    const on = await testApi('woo_api_session_oauth_test', {}, false, {});
+    try {
+      const r = await call(on.app, 'GET', '/api/config');
+      expect(r.json()).toMatchObject({ oauthEnabled: true });
+    } finally {
+      await on.close();
+    }
   });
 });

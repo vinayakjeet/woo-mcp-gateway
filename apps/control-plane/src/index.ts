@@ -50,6 +50,7 @@ await pub.register(apiRoutes, {
   checkUrl: urlCheckFromEnv(process.env),
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
+  oauthEnabled: oauth.enabled,
 });
 if (oauth.enabled) {
   await pub.register(oauthRoutes, {
