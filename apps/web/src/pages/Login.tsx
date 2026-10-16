@@ -1,12 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { api } from '../api';
+import { oauthNext } from '../login-next';
 import { Button, CenteredCard, ErrorLine, Field, Input } from '../ui';
 
 export function LoginPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const [params] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const login = useMutation({
@@ -14,7 +16,9 @@ export function LoginPage() {
       api('/api/auth/login', { method: 'POST', body: { email: email.trim(), password } }),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['me'] });
-      navigate('/', { replace: true });
+      const back = oauthNext(params.get('next'));
+      if (back) window.location.assign(back);
+      else navigate('/', { replace: true });
     },
   });
   return (
