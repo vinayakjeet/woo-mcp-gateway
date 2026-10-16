@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { encryptSecret, generateApiKey } from '@woo/core';
+import { encryptSecret, generateApiKey, oauthKeys, signAccessToken } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { eq, inArray } from 'drizzle-orm';
 import type pg from 'pg';
@@ -12,6 +12,8 @@ import type { Db } from './types.js';
 
 const PEPPER = 'main-pepper';
 const kek = randomBytes(32);
+const ISSUER = 'http://app.test';
+const AUDIENCE = 'http://mcp.test/mcp';
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
 describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
@@ -24,6 +26,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
   const mainAuth: string[] = [];
   let key: string;
   let keyId: string;
+  let userId: string;
   let fxId: string;
   let mcpUrl: URL;
 
@@ -55,6 +58,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       .returning({ id: schema.apiKeys.id });
     key = k.key;
     keyId = kr!.id;
+    userId = u!.id;
     const servers = await db
       .insert(schema.mcpServers)
       .values([
@@ -83,15 +87,22 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
         kek,
         pepper: PEPPER,
         jwtKey: 'jwt',
-        audience: 'http://mcp.test/mcp',
+        audience: AUDIENCE,
         replica: 'gw-e2e-0',
         allowedOrigins: [],
         port: 0,
         healthPort: 0,
         allowInsecureUpstreams: false,
         rateLimitPerMinute: 60,
+        oauthEnabled: true,
+        oauthIssuer: ISSUER,
       },
-      { host: '127.0.0.1', logger: false, upstream: { healthIntervalMs: 200 } },
+      {
+        host: '127.0.0.1',
+        logger: false,
+        upstream: { healthIntervalMs: 200 },
+        listenRecheckMs: 200,
+      },
     );
     mcpUrl = new URL(`http://127.0.0.1:${gw.port}/mcp`);
   }, 30_000);
@@ -151,6 +162,131 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       serverSlug: 'main',
     });
     expect(row?.argsSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('serves resource metadata and accepts an OAuth access token, audited via oauth', async () => {
+    const base = `http://127.0.0.1:${gw.port}`;
+    const prm = await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json();
+    expect(prm).toMatchObject({ resource: AUDIENCE, authorization_servers: [ISSUER] });
+    const noToken = await fetch(`${base}/mcp`, { method: 'POST' });
+    expect(noToken.status).toBe(401);
+    expect(noToken.headers.get('www-authenticate')).toContain(
+      'resource_metadata="http://mcp.test/.well-known/oauth-protected-resource"',
+    );
+
+    // The user approved this client, which is what the gateway checks next to the signature.
+    await db
+      .insert(schema.oauthConsents)
+      .values({ userId, clientId: 'dcr_main_test', scope: 'mcp:tools' });
+    // The control-plane signs with the same JWT_SIGNING_KEY the gateway was started with ('jwt').
+    const token = signAccessToken({
+      keys: oauthKeys('jwt'),
+      iss: ISSUER,
+      aud: AUDIENCE,
+      sub: userId,
+      clientId: 'dcr_main_test',
+      scope: 'mcp:tools',
+    });
+    const c = new Client({ name: 'e2e-oauth', version: '0.0.0' });
+    await c.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }),
+    );
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await c.listTools(undefined, { cacheMode: 'bypass' })).tools.length,
+        ).toBeGreaterThan(0),
+      { timeout: 5000 },
+    );
+    await c.callTool({ name: 'fx__get_info', arguments: {} });
+    await c.close();
+    const rows = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.via, 'oauth'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ userId, apiKeyId: null, exposedName: 'fx__get_info' });
+
+    const bad = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer eyJhbGciOiJub25lIn0.e30.' },
+    });
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+
+  describe('listen streams end with the credential they were opened with', () => {
+    async function listenWith(headers: Record<string, string>) {
+      const c = new Client(
+        { name: 'e2e-listen', version: '0.0.0' },
+        { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+      );
+      await c.connect(new StreamableHTTPClientTransport(mcpUrl, { requestInit: { headers } }));
+      const sub = await c.listen({ toolsListChanged: true });
+      const ended = Promise.race([
+        sub.closed,
+        new Promise<string>((r) => setTimeout(() => r('still open'), 4000)),
+      ]);
+      return { c, ended };
+    }
+
+    it('an OAuth stream closes within the recheck interval after its grant is revoked', async () => {
+      await db
+        .insert(schema.oauthConsents)
+        .values({ userId, clientId: 'dcr_listen', scope: 'mcp:tools' });
+      const token = signAccessToken({
+        keys: oauthKeys('jwt'),
+        iss: ISSUER,
+        aud: AUDIENCE,
+        sub: userId,
+        clientId: 'dcr_listen',
+        scope: 'mcp:tools',
+      });
+      const { c, ended } = await listenWith({ Authorization: `Bearer ${token}` });
+      await db.delete(schema.oauthConsents).where(eq(schema.oauthConsents.clientId, 'dcr_listen'));
+      expect(await ended).toMatch(/^(remote|graceful)$/);
+      await c.close().catch(() => {});
+    });
+
+    it('an API key stream closes after the key is revoked', async () => {
+      const k = generateApiKey(PEPPER);
+      const [row] = await db
+        .insert(schema.apiKeys)
+        .values({ userId, name: 'listen', prefix: k.prefix, secretHash: k.secretHash })
+        .returning({ id: schema.apiKeys.id });
+      const { c, ended } = await listenWith({ Authorization: `Bearer ${k.key}` });
+      await db
+        .update(schema.apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(schema.apiKeys.id, row!.id));
+      // What the control-plane sends in the same transaction: it drops the gateway's 10 s key cache.
+      await pool.query('select pg_notify($1, $2)', ['key_revoked', row!.id]);
+      expect(await ended).toMatch(/^(remote|graceful)$/);
+      await c.close().catch(() => {});
+    });
+
+    it('a stream whose credential is still good stays open and hears tools_changed', async () => {
+      const c = new Client(
+        { name: 'e2e-listen', version: '0.0.0' },
+        { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+      );
+      let heard = 0;
+      c.setNotificationHandler('notifications/tools/list_changed', () => {
+        heard++;
+      });
+      await c.connect(
+        new StreamableHTTPClientTransport(mcpUrl, {
+          requestInit: { headers: { Authorization: `Bearer ${key}` } },
+        }),
+      );
+      await c.listen({ toolsListChanged: true });
+      await new Promise((r) => setTimeout(r, 600));
+      await pool.query("select pg_notify('tools_changed', '')");
+      await vi.waitFor(() => expect(heard).toBe(1), { timeout: 3000 });
+      await c.close().catch(() => {});
+    });
   });
 
   it('stores meta_tool on search and call_tool audit rows', async () => {

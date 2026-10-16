@@ -14,14 +14,32 @@ try {
   process.exit(2);
 }
 
-const client = new Client({ name: 'mcp-smoke', version: '0.1.0' });
+// --listen opens subscriptions/listen, which only a 2026-07-28 connection has. It prints READY once
+// the server acknowledged, then one list_changed line per notification, and stops after
+// {"seconds": N} (default 10) or when the stream ends.
+const listening = tool === '--listen';
+const client = new Client(
+  { name: 'mcp-smoke', version: '0.1.0' },
+  listening ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : undefined,
+);
 try {
   await client.connect(
     new StreamableHTTPClientTransport(new URL(url), {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
     }),
   );
-  if (!tool) {
+  if (listening) {
+    client.setNotificationHandler('notifications/tools/list_changed', () => {
+      console.log('list_changed');
+    });
+    const sub = await client.listen({ toolsListChanged: true });
+    console.log('READY');
+    const stop = new Promise<string>((r) =>
+      setTimeout(() => r('timeout'), Number(args.seconds ?? 10) * 1000),
+    );
+    console.log(`ended ${await Promise.race([sub.closed, stop])}`);
+    await sub.close();
+  } else if (!tool) {
     for (const t of (await client.listTools()).tools) {
       const hint = t.annotations?.readOnlyHint
         ? 'readOnly'

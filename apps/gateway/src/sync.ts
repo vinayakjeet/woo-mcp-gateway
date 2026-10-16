@@ -1,4 +1,5 @@
 import { errorCode } from '@woo/core';
+import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import type { Authenticator } from './auth.js';
 import { canonicalJson, sha256Hex } from './canonical.js';
@@ -20,6 +21,9 @@ export type SyncOptions = {
   reconnectMinMs?: number;
   reconnectMaxMs?: number;
   policyRetryMs?: number;
+  // The tool lists may have changed: a tools_changed NOTIFY, or a LISTEN connection that came back
+  // (NOTIFYs sent while it was down are gone). The listen streams are told once either way.
+  onToolsChanged?: () => void;
 };
 
 // What mcp_tools holds for one server, as a single comparable string.
@@ -61,7 +65,11 @@ export class GatewaySync {
     if (this.persistedKeys.get(id) === key) return;
     this.persistedKeys.set(id, key);
     void upsertTools(this.o.db, id, slug, kind, tools)
-      .then((states) => this.o.registry.setToolStates(id, states))
+      .then(async (states) => {
+        this.o.registry.setToolStates(id, states);
+        // Every replica, this one included, hears it on its LISTEN connection.
+        await this.o.db.execute(sql`select pg_notify('tools_changed', '')`);
+      })
       .catch((err: unknown) => {
         this.persistedKeys.delete(id);
         this.o.log.warn({ server: slug, code: errorCode(err) }, 'tool upsert failed');
@@ -168,6 +176,7 @@ export class GatewaySync {
       await c.query('LISTEN registry_changed');
       await c.query('LISTEN key_revoked');
       await c.query('LISTEN policies_changed');
+      await c.query('LISTEN tools_changed');
     } catch (err) {
       await c.end().catch(() => {});
       throw err;
@@ -177,6 +186,11 @@ export class GatewaySync {
   }
 
   private onNotify(channel: string, rawPayload: string): void {
+    // The only channel with no id: the event is a hint to list again, and says nothing about what changed.
+    if (channel === 'tools_changed') {
+      this.o.onToolsChanged?.();
+      return;
+    }
     if (!UUID_RE.test(rawPayload)) {
       this.o.log.warn({ channel }, 'notification payload is not a uuid');
       return;
@@ -214,6 +228,7 @@ export class GatewaySync {
       this.o.auth.purgeAll();
       await this.reloadPolicies();
       await this.reloadAll();
+      this.o.onToolsChanged?.();
     } catch (err) {
       this.o.log.warn({ code: errorCode(err) }, 'listen reconnect failed');
       const c = this.client;

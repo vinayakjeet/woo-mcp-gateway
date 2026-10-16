@@ -10,6 +10,7 @@ import {
 } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
+import { OAUTH_ORIGIN_EXEMPT, pathOf } from './oauth.js';
 
 export type UserRow = {
   id: string;
@@ -31,7 +32,16 @@ export type Deps = {
   }): Promise<void>;
 };
 
-export type PublicConfig = { appOrigin: string; secureCookies: boolean };
+function originOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin.slice(0, 100);
+  } catch {
+    return null;
+  }
+}
+
+export type PublicConfig = { appOrigin: string; secureCookies: boolean; oauthEnabled?: boolean };
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const loginBody = z.object({
@@ -77,7 +87,20 @@ export function buildPublicApp(
   // SameSite=Lax is the first CSRF defense; this is the second (SPEC 7). Every later route inherits it.
   app.addHook('onRequest', async (req, reply) => {
     if (SAFE_METHODS.has(req.method)) return;
-    if (req.headers.origin !== cfg.appOrigin) return reply.code(403).send({ error: 'bad_origin' });
+    if (cfg.oauthEnabled && OAUTH_ORIGIN_EXEMPT.has(pathOf(req.url))) return;
+    if (req.headers.origin !== cfg.appOrigin) {
+      // The received Origin is the whole diagnosis of a refused browser post: the string "null" means
+      // the page's referrer policy or a sandbox hid it. Only the origin of the Referer is logged,
+      // because its path can hold an invite token.
+      req.log.warn(
+        {
+          origin: String(req.headers.origin ?? '(none)').slice(0, 100),
+          refererOrigin: originOf(req.headers.referer),
+        },
+        'origin refused',
+      );
+      return reply.code(403).send({ error: 'bad_origin' });
+    }
   });
 
   // The plugin must load before the route is declared, so both live in one scope.

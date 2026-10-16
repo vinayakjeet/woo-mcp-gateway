@@ -210,7 +210,8 @@ for f in gateway.yaml control-plane.yaml; do
   [ "$(show "$f" --set gateway.allowInsecureUpstreams=true | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"true"' ] ||
     fail "$f: gateway.allowInsecureUpstreams=true does not reach ALLOW_INSECURE_UPSTREAMS"
 done
-[ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -c '"true"')" = 0 ] ||
+# Read the one variable: other flags (oauth.enabled) are "true" in values-local.
+[ "$(helm template platform charts/platform --namespace platform -f deploy/values-local.yaml --set mcp.sharedToken=x --show-only templates/gateway.yaml | grep -A1 'name: ALLOW_INSECURE_UPSTREAMS' | sed -n 's/.*value: //p')" = '"false"' ] ||
   fail "values-local.yaml turns on insecure upstreams"
 env_value() { # rendered gateway manifest, env var name
   grep -A1 "name: $2\$" <<<"$1" | sed -n 's/.*value: //p'
@@ -323,15 +324,20 @@ lacks "$d" "app.kubernetes.io/name: gateway" control-plane-egress
 pass "platform egress policies"
 
 # The public 443 rule must exclude the five private ranges, in every policy that opens it.
-for n in gateway-egress agent-egress fx-mcp-egress; do
+for n in gateway-egress agent-egress fx-mcp-egress control-plane-egress; do
   d=$(npdoc "$n")
   for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
     has "$d" "- $r" "$n public 443"
   done
 done
-# The control-plane may reach the API server on any address, so it has no except list.
-lacks "$(npdoc control-plane-egress)" "except:" control-plane-egress
-pass "public 443 rules exclude the private ranges"
+# The API server sits on the node IP, a private address, so the control-plane's 6443 rule must
+# stay open. awk reads the rule that names port 6443 on its own, so an except list added there fails.
+d=$(npdoc control-plane-egress)
+api=$(awk '/^    - to:/ { if (blk ~ /port: 6443/) { print blk; exit } blk = "" } { blk = blk $0 "\n" } END { if (blk ~ /port: 6443/) print blk }' <<<"$d")
+has "$api" "port: 6443" "control-plane API rule"
+lacks "$api" "except:" "control-plane API rule"
+lacks "$api" "port: 443" "control-plane API rule"
+pass "public 443 rules exclude the private ranges, the control-plane API rule does not"
 
 # cert-manager HTTP-01 solver pods are created in the Ingress namespace and need Traefik to reach them.
 lacks "$netpols" "http01-solver" "solver rule without tls"
@@ -542,5 +548,44 @@ for f in fx-mcp.yaml control-plane.yaml; do
   has "$(show "$f")" "terminationGracePeriodSeconds: 10" "$f"
 done
 pass "node services terminate within 10 s"
+
+# OAuth (M13 decisions 20 and 21): one flag adds the Ingress paths and the env of both services.
+# values-local turns it on, so the "off" rows set it back explicitly.
+envval() { awk -v n="- name: $2" 'index($0, n) { getline; sub(/^ *value: */, ""); gsub(/"/, ""); print; exit }' <<<"$1"; }
+oauth_off=(--set oauth.enabled=false)
+oauth_on=(--set oauth.enabled=true)
+for f in gateway.yaml control-plane.yaml; do
+  d=$(show "$f" "${oauth_off[@]}")
+  [ "$(envval "$d" OAUTH_ENABLED)" = "false" ] || fail "oauth off: OAUTH_ENABLED in $f is not false"
+  lacks "$d" "OAUTH_ISSUER" "oauth off, $f"
+done
+lacks "$(show ingress-app.yaml "${oauth_off[@]}")" "oauth" "oauth off, app ingress"
+lacks "$(show ingress-mcp.yaml "${oauth_off[@]}")" "oauth" "oauth off, mcp ingress"
+pass "oauth off: no OAuth Ingress paths and OAUTH_ENABLED false on both pods"
+
+# The chart default is off, so a values file that never mentions oauth keeps today's behaviour.
+bare=$(helm template x charts/platform -n platform --set mcp.sharedToken=x --show-only templates/gateway.yaml)
+[ "$(envval "$bare" OAUTH_ENABLED)" = "false" ] || fail "oauth is not off by default"
+pass "oauth is off by default"
+
+app=$(show ingress-app.yaml "${oauth_on[@]}")
+mcp=$(show ingress-mcp.yaml "${oauth_on[@]}")
+has "$app" "path: /oauth" "oauth on, app ingress"
+has "$app" "path: /.well-known/oauth-authorization-server" "oauth on, app ingress"
+[ "$(grep -A1 -F 'path: /.well-known/oauth-authorization-server' <<<"$app" | grep -c 'pathType: Exact')" -eq 1 ] || fail "AS metadata path is not Exact"
+[ "$(grep -A1 -F 'path: /oauth' <<<"$app" | head -2 | grep -c 'pathType: Prefix')" -eq 1 ] || fail "/oauth is not a Prefix"
+# Both new paths go to the control-plane, never to the dashboard.
+[ "$(awk '/path: \/oauth$/{f=1} f&&/name:/{print $2; exit}' <<<"$app")" = "control-plane" ] || fail "/oauth does not route to control-plane"
+[ "$(awk '/path: \/.well-known\/oauth-authorization-server/{f=1} f&&/name:/{print $2; exit}' <<<"$app")" = "control-plane" ] || fail "AS metadata does not route to control-plane"
+has "$mcp" "path: /.well-known/oauth-protected-resource" "oauth on, mcp ingress"
+[ "$(awk '/oauth-protected-resource/{f=1} f&&/name:/{print $2; exit}' <<<"$mcp")" = "gateway" ] || fail "PRM does not route to gateway"
+for f in gateway.yaml control-plane.yaml; do
+  d=$(show "$f" "${oauth_on[@]}")
+  [ "$(envval "$d" OAUTH_ENABLED)" = "true" ] || fail "oauth on: OAUTH_ENABLED in $f is not true"
+  [ "$(envval "$d" OAUTH_ISSUER)" = "http://app.127.0.0.1.nip.io" ] || fail "oauth on: OAUTH_ISSUER in $f"
+  d=$(show "$f" "${oauth_on[@]}" --set global.scheme=https --set global.domain=example.org)
+  [ "$(envval "$d" OAUTH_ISSUER)" = "https://app.example.org" ] || fail "oauth on: https issuer in $f"
+done
+pass "oauth on: Ingress paths, and OAUTH_ENABLED and OAUTH_ISSUER on both pods"
 
 echo "OK"

@@ -58,5 +58,9 @@ export function sessionRoutes(scope: FastifyInstance, o: ApiOptions): void {
     return reply.code(204).header('set-cookie', clearSessionCookie(o.secureCookies)).send();
   });
   scope.get('/api/me', { preHandler: requireUser }, async (req) => ({ user: req.user }));
-  scope.get('/api/config', async () => ({ gatewayUrl: o.gatewayUrl, version: o.version }));
+  scope.get('/api/config', async () => ({
+    gatewayUrl: o.gatewayUrl,
+    version: o.version,
+    oauthEnabled: o.oauthEnabled === true,
+  }));
 }

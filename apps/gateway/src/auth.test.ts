@@ -1,6 +1,7 @@
-import { generateApiKey, signAgentJwt } from '@woo/core';
+import { createHmac } from 'node:crypto';
+import { generateApiKey, oauthKeys, signAccessToken, signAgentJwt } from '@woo/core';
 import { schema } from '@woo/core/db';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Authenticator } from './auth.js';
@@ -11,6 +12,7 @@ import type { Db } from './types.js';
 const PEPPER = 'test-pepper';
 const JWT_KEY = 'test-jwt-key';
 const AUD = 'http://mcp.test/mcp';
+const ISS = 'http://app.test';
 
 describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
   let pool: pg.Pool;
@@ -225,5 +227,192 @@ describe.skipIf(!TEST_DATABASE_URL)('Authenticator', () => {
         `Bearer ${signAgentJwt({ key: JWT_KEY, userId: 'not-a-uuid', audience: AUD, now: s })}`,
       ),
     ).toBeNull();
+  });
+
+  describe('OAuth access tokens', () => {
+    const keys = oauthKeys(JWT_KEY);
+    const oauthAuth = () =>
+      new Authenticator({
+        db,
+        pepper: PEPPER,
+        jwtKey: JWT_KEY,
+        audience: AUD,
+        oauthIssuer: ISS,
+        log: quietLog,
+        now,
+      });
+    const token = (
+      o: { sub?: string; iss?: string; aud?: string; at?: number; client?: string } = {},
+    ) =>
+      signAccessToken({
+        keys,
+        iss: o.iss ?? ISS,
+        aud: o.aud ?? AUD,
+        sub: o.sub ?? adminId,
+        clientId: o.client ?? 'dcr_test',
+        scope: 'mcp:tools',
+        now: Math.floor((o.at ?? t) / 1000),
+      });
+    // An access token only counts while its user has approved its client (decision D2).
+    const approve = async (userId: string, clientId: string, at: number) => {
+      await db
+        .insert(schema.oauthConsents)
+        .values({ userId, clientId, scope: 'mcp:tools', createdAt: new Date(at) })
+        .onConflictDoUpdate({
+          target: [schema.oauthConsents.userId, schema.oauthConsents.clientId],
+          set: { createdAt: new Date(at) },
+        });
+    };
+    const revokeConsent = (userId: string, clientId: string) =>
+      db
+        .delete(schema.oauthConsents)
+        .where(
+          and(eq(schema.oauthConsents.userId, userId), eq(schema.oauthConsents.clientId, clientId)),
+        );
+    beforeEach(async () => {
+      await db.delete(schema.oauthConsents);
+      await approve(adminId, 'dcr_test', t - 3_600_000);
+    });
+    const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
+    const claims = () => ({
+      iss: ISS,
+      aud: AUD,
+      sub: adminId,
+      client_id: 'dcr_test',
+      scope: 'mcp:tools',
+      iat: Math.floor(t / 1000),
+      exp: Math.floor(t / 1000) + 900,
+      jti: 'j',
+    });
+
+    it('an at+jwt for an active user is a principal via oauth, tool mode auto, no key id, no own limit', async () => {
+      expect(await oauthAuth().authenticate(`Bearer ${token()}`)).toEqual({
+        userId: adminId,
+        email: 'admin@example.com',
+        role: 'admin',
+        via: 'oauth',
+        apiKeyId: null,
+        toolMode: 'auto',
+        rateLimitPerMin: null,
+      });
+    });
+
+    it('reads the role from the users table on every request', async () => {
+      const [m] = await db
+        .insert(schema.users)
+        .values({ email: 'oauth-member@example.com', role: 'member', status: 'active' })
+        .returning({ id: schema.users.id });
+      await approve(m!.id, 'dcr_test', t - 3_600_000);
+      const a = oauthAuth();
+      expect(await a.authenticate(`Bearer ${token({ sub: m!.id })}`)).toMatchObject({
+        role: 'member',
+      });
+      await db.update(schema.users).set({ role: 'admin' }).where(eq(schema.users.id, m!.id));
+      expect(await a.authenticate(`Bearer ${token({ sub: m!.id })}`)).toMatchObject({
+        role: 'admin',
+      });
+    });
+
+    it("a disabled user's token and a token for an unknown user are refused", async () => {
+      await approve(disabledId, 'dcr_test', t - 3_600_000);
+      const a = oauthAuth();
+      expect(await a.authenticate(`Bearer ${token({ sub: disabledId })}`)).toBeNull();
+      expect(
+        await a.authenticate(`Bearer ${token({ sub: '00000000-0000-4000-8000-0000000000ff' })}`),
+      ).toBeNull();
+    });
+
+    it('a token for another audience or issuer is refused', async () => {
+      const a = oauthAuth();
+      expect(await a.authenticate(`Bearer ${token({ aud: 'http://other.test/mcp' })}`)).toBeNull();
+      expect(await a.authenticate(`Bearer ${token({ iss: 'http://evil.test' })}`)).toBeNull();
+    });
+
+    it('an expired at+jwt is refused, and one inside the 30 s skew is accepted', async () => {
+      // exp is iat + 900 s. 30 s past exp is refused, 29 s past is inside the skew.
+      const a = oauthAuth();
+      expect(await a.authenticate(`Bearer ${token({ at: t - 930_000 })}`)).toBeNull();
+      expect(await a.authenticate(`Bearer ${token({ at: t - 929_000 })}`)).not.toBeNull();
+    });
+
+    it('alg none and HS256 tokens are refused', async () => {
+      const a = oauthAuth();
+      const hdr = (alg: string) => b64({ alg, typ: 'at+jwt', kid: keys.kid });
+      const unsigned = `${hdr('none')}.${b64(claims())}.`;
+      const hmac = (alg: string, key: string | Buffer) => {
+        const body = `${hdr(alg)}.${b64(claims())}`;
+        return `${body}.${createHmac('sha256', key).update(body).digest('base64url')}`;
+      };
+      const pub = keys.publicKey.export({ format: 'der', type: 'spki' });
+      for (const t of [unsigned, hmac('HS256', JWT_KEY), hmac('HS256', pub)])
+        expect(await a.authenticate(`Bearer ${t}`)).toBeNull();
+    });
+
+    it('an agent JWT and an API key still authenticate', async () => {
+      const a = oauthAuth();
+      const agent = signAgentJwt({
+        key: JWT_KEY,
+        userId: adminId,
+        audience: AUD,
+        now: Math.floor(t / 1000),
+      });
+      expect(await a.authenticate(`Bearer ${agent}`)).toMatchObject({ via: 'agent' });
+      const { key } = await addKey(adminId);
+      expect(await a.authenticate(`Bearer ${key}`)).toMatchObject({ via: 'api_key' });
+    });
+
+    it('an agent JWT is not an access token, and an access token is not an agent JWT', async () => {
+      const a = oauthAuth();
+      const body = token().split('.');
+      const asAgent = `${b64({ alg: 'HS256', typ: 'agent+jwt' })}.${body[1]}.${body[2]}`;
+      expect(await a.authenticate(`Bearer ${asAgent}`)).toBeNull();
+    });
+
+    it('revoke ends access on the next call: a token whose consent row is gone is refused', async () => {
+      const a = oauthAuth();
+      const tok = `Bearer ${token()}`;
+      expect(await a.authenticate(tok)).toMatchObject({ via: 'oauth', userId: adminId });
+      await revokeConsent(adminId, 'dcr_test');
+      expect(await a.authenticate(tok)).toBeNull();
+    });
+
+    it('a consent row of another client or another user does not count', async () => {
+      await revokeConsent(adminId, 'dcr_test');
+      await approve(adminId, 'dcr_other', t - 3_600_000);
+      await approve(disabledId, 'dcr_test', t - 3_600_000);
+      const a = oauthAuth();
+      expect(await a.authenticate(`Bearer ${token()}`)).toBeNull();
+      expect(await a.authenticate(`Bearer ${token({ client: 'dcr_other' })}`)).not.toBeNull();
+    });
+
+    it('revoke then approve again within 15 minutes does not revive the old token', async () => {
+      const a = oauthAuth();
+      const old = `Bearer ${token({ at: t - 30_000 })}`;
+      expect(await a.authenticate(old)).not.toBeNull();
+      await revokeConsent(adminId, 'dcr_test');
+      await approve(adminId, 'dcr_test', t);
+      expect(await a.authenticate(old)).toBeNull();
+      // A token issued after the new approval works, and so does one from the same second.
+      expect(await a.authenticate(`Bearer ${token({ at: t + 5_000 })}`)).not.toBeNull();
+      expect(await a.authenticate(`Bearer ${token({ at: t })}`)).not.toBeNull();
+    });
+
+    it('an agent JWT and an API key need no consent row', async () => {
+      await revokeConsent(adminId, 'dcr_test');
+      const a = oauthAuth();
+      const agent = signAgentJwt({
+        key: JWT_KEY,
+        userId: adminId,
+        audience: AUD,
+        now: Math.floor(t / 1000),
+      });
+      expect(await a.authenticate(`Bearer ${agent}`)).toMatchObject({ via: 'agent' });
+      const { key } = await addKey(adminId);
+      expect(await a.authenticate(`Bearer ${key}`)).toMatchObject({ via: 'api_key' });
+    });
+
+    it('with oauth off an at+jwt is refused', async () => {
+      expect(await auth().authenticate(`Bearer ${token()}`)).toBeNull();
+    });
   });
 });

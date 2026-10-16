@@ -2,7 +2,14 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useOutletContext } from 'react-router';
 import { api } from '../api';
-import { type AuditFilters, auditQuery, EMPTY_FILTERS, OUTCOMES, outcomeTone } from '../audit';
+import {
+  type AuditFilters,
+  auditEvent,
+  auditQuery,
+  EMPTY_FILTERS,
+  OUTCOMES,
+  outcomeTone,
+} from '../audit';
 import { formatTs } from '../format';
 import type { AuditResponse, Me, Member, Server } from '../types';
 import { Button, ErrorLine, Field, Input, PageHeader, Pill, Select, td, th } from '../ui';
@@ -97,20 +104,28 @@ export function AuditPage() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} title={r.errorMessage ?? ''}>
-              <td className={`${td} whitespace-nowrap font-mono`}>{formatTs(r.ts)}</td>
-              <td className={td}>{r.userEmail}</td>
-              <td className={td}>{r.via}</td>
-              <td className={`${td} font-mono`}>{r.serverSlug}</td>
-              <td className={`${td} font-mono`}>{r.toolName}</td>
-              <td className={td}>
-                <Pill tone={outcomeTone(r.outcome)}>{r.outcome}</Pill>
-              </td>
-              <td className={`${td} text-right tabular-nums`}>{r.durationMs} ms</td>
-              <td className={`${td} font-mono text-muted`}>{r.replica}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const ev = auditEvent(r);
+            return (
+              <tr key={r.id} title={ev.isEvent ? '' : (r.errorMessage ?? '')}>
+                <td className={`${td} whitespace-nowrap font-mono`}>{formatTs(r.ts)}</td>
+                <td className={td}>{r.userEmail}</td>
+                <td className={td}>{r.via}</td>
+                <td className={`${td} ${ev.isEvent ? '' : 'font-mono'}`}>{ev.server}</td>
+                <td className={`${td} font-mono`}>
+                  {r.toolName}
+                  {ev.detail && <div className="font-sans text-xs text-muted">{ev.detail}</div>}
+                </td>
+                <td className={td}>
+                  <Pill tone={outcomeTone(r.outcome)}>{r.outcome}</Pill>
+                </td>
+                <td className={`${td} text-right tabular-nums`}>
+                  {ev.isEvent ? '' : `${r.durationMs} ms`}
+                </td>
+                <td className={`${td} font-mono text-muted`}>{r.replica}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {rows.length === 0 && !audit.isPending && (

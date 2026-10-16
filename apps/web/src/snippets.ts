@@ -21,3 +21,7 @@ export function snippets(gatewayUrl: string, key: string): Record<SnippetId, str
     ].join('\n'),
   };
 }
+
+// The client finds the authorization server on its own, so the command carries no key.
+export const oauthSnippet = (gatewayUrl: string) =>
+  `claude mcp add --transport http urumi-oauth ${gatewayUrl}`;

@@ -167,6 +167,23 @@ describe('createGatewayServer', () => {
     expect(Number.isInteger(audit[0]!.durationMs)).toBe(true);
   });
 
+  it('an OAuth call writes an audit row via oauth with no key id and is limited as the user', async () => {
+    const check = vi.fn(async () => ({ allowed: true, retryInSeconds: 0 }));
+    const oauth: Principal = { ...principal, via: 'oauth', apiKeyId: null, toolMode: 'auto' };
+    const { client, audit } = await connect(
+      { fx__tool: route('fx', okCall) },
+      { principal: oauth, limiter: { check } },
+    );
+    await client.callTool({ name: 'fx__tool', arguments: {} });
+    expect(audit[0]).toMatchObject({
+      outcome: 'ok',
+      via: 'oauth',
+      apiKeyId: null,
+      userId: principal.userId,
+    });
+    expect(check).toHaveBeenCalledWith(oauth);
+  });
+
   it('returns structured content as received, without adding text', async () => {
     const call: Call = async () => ({
       outcome: 'ok',

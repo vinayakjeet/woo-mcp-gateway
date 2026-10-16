@@ -34,6 +34,22 @@ spec:
                 name: control-plane
                 port:
                   number: 3000
+          {{- if .Values.oauth.enabled }}
+          - path: /oauth
+            pathType: Prefix
+            backend:
+              service:
+                name: control-plane
+                port:
+                  number: 3000
+          - path: /.well-known/oauth-authorization-server
+            pathType: Exact
+            backend:
+              service:
+                name: control-plane
+                port:
+                  number: 3000
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

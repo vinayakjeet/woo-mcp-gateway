@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SNIPPET_TABS, snippets } from './snippets';
+import { SNIPPET_TABS, oauthSnippet, snippets } from './snippets';
 
 const URL = 'http://mcp.127.0.0.1.nip.io/mcp';
 const KEY = `urk_abcd1234_${'x'.repeat(43)}`;
@@ -20,6 +20,11 @@ describe('snippets', () => {
     expect(s).toContain('Streamable HTTP');
     expect(s).toContain(URL);
     expect(s).toContain(`Bearer ${KEY}`);
+  });
+  it('gives the OAuth command with no key and no header', () => {
+    const s = oauthSnippet(URL);
+    expect(s).toBe(`claude mcp add --transport http urumi-oauth ${URL}`);
+    expect(s).not.toMatch(/--header|Bearer|urk_/);
   });
   it('has one tab per snippet', () => {
     expect(SNIPPET_TABS.map((t) => t.id).sort()).toEqual(Object.keys(snippets(URL, KEY)).sort());

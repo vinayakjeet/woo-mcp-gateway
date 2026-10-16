@@ -1,6 +1,6 @@
 import type { AddressInfo } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { errorCode } from '@woo/core';
+import { errorCode, pinnedFetch } from '@woo/core';
 import { schema, schemaReady } from '@woo/core/db';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { FastifyServerOptions } from 'fastify';
@@ -11,9 +11,9 @@ import { Authenticator } from './auth.js';
 import type { GatewayConfig } from './config.js';
 import { buildHealthApp } from './health.js';
 import { createGatewayMetrics } from './metrics.js';
+import { ListenHub } from './listen.js';
 import { gatewayLogger } from './logger.js';
 import { PG_CONNECT_TIMEOUT_MS, PG_QUERY_TIMEOUT_MS } from './pg-options.js';
-import { pinnedFetch } from './pinned-fetch.js';
 import { PolicyStore } from './policies.js';
 import { callLimiter, RateLimiter } from './rate-limit.js';
 import { Registry, type RegistryOptions } from './registry.js';
@@ -25,6 +25,8 @@ export type StartOptions = {
   logger?: FastifyServerOptions['logger'];
   upstream?: RegistryOptions['upstream'];
   schemaPollMs?: number;
+  // How often open listen streams are authenticated again. Tests shorten it.
+  listenRecheckMs?: number;
 };
 
 export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
@@ -51,6 +53,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     pepper: cfg.pepper,
     jwtKey: cfg.jwtKey,
     audience: cfg.audience,
+    oauthIssuer: cfg.oauthIssuer ?? undefined,
     log,
   });
   const writeStatus = (
@@ -88,6 +91,12 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     auth,
     policies,
     log,
+    onToolsChanged: () => listen.toolsChanged(),
+  });
+  const listen = new ListenHub({
+    authenticate: (h) => auth.authenticate(h),
+    log,
+    recheckMs: o.listenRecheckMs,
   });
   const app = buildGatewayApp({
     router: registry,
@@ -96,6 +105,8 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     limiter: callLimiter(new RateLimiter(db), cfg.rateLimitPerMinute),
     metrics,
     authenticate: (h) => auth.authenticate(h),
+    listen,
+    oauth: cfg.oauthIssuer ? { resource: cfg.audience, issuer: cfg.oauthIssuer } : undefined,
     replica: cfg.replica,
     allowedOrigins: cfg.allowedOrigins,
     logger,
@@ -115,6 +126,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     servers: [app.server, health.server],
     close: async () => {
       await app.close();
+      listen.close();
       await health.close();
       await sync.close();
       await status.close();

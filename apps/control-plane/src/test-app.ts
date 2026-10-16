@@ -3,6 +3,7 @@ import { generateSessionToken } from '@woo/core';
 import type { FastifyInstance, FastifyServerOptions, LightMyRequestResponse } from 'fastify';
 import pg from 'pg';
 import { apiRoutes, type ApiOptions } from './api.js';
+import { oauthRoutes, type OAuthOptions } from './oauth.js';
 import { buildPublicApp } from './app.js';
 import type { Channel } from './db.js';
 import { migrateAndSeed } from './migrate-run.js';
@@ -12,12 +13,15 @@ import { freshDatabase } from './test-db.js';
 export const ORIGIN = 'http://app.127.0.0.1.nip.io';
 export const TEST_PEPPER = 'test-pepper';
 export const ADMIN_PASSWORD = 'pw-admin-12345';
+export const TEST_JWT_KEY = 'test-jwt-signing-key-for-the-oauth-tests-0123456789';
 
 // Built the same way as index.ts, so the routes inherit the real Origin check and error handler.
 export async function testApi(
   dbName: string,
   over: Partial<ApiOptions> = {},
   logger: FastifyServerOptions['logger'] = false,
+  // Passing options turns OAuth on, like OAUTH_ENABLED=true does in index.ts.
+  oauth?: Partial<Omit<OAuthOptions, 'pool'>>,
 ) {
   const url = await freshDatabase(process.env.TEST_DATABASE_URL!, dbName);
   const kek = randomBytes(32);
@@ -29,7 +33,11 @@ export async function testApi(
     seedServers: [],
   });
   const pool = new pg.Pool({ connectionString: url, max: 5 });
-  const app = buildPublicApp(pgDeps(pool), { appOrigin: ORIGIN, secureCookies: false }, logger);
+  const app = buildPublicApp(
+    pgDeps(pool),
+    { appOrigin: ORIGIN, secureCookies: false, oauthEnabled: oauth !== undefined },
+    logger,
+  );
   await app.register(apiRoutes, {
     pool,
     appOrigin: ORIGIN,
@@ -38,10 +46,20 @@ export async function testApi(
     kek,
     gatewayUrl: 'http://mcp.127.0.0.1.nip.io/mcp',
     version: 'test',
+    oauthEnabled: oauth !== undefined,
     // The tests use made-up hosts, so DNS and range checks are off unless a test brings its own.
     checkUrl: async () => null,
     ...over,
   });
+  if (oauth) {
+    await app.register(oauthRoutes, {
+      pool,
+      issuer: ORIGIN,
+      jwtKey: TEST_JWT_KEY,
+      resource: 'http://mcp.127.0.0.1.nip.io/mcp',
+      ...oauth,
+    });
+  }
   await app.ready();
   return {
     app,

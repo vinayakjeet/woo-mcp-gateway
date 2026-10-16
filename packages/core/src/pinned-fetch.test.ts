@@ -1,8 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { classifyError } from './classify.js';
-import { checkedLookup, pinnedFetch } from './pinned-fetch.js';
+import { BLOCKED_CODE, checkedLookup, pinnedFetch } from './pinned-fetch.js';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -26,13 +25,20 @@ async function server(handler: http.RequestListener) {
 
 const toLocal = async () => ['127.0.0.1'];
 
+// The gateway classifies an error by the codes along its cause chain, and so does this.
+function isBlocked(err: unknown): boolean {
+  for (let cur = err, i = 0; cur && i < 6; i++, cur = (cur as { cause?: unknown }).cause)
+    if ((cur as { code?: unknown }).code === BLOCKED_CODE) return true;
+  return false;
+}
+
 describe('pinnedFetch', () => {
   it('refuses to connect when the name resolves to 127.0.0.1, and opens no socket', async () => {
     const srv = await server((_req, res) => res.end('secret'));
     const f = pinnedFetch({ allowInsecure: true, resolve: toLocal });
     const err = await f(`http://api.example.com:${srv.port}/`).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
-    expect(classifyError(err)).toEqual({ kind: 'blocked', message: 'address not allowed' });
+    expect(isBlocked(err)).toBe(true);
     expect(srv.connections()).toBe(0);
   });
 
@@ -40,7 +46,7 @@ describe('pinnedFetch', () => {
     const srv = await server((_req, res) => res.end('secret'));
     const f = pinnedFetch({ allowInsecure: true });
     const err = await f(`http://127.0.0.1:${srv.port}/`).catch((e: unknown) => e);
-    expect(classifyError(err).kind).toBe('blocked');
+    expect(isBlocked(err)).toBe(true);
     expect(srv.connections()).toBe(0);
   });
 
@@ -92,7 +98,7 @@ describe('pinnedFetch', () => {
       'http://169.254.169.254/latest',
       'http://metadata.google.internal/',
     ]) {
-      expect(classifyError(await f(u).catch((e: unknown) => e)).kind, u).toBe('blocked');
+      expect(isBlocked(await f(u).catch((e: unknown) => e)), u).toBe(true);
     }
     expect(looked).toBe(0);
   });
@@ -120,12 +126,12 @@ describe('checkedLookup', () => {
     const lookup = checkedLookup({ resolve: async () => answers.shift()! });
     expect((await run(lookup, true)).err).toBeNull();
     const second = await run(lookup, true);
-    expect(second.err?.code).toBe('ERR_UPSTREAM_BLOCKED');
+    expect(second.err?.code).toBe(BLOCKED_CODE);
   });
 
   it('refuses when any answer is private', async () => {
     const lookup = checkedLookup({ resolve: async () => ['140.82.112.3', '10.0.0.7'] });
-    expect((await run(lookup, true)).err?.code).toBe('ERR_UPSTREAM_BLOCKED');
+    expect((await run(lookup, true)).err?.code).toBe(BLOCKED_CODE);
   });
 
   it('passes a failed resolution on as a DNS error', async () => {

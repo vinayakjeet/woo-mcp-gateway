@@ -1,10 +1,15 @@
 import {
+  ACCESS_TOKEN_TYP,
   AGENT_JWT_TYP,
   AgentJwtError,
+  OAuthJwtError,
   errorCode,
+  oauthKeys,
   parseApiKey,
+  verifyAccessToken,
   verifyAgentJwt,
   verifyApiKeySecret,
+  type OAuthKeys,
 } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
@@ -28,6 +33,8 @@ export type AuthenticatorOptions = {
   pepper: string;
   jwtKey: string;
   audience: string;
+  // Set only while OAuth is on. Without it an access token is refused like any unknown token.
+  oauthIssuer?: string;
   log: Log;
   cacheTtlMs?: number;
   negativeTtlMs?: number;
@@ -36,16 +43,14 @@ export type AuthenticatorOptions = {
   now?: () => number;
 };
 
-function isAgentJwt(token: string): boolean {
+// Only dispatches. Each branch verifies the whole token itself.
+function jwtTyp(token: string): unknown {
   const [h, p, s, extra] = token.split('.');
-  if (!h || !p || !s || extra !== undefined) return false;
+  if (!h || !p || !s || extra !== undefined) return undefined;
   try {
-    return (
-      (JSON.parse(Buffer.from(h, 'base64url').toString('utf8')) as { typ?: unknown }).typ ===
-      AGENT_JWT_TYP
-    );
+    return (JSON.parse(Buffer.from(h, 'base64url').toString('utf8')) as { typ?: unknown }).typ;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -62,6 +67,8 @@ export class Authenticator {
   private readonly negativeTtl: number;
   private readonly negativeMax: number;
   private readonly now: () => number;
+  // The same JWT_SIGNING_KEY the control-plane signs with gives this replica the public key (decision A1).
+  private readonly oauth: { keys: OAuthKeys; issuer: string } | null;
 
   constructor(private readonly o: AuthenticatorOptions) {
     this.ttl = o.cacheTtlMs ?? 10_000;
@@ -69,13 +76,16 @@ export class Authenticator {
     this.negativeTtl = o.negativeTtlMs ?? 5_000;
     this.negativeMax = o.negativeMax ?? 1000;
     this.now = o.now ?? Date.now;
+    this.oauth = o.oauthIssuer ? { keys: oauthKeys(o.jwtKey), issuer: o.oauthIssuer } : null;
   }
 
   async authenticate(header: string | undefined): Promise<Principal | null> {
     const token = /^Bearer (\S+)$/i.exec(header ?? '')?.[1];
     if (!token) return null;
     if (token.startsWith('urk_')) return this.apiKey(token);
-    if (isAgentJwt(token)) return this.agent(token);
+    const typ = jwtTyp(token);
+    if (typ === AGENT_JWT_TYP) return this.agent(token);
+    if (typ === ACCESS_TOKEN_TYP && this.oauth) return this.accessToken(token, this.oauth);
     return null;
   }
 
@@ -211,20 +221,63 @@ export class Authenticator {
       if (err instanceof AgentJwtError) return null;
       throw err;
     }
+    return this.withoutKey(sub, 'agent');
+  }
+
+  private async accessToken(
+    token: string,
+    oauth: { keys: OAuthKeys; issuer: string },
+  ): Promise<Principal | null> {
+    let claims: { sub: string; client_id: string; iat: number };
+    try {
+      claims = verifyAccessToken(token, {
+        publicKey: oauth.keys.publicKey,
+        kid: oauth.keys.kid,
+        iss: oauth.issuer,
+        aud: this.o.audience,
+        now: Math.floor(this.now() / 1000),
+      });
+    } catch (err) {
+      if (err instanceof OAuthJwtError) return null;
+      throw err;
+    }
+    return this.withoutKey(claims.sub, 'oauth', { clientId: claims.client_id, iat: claims.iat });
+  }
+
+  // Agent and OAuth tokens outlive a disabled user, so the user row is read on every request.
+  // An access token also needs its consent row (Connected apps, Revoke), read in the same query.
+  private async withoutKey(
+    sub: string,
+    via: 'agent' | 'oauth',
+    grant?: { clientId: string; iat: number },
+  ): Promise<Principal | null> {
     if (!UUID_RE.test(sub)) return null;
     const u = schema.users;
+    const c = schema.oauthConsents;
     const [user] = await this.o.db
-      .select({ id: u.id, email: u.email, role: u.role, status: u.status })
+      .select({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        approvedAt: c.createdAt,
+      })
       .from(u)
+      .leftJoin(c, and(eq(c.userId, u.id), eq(c.clientId, grant?.clientId ?? '')))
       .where(eq(u.id, sub))
       .limit(1);
     if (!user || user.status !== 'active') return null;
-    // No key to carry a mode, so the agent follows the visible-count rule (SPEC 17).
+    if (grant) {
+      // No row: the user revoked the app. A token minted before the latest approval belongs to a
+      // grant that was revoked and approved again. iat has whole seconds, so compare whole seconds.
+      if (!user.approvedAt || grant.iat < Math.floor(user.approvedAt.getTime() / 1000)) return null;
+    }
+    // No key to carry a mode, so these follow the visible-count rule (SPEC 17).
     return {
       userId: user.id,
       email: user.email,
       role: user.role,
-      via: 'agent',
+      via,
       apiKeyId: null,
       toolMode: 'auto',
       rateLimitPerMin: null,

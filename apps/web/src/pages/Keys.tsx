@@ -2,7 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api';
 import { KeyReveal } from '../KeyReveal';
+import { ConnectedApps } from '../ConnectedApps';
 import { KeyTable } from '../KeyTable';
+import { OAuthConnect } from '../OAuthConnect';
 import type { ApiKey, ToolMode } from '../types';
 import { Button, ErrorLine, Field, Input, PageHeader, Select } from '../ui';
 
@@ -71,6 +73,8 @@ export function KeysPage() {
           revoke.mutate(k.id)
         }
       />
+      <OAuthConnect />
+      <ConnectedApps />
       {create.data && (
         <KeyReveal
           secret={create.data.secret}

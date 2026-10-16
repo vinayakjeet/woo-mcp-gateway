@@ -3,14 +3,16 @@ import { installGracefulShutdown, LOG_REDACT, parseKek } from '@woo/core';
 import pg from 'pg';
 import { apiRoutes } from './api.js';
 import { buildInternalApp, buildPublicApp } from './app.js';
-import { requireEnv } from './env.js';
+import { oauthEnv, requireEnv } from './env.js';
 import { helmCli } from './helm.js';
 import { loadHostedConfig } from './hosted-input.js';
 import { introspectRoutes } from './internal-introspect.js';
+import { oauthRoutes } from './oauth.js';
 import { inClusterKube } from './kube.js';
 import { createProvisionerMetrics } from './metrics.js';
 import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
+import { startAuditRetention } from './retention.js';
 import { urlCheckFromEnv } from './ssrf.js';
 import { provisionerConfig } from './store-values.js';
 
@@ -30,8 +32,13 @@ const pool = new pg.Pool({ connectionString: env.DATABASE_URL, max: 5 });
 const deps = pgDeps(pool);
 const logger = { redact: LOG_REDACT };
 const secureCookies = env.APP_ORIGIN.startsWith('https://');
+const oauth = oauthEnv(process.env);
 
-const pub = buildPublicApp(deps, { appOrigin: env.APP_ORIGIN, secureCookies }, logger);
+const pub = buildPublicApp(
+  deps,
+  { appOrigin: env.APP_ORIGIN, secureCookies, oauthEnabled: oauth.enabled },
+  logger,
+);
 await pub.register(apiRoutes, {
   pool,
   appOrigin: env.APP_ORIGIN,
@@ -43,7 +50,16 @@ await pub.register(apiRoutes, {
   checkUrl: urlCheckFromEnv(process.env),
   gatewayUrl: env.GATEWAY_URL,
   version: process.env.APP_VERSION ?? 'dev',
+  oauthEnabled: oauth.enabled,
 });
+if (oauth.enabled) {
+  await pub.register(oauthRoutes, {
+    pool,
+    issuer: oauth.issuer,
+    jwtKey: env.JWT_SIGNING_KEY,
+    resource: env.GATEWAY_URL,
+  });
+}
 const metrics = createProvisionerMetrics(pool);
 const internal = buildInternalApp(deps, logger, metrics);
 // The agent JWT audience is the gateway's public URL, the same GATEWAY_URL the gateway checks.
@@ -77,6 +93,8 @@ if (provisioner) {
   });
 }
 await stores?.start();
+// Runs on every replica whether or not the provisioner is on: the advisory lock lets one of them prune.
+const retention = startAuditRetention(pool, pub.log.child({ component: 'retention' }));
 
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
 await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });
@@ -85,6 +103,7 @@ installGracefulShutdown({
   servers: [pub.server, internal.server],
   close: async () => {
     await stores?.close();
+    await retention.stop();
     await Promise.all([pub.close(), internal.close()]);
     await pool.end();
   },

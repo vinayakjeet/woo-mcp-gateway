@@ -1,9 +1,14 @@
 import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
-import type { FetchLike } from '@modelcontextprotocol/client';
-import { checkUpstreamUrl, isAllowedAddress, resolveAll, type Resolver } from '@woo/core';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { BLOCKED_CODE } from './classify.js';
+import { checkUpstreamUrl, isAllowedAddress, resolveAll, type Resolver } from './ssrf.js';
+
+// Raised when an upstream name or address is not a public one. The gateway's error classifier
+// looks for this code anywhere in an error's cause chain.
+export const BLOCKED_CODE = 'ERR_UPSTREAM_BLOCKED';
+
+// The shape the MCP client takes as its fetch, declared here so core needs no MCP client package.
+export type PinnedFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
 
 export type PinnedFetchOptions = {
   allowInsecure: boolean;
@@ -47,10 +52,10 @@ export function checkedLookup(o: Pick<PinnedFetchOptions, 'resolve' | 'isAllowed
   };
 }
 
-// For external upstreams only. undici's own fetch is used because Node's bundled fetch does not
+// For external upstreams and for fetching a client's metadata document. undici's own fetch is used because Node's bundled fetch does not
 // take a dispatcher from the package. Redirects are errors: a 3xx must never move the gateway
 // (and its stored credential) to another host.
-export function pinnedFetch(o: PinnedFetchOptions): FetchLike {
+export function pinnedFetch(o: PinnedFetchOptions): PinnedFetch {
   const agent = new Agent({ connect: { lookup: checkedLookup(o) } as never });
   return async (url, init) => {
     // Names are resolved at connect time. This pass covers what a lookup never sees: the scheme,

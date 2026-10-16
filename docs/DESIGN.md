@@ -166,3 +166,103 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 ## The first sync is a flag, not a count
 
 `mcp_servers.tools_synced_at` (migration `0002`) is set by the first successful tool list, even an empty one. For a hosted server, `upsertTools` runs `update mcp_servers set tools_synced_at = now() where id = $1 and tools_synced_at is null returning id` inside its transaction and approves only when that returns a row. The row lock makes two replicas agree: exactly one approves, the other sees the flag after the first commits. Before this, a hosted server whose first list was empty got its later tools approved as a first sync. `persistTools` now writes on the first list even when it is empty. The migration backfills `now()` for every server that has at least one tool row. Store and system servers set the flag as well, so the column means the same for every kind. Because of the migration, the control-plane must ship before the gateway; gateway readiness waits for every journal entry.
+
+## OAuth on k3d is plain http by design (SPEC 24)
+
+Clients refuse to send credentials to a token endpoint that is not https, unless its host is `localhost`, `127.0.0.1` or `::1`. This is the rule of the MCP SDK 2.x client (MCP Inspector 2.9.0 stopped at the token step with it) and of Claude Code on its default v2 runtime (docs, "MCP client runtimes", and the check in the 2.1.301 binary). The local stack serves `http://app.127.0.0.1.nip.io`, and a nip.io name is not exempt.
+
+What that means for this repo:
+
+- The OAuth endpoints are written for https. `OAUTH_ISSUER` is `<scheme>://app.<domain>` from the chart, so on the VM it is https and the metadata documents carry https URLs.
+- On k3d everything up to the token step works with a real browser client: discovery, registration with CORS, login, the consent page and Deny. The token step and a call with the token are proven with `scripts/oauth-check.sh`, which talks to the server directly.
+- The proof with a real client (Inspector, then Claude Code) is the first check on the VM after TLS (`.notes/plans/M8-vm.md`).
+- API keys and agent JWTs work over http locally, as before.
+- Not done on purpose: a token URL override in the client, local TLS with a private CA, and the `MCP_SDK_GENERATION=v1` runtime switch in Claude Code. The rest of the OAuth design follows.
+
+## OAuth (SPEC 24)
+
+OAuth is for MCP clients that sign in through a browser. API keys and agent JWTs stay as they are. With `oauth.enabled: false` (the chart default) there are no OAuth routes, no resource metadata and no `WWW-Authenticate` header. `values-local.yaml` turns it on.
+
+### The flow, first 401 to refresh
+
+1. A client posts to `mcp.<domain>/mcp` with no token. The gateway answers 401 with `WWW-Authenticate: Bearer resource_metadata="<mcp origin>/.well-known/oauth-protected-resource", scope="mcp:tools"`. If a token was sent and rejected, `error="invalid_token"` is added so the client knows to refresh. The metadata is also served at the path-aware URL the SDK builds.
+2. The metadata names the authorization server, `https://app.<domain>`. Its document is at `/.well-known/oauth-authorization-server`.
+3. The client registers (`POST /oauth/register`, DCR) or uses an https URL as its `client_id` (CIMD, see THREAT_MODEL 14).
+4. The client sends the browser to `/oauth/authorize` with a PKCE S256 challenge. With no session this redirects to `/login?next=...` and the login page returns to the same URL.
+5. The consent page shows the client, the redirect URI and the signed-in email. Approve or Deny answers 303 to the redirect URI with `code`, `state` and `iss` (RFC 9207), or `error=access_denied`.
+6. `POST /oauth/token` swaps the code and the PKCE verifier for an access token and a refresh token. The client sends the access token to the gateway as a Bearer header.
+7. About 15 minutes later the gateway answers 401 with `invalid_token`. The client posts the refresh token to `/oauth/token` and gets a new pair. No browser is involved.
+
+### Token shapes
+
+- Access token: a JWT, header `alg: EdDSA`, `typ: at+jwt`, `kid`. Claims: `iss` (`https://app.<domain>`), `aud` (the gateway URL), `sub` (user id), `client_id`, `scope` (`mcp:tools`), `iat`, `exp` (`iat` + 900 s), `jti`. The gateway accepts only that algorithm and type, equal `iss` and `aud` strings, and a clock skew of 30 s. It reads the user row on every call, so a disabled user is refused at once.
+- Refresh token: `urt_` plus 43 characters, valid 30 days, stored only as a hash. Authorization codes live 60 s and are stored as hashes too.
+- A call made with an OAuth token is audited with `via = oauth` and counted in the rate limit under the user, like the agent.
+
+### Key derivation (decision A1)
+
+The Ed25519 key pair comes from `JWT_SIGNING_KEY` with HKDF-SHA256, an empty salt and 32 bytes of output. Three info labels keep the uses apart: `urumi oauth eddsa v1` (signing seed), `urumi oauth csrf v1` (consent CSRF key) and `urumi oauth refresh v1` (the replay key in THREAT_MODEL 14).
+
+- Why: no new Secret and no chart change. The gateway derives the public key once at start.
+- Cost: the gateway holds the same key, so a gateway compromise could mint tokens. The code only verifies.
+- Rotating `JWT_SIGNING_KEY` ends every OAuth access token and agent JWT at once. Refresh tokens survive, because they are opaque rows in Postgres.
+
+### Registration
+
+- DCR takes public clients only (`token_endpoint_auth_method: none`). PKCE is the proof of possession, so no client secret exists.
+- `redirect_uris`: 1 to 5, each an https URL or an http URL on `localhost`, `127.0.0.1` or `[::1]`, with no fragment, no userinfo, at most 2000 characters. `client_name` is cut to 100 characters with control characters removed. The `client_id` is `dcr_` plus 22 characters.
+- Redirect matching is an exact string. The one exception is the loopback port (RFC 8252 7.3): a native app picks a free port each run, so the port is ignored. Scheme, host, path and query must still match, and `localhost.evil.example` is not loopback.
+- A custom URL scheme (`cursor://...`) cannot register. This is a known limit: the consent page cannot tell which app on a device owns a private-use scheme. Cursor is the known case. API keys work for it.
+- A `client_id` that starts with `https://` is a CIMD URL. The control-plane fetches the document on every authorize and on the consent POST (5 s, 5 KB, no cache, no fallback to an older copy).
+- Per IP and minute: 10 registrations, 30 token requests, 30 CIMD fetches.
+
+### Consent and CSRF
+
+The consent page is plain HTML from the control-plane, with no script. Its CSP has `frame-ancestors 'none'` and a `form-action` that names the redirect origin (Chrome applies `form-action` to the redirect after the POST). The POST carries a hidden token: an HMAC of the session id and the authorization request, so it is bound to this user and this request. The existing Origin check still runs on the POST.
+
+The page sends `Referrer-Policy: same-origin`. With `no-referrer`, browsers sent `Origin: null` on the form post and the Origin check refused every approval (found in the Task 7 browser check). Same-origin still sends no Referer to the client.
+
+### CORS and the Origin check
+
+`/.well-known/oauth-authorization-server`, `/oauth/register` and `/oauth/token` answer `Access-Control-Allow-Origin: *` without credentials, so a browser client such as MCP Inspector can call them. `/oauth/authorize` is a navigation and has no CORS. The control-plane Origin hook skips `/oauth/register` and `/oauth/token`: neither reads a cookie, so there is nothing to forge. The gateway serves its resource metadata with open CORS too.
+
+### Refresh rotation
+
+Every refresh returns a new token and revokes the old one. A reuse revokes the whole chain, except for a 30 s grace window for the direct parent, so two parallel refreshes or a retry after a lost answer do not kill the grant. The rules and the trade-off are in THREAT_MODEL 14.
+
+### What clients were tried
+
+- MCP Inspector 2.9.0 (pinned; published 2026-09-30): discovery, registration, login, consent and Deny worked on k3d. It stopped at the token step, because the token endpoint is plain http (above). Proof on the VM over TLS is pending (M8).
+- Claude Code: not tried on k3d, for the same reason. Its proof, with its own CIMD document, is pending on the VM (M8).
+- Server side: `scripts/oauth-check.sh` drives the whole flow with curl: discovery, registration, consent with the headers a browser would send, the token step, a call, rotation and reuse, CIMD, Connected apps and revoke.
+
+## Connected apps (Task 10b)
+
+A grant is one user and one client, the key of `oauth_consents`. My keys lists the signed-in user's grants: client name, `unverified` for DCR or the host for CIMD, and the last refresh. `GET /api/oauth/grants` returns them (an admin may add `?userId=`; a member naming another user gets 403). `DELETE /api/oauth/grants/<client_id>` revokes: it sets `revoked_at` on every live refresh token of the pair, marks unredeemed codes used and deletes the consent row. Both routes exist only when OAuth is enabled.
+
+- Revoke takes effect on the next call. The gateway reads the consent row in the same query as the user row. A token with no consent row is refused, and so is a token issued before the second of the row's latest approval, so revoke then approve again does not revive an old token.
+- One audit row per revoke, `tool_name = oauth_grant_revoked`, with an empty server slug. The Audit page shows it as "Revoked by <email>", not as a failed call. No schema change: a dedicated events table would need a migration.
+
+## Naming and collisions (SPEC 5)
+
+- Exposed name: `<slug>__<tool>`, always prefixed, never only on a collision. Names stay stable when a server is added, the model and the audit log know the source, and routing is one map lookup.
+- Slug: `^[a-z][a-z0-9-]{0,22}[a-z0-9]$`, so 2 to 24 characters, no `__`. SPEC 5 writes `{1,22}`, which needs 3 characters, but its own examples `fx` and `gh` have 2 (user approved 2026-10-11).
+- Tool part: characters outside `[A-Za-z0-9_-]` become `_`. If the name is longer than 48 characters, the tool part is cut and `_` plus the first 6 hex characters of the sha256 of the original name is appended. 48 leaves room for client prefixes such as `mcp__<server>__` inside the 64-character limit of common model APIs.
+- Two tools of one server that map to one exposed name: the gateway sorts them by original name, keeps the first and skips the other with a warn log (`exposed name collision, tool skipped`).
+- `tools/list` is sorted by exposed name. Descriptions start with `[<server name>] `, or `[Store: <store name>] ` for a store.
+- Demo: woo-mcp and fx-mcp both have `get_info`, which appear as `main__get_info` and `fx__get_info`.
+
+## Audit retention (SPEC 9)
+
+The control-plane deletes `audit_events` rows older than 30 days. It runs at start and every 24 hours, on every replica, whether or not the provisioner is on. A try-lock (advisory lock 4244) lets one replica prune and the others log `audit retention skipped, lock held`. The cutoff is Postgres `now()`, never the pod clock, which can jump. Deletes go in batches of 10000 until a batch is short, and the count is logged as `audit retention`. A deleted store or server leaves its audit rows until they age out.
+
+## List changes (SPEC 6.6)
+
+A client on the 2026-07-28 protocol opens `subscriptions/listen` and hears `notifications/tools/list_changed` when its tool list may have changed. Then it lists again and gets its own filtered list.
+
+- The event has no payload on purpose: it says nothing about a server a member cannot see.
+- Senders: the control-plane sends `NOTIFY tools_changed` inside `notify()` for every `registry_changed` and `policies_changed`, in the same transaction, so a new call site cannot forget it. The gateway sends it when a server's state changes (status writer, leader only) and when a tool sync writes a changed tool set. Every replica LISTENs and writes to its own open streams.
+- Events within 100 ms give one notification. When the LISTEN connection comes back, every open stream gets one, because notifications may have been lost.
+- A stream is authenticated once, so the gateway authenticates again before every send and every 60 s. A revoked key, a deleted consent row, an expired token or a disabled user closes the stream. A failed check (database down) keeps it, since a stream carries no data.
+- At most 3 open streams per API key, or per user for a token without a key, on one replica. The 4th gets 429 with `Retry-After: 60`. With N replicas a client can hold 3N.
+- The gateway declares `tools.listChanged` only to modern requests. A legacy client has no push channel and sees changes on its next `tools/list`.

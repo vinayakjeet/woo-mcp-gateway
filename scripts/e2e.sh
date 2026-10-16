@@ -79,10 +79,24 @@ save_key "$(body "$r")" k2
 fx_id=$(body "$(req admin.jar GET /api/servers)" | jq -r '.servers[] | select(.slug == "fx") | .id')
 [ -n "$fx_id" ] || fail "no fx server"
 [ "$(count_prefix k2 fx)" -ge 1 ] || fail "fx tools missing before disable"
+# A listen stream (2026-07-28 clients only) is open while fx is disabled and must get the hint.
+tools k2 --listen '{"seconds":12}' >"$S/listen.out" 2>&1 &
+listen_pid=$!
+t0=$(date +%s%N)
+until grep -q '^READY' "$S/listen.out" 2>/dev/null; do
+  [ "$(ms_since "$t0")" -lt 30000 ] || { kill "$listen_pid" 2>/dev/null || true; fail "the listen stream did not start: $(tail -n 2 "$S/listen.out")"; }
+  sleep 0.2
+done
 t0=$(date +%s%N)
 [ "$(code "$(req admin.jar PATCH "/api/servers/$fx_id" '{"enabled":false}')")" = 200 ] || fail "disable fx"
+until grep -q '^list_changed' "$S/listen.out"; do
+  [ "$(ms_since "$t0")" -lt 3000 ] || { kill "$listen_pid" 2>/dev/null || true; fail "no tools/list_changed on the listen stream 3 s after disabling fx"; }
+  sleep 0.1
+done
+pass "a listen stream got tools/list_changed $(ms_since "$t0") ms after fx was disabled"
+kill "$listen_pid" 2>/dev/null || true
 until [ "$(count_prefix k2 fx)" -eq 0 ]; do
-  [ "$(ms_since "$t0")" -lt 5000 ] || fail "fx tools still listed 5 s after disable"
+  [ "$(ms_since "$t0")" -lt 8000 ] || fail "fx tools still listed 5 s after disable"
 done
 pass "disabled fx: its tools are gone after $(ms_since "$t0") ms"
 [ "$(code "$(req admin.jar PATCH "/api/servers/$fx_id" '{"enabled":true}')")" = 200 ] || fail "enable fx"

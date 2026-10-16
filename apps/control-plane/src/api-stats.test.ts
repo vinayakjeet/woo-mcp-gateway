@@ -124,6 +124,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('stats API (needs TEST_DATABASE_
     expect(b.servers.reduce((n, s) => n + s.calls, 0)).toBe(20);
   });
 
+  it('does not count oauth_grant_revoked rows as tool calls', async () => {
+    const before = (await get('', admin.cookie)).json() as Body;
+    // Same shape the revoke route writes: owner as user, via oauth, empty slug, client id as exposed name.
+    await t.pool.query(
+      `insert into audit_events (ts, request_id, user_id, user_email, via, server_slug, tool_name,
+         exposed_name, outcome, duration_ms, error_message, replica)
+       select now() - interval '1 minute', gen_random_uuid(), $1, 'a@example.com', 'oauth', '',
+         'oauth_grant_revoked', 'dcr_client_' || n, 'ok', 0, 'revoked by admin@example.com', 'cp-0'
+       from generate_series(1, 5) n`,
+      [admin.id],
+    );
+    try {
+      const after = await get('', admin.cookie);
+      expect(after.json()).toEqual(before);
+      expect(after.body).not.toContain('oauth_grant_revoked');
+    } finally {
+      await t.pool.query(`delete from audit_events where tool_name = 'oauth_grant_revoked'`);
+    }
+  });
+
   it('lists a server with no calls with zero calls and null rates', async () => {
     const quiet = bySlug((await get('', admin.cookie)).json() as Body).quiet!;
     expect(quiet).toMatchObject({

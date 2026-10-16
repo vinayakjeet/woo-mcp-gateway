@@ -1,5 +1,5 @@
 import { hostname } from 'node:os';
-import { parseKek } from '@woo/core';
+import { parseKek, parseOAuthIssuer } from '@woo/core';
 
 export type GatewayConfig = {
   databaseUrl: string;
@@ -15,6 +15,9 @@ export type GatewayConfig = {
   allowInsecureUpstreams: boolean;
   // Calls per minute for a key without its own limit, and for the agent.
   rateLimitPerMinute: number;
+  oauthEnabled: boolean;
+  // The authorization server origin, set only while oauthEnabled.
+  oauthIssuer: string | null;
 };
 
 const REQUIRED = [
@@ -37,6 +40,7 @@ function parseRateLimit(raw: string | undefined): number {
 export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
   const missing = REQUIRED.filter((n) => !env[n]);
   if (missing.length > 0) throw new Error(`Missing env vars: ${missing.join(', ')}`);
+  const oauthEnabled = env.OAUTH_ENABLED === 'true';
   return {
     databaseUrl: env.DATABASE_URL!,
     kek: parseKek(env.KEK!),
@@ -52,5 +56,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     healthPort: Number(env.HEALTH_PORT ?? 9090),
     allowInsecureUpstreams: env.ALLOW_INSECURE_UPSTREAMS === 'true',
     rateLimitPerMinute: parseRateLimit(env.RATE_LIMIT_PER_MINUTE),
+    oauthEnabled,
+    oauthIssuer: oauthEnabled ? parseOAuthIssuer(env.OAUTH_ISSUER) : null,
   };
 }

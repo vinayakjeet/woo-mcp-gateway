@@ -1,7 +1,15 @@
 import type pg from 'pg';
 
 export type Channel =
-  'key_revoked' | 'registry_changed' | 'stores_changed' | 'hosted_changed' | 'policies_changed';
+  | 'key_revoked'
+  | 'registry_changed'
+  | 'stores_changed'
+  | 'hosted_changed'
+  | 'policies_changed'
+  | 'tools_changed';
+
+// A change to a server row or to a policy can change what a client sees in tools/list.
+const CHANGES_TOOLS: ReadonlySet<Channel> = new Set(['registry_changed', 'policies_changed']);
 
 export async function withTx<T>(pool: pg.Pool, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
@@ -26,4 +34,8 @@ export async function withTx<T>(pool: pg.Pool, fn: (c: pg.PoolClient) => Promise
 // never reaches the gateway.
 export async function notify(c: pg.PoolClient, channel: Channel, id: string): Promise<void> {
   await c.query('select pg_notify($1, $2)', [channel, id]);
+  // Sent here, in the same transaction, so no caller can change a tool list and forget the hint. The
+  // payload is empty on purpose: gateways tell their listen streams to list again, and each client
+  // gets its own filtered list, so the event says nothing about a server a member cannot see.
+  if (CHANGES_TOOLS.has(channel)) await c.query("select pg_notify('tools_changed', '')");
 }

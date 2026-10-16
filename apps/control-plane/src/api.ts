@@ -5,6 +5,7 @@ import { auditRoutes } from './api-audit.js';
 import { hostedRoutes } from './api-hosted.js';
 import { inviteRoutes } from './api-invites.js';
 import { keyRoutes } from './api-keys.js';
+import { grantRoutes } from './oauth-grants.js';
 import { policyRoutes } from './api-policies.js';
 import { userRoutes } from './api-users.js';
 import { serverRoutes } from './api-servers.js';
@@ -23,6 +24,8 @@ export type ApiOptions = {
   kek: Buffer;
   gatewayUrl: string;
   version: string;
+  // Lets the dashboard show the OAuth connect command only when the flow exists.
+  oauthEnabled?: boolean;
   checkUrl?: UrlCheck;
   // Null when provisioner.enabled is false: the Stores page lists, creates answer 503.
   provisioner?: ProvisionerConfig | null;
@@ -42,6 +45,7 @@ export async function apiRoutes(scope: FastifyInstance, o: ApiOptions): Promise<
   inviteRoutes(scope, o);
   userRoutes(scope, o);
   keyRoutes(scope, o);
+  if (o.oauthEnabled) grantRoutes(scope, o);
   serverRoutes(scope, o);
   approvalRoutes(scope, o);
   policyRoutes(scope, o);

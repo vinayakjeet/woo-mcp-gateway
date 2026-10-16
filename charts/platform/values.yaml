@@ -19,6 +19,11 @@ ingress:
     enabled: false
     clusterIssuer: ''
 
+# OAuth for MCP clients (SPEC 24, M13). Off keeps today's behaviour: no OAuth routes, no
+# WWW-Authenticate header, no Ingress paths. The issuer is always <scheme>://app.<domain>.
+oauth:
+  enabled: false
+
 gateway:
   # Browser origins allowed to call /mcp. Empty means <scheme>://app.<domain>.
   allowedOrigins: []

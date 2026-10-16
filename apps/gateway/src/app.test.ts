@@ -370,3 +370,134 @@ describe('request ids and trace headers', () => {
     expect(res.headers.get('x-request-id')).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
+
+describe('OAuth resource metadata (decisions 18 and 19)', () => {
+  const RESOURCE = 'https://mcp.example.test/mcp';
+  const ISSUER = 'https://app.example.test';
+  const PRM_ROOT = '/.well-known/oauth-protected-resource';
+  const CHALLENGE = `Bearer resource_metadata="https://mcp.example.test${PRM_ROOT}", scope="mcp:tools"`;
+  let on: FastifyInstance;
+  let off: FastifyInstance;
+  let onUrl: string;
+  let offUrl: string;
+
+  async function startWith(oauth: GatewayAppOptions['oauth']) {
+    const a = buildGatewayApp({
+      router,
+      policies: { allows: () => true },
+      audit: { write: async () => {} },
+      limiter: unlimited,
+      authenticate: async (h) => (h === 'Bearer good' ? principal : null),
+      replica: 'gw-test-0',
+      allowedOrigins: ['http://app.example.test'],
+      oauth,
+    });
+    await a.listen({ host: '127.0.0.1', port: 0 });
+    return { a, url: `http://127.0.0.1:${(a.server.address() as AddressInfo).port}` };
+  }
+  const rpc = (url: string, headers: Record<string, string> = {}) =>
+    fetch(`${url}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': '2025-11-25',
+        ...headers,
+      },
+      body: listBody,
+    });
+
+  beforeAll(async () => {
+    ({ a: on, url: onUrl } = await startWith({ resource: RESOURCE, issuer: ISSUER }));
+    ({ a: off, url: offUrl } = await startWith(undefined));
+  });
+  afterAll(async () => {
+    await on.close();
+    await off.close();
+  });
+
+  it.each([PRM_ROOT, `${PRM_ROOT}/mcp`])(
+    'PRM at %s has resource = GATEWAY_URL, authorization_servers, scopes and bearer methods',
+    async (path) => {
+      const res = await fetch(`${onUrl}${path}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      expect(await res.json()).toEqual({
+        resource: RESOURCE,
+        authorization_servers: [ISSUER],
+        scopes_supported: ['mcp:tools'],
+        bearer_methods_supported: ['header'],
+        resource_name: 'Urumi MCP gateway',
+      });
+    },
+  );
+
+  it('PRM answers a foreign Origin with Access-Control-Allow-Origin * and no credentials', async () => {
+    const res = await fetch(`${onUrl}${PRM_ROOT}`, { headers: { origin: 'http://evil.example' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
+  it('answers the CORS preflight for PRM, and not for /mcp', async () => {
+    const pre = await fetch(`${onUrl}${PRM_ROOT}`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://evil.example', 'access-control-request-method': 'GET' },
+    });
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get('access-control-allow-origin')).toBe('*');
+    expect(pre.headers.get('access-control-allow-methods')).toContain('GET');
+    const mcp = await fetch(`${onUrl}/mcp`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://evil.example', 'access-control-request-method': 'POST' },
+    });
+    expect(mcp.status).toBe(403);
+  });
+
+  it('a POST /mcp with a foreign Origin is still 403, and so is a POST to the metadata path', async () => {
+    const res = await rpc(onUrl, { authorization: 'Bearer good', origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    const post = await fetch(`${onUrl}${PRM_ROOT}`, {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(post.status).toBe(403);
+  });
+
+  it('401 with no token carries WWW-Authenticate with resource_metadata and scope', async () => {
+    const res = await rpc(onUrl);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe(CHALLENGE);
+    const other = await rpc(onUrl, { authorization: 'Basic Zm9vOmJhcg==' });
+    expect(other.status).toBe(401);
+    expect(other.headers.get('www-authenticate')).toBe(CHALLENGE);
+  });
+
+  it('401 for a rejected bearer token adds error="invalid_token"', async () => {
+    const res = await rpc(onUrl, { authorization: 'Bearer nope' });
+    expect(res.status).toBe(401);
+    const h = res.headers.get('www-authenticate') ?? '';
+    expect(h).toContain('error="invalid_token"');
+    expect(h).toContain(`resource_metadata="https://mcp.example.test${PRM_ROOT}"`);
+    expect(h).toContain('scope="mcp:tools"');
+    expect(h).not.toContain('nope');
+  });
+
+  it('a good token is not challenged', async () => {
+    const res = await rpc(onUrl, { authorization: 'Bearer good' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('www-authenticate')).toBeNull();
+  });
+
+  it('with oauth off: no WWW-Authenticate and PRM is 404 at both paths', async () => {
+    const res = await rpc(offUrl);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBeNull();
+    const bad = await rpc(offUrl, { authorization: 'Bearer nope' });
+    expect(bad.headers.get('www-authenticate')).toBeNull();
+    for (const path of [PRM_ROOT, `${PRM_ROOT}/mcp`]) {
+      expect((await fetch(`${offUrl}${path}`)).status).toBe(404);
+    }
+  });
+});

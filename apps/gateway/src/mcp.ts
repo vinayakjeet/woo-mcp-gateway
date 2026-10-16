@@ -55,6 +55,8 @@ export type GatewayServerOptions = {
   metrics?: Pick<GatewayMetrics, 'observe'>;
   replica: string;
   log: Log;
+  // Only a modern (2026-07-28) client can open subscriptions/listen, so only it is told the list can change.
+  era?: 'legacy' | 'modern';
 };
 
 type MetaTool = AuditRow['metaTool'];
@@ -69,7 +71,10 @@ export function traceFor(meta: unknown, header: string | null | undefined): Trac
 export function createGatewayServer(o: GatewayServerOptions): Server {
   const server = new Server(
     { name: 'woo-gateway', version: '0.1.0' },
-    { capabilities: { tools: {} }, cacheHints: { 'tools/list': LIST_CACHE_HINT } },
+    {
+      capabilities: { tools: o.era === 'modern' ? { listChanged: true } : {} },
+      cacheHints: { 'tools/list': LIST_CACHE_HINT },
+    },
   );
 
   const allowed = (slug: string, tool: string) => o.policies.allows(o.principal.role, slug, tool);

@@ -96,6 +96,8 @@ Cursor, in `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one projec
 
 MCP Inspector: run `npx @modelcontextprotocol/inspector`, then in the page it opens set Transport Type to Streamable HTTP, URL to `http://mcp.127.0.0.1.nip.io/mcp`, add header `Authorization` with value `Bearer <key>`, and press Connect, then List Tools.
 
+OAuth instead of a key (needs https, so it is for the VM): `claude mcp add --transport http urumi-oauth https://mcp.<domain>/mcp` with no header. Claude Code opens the browser for sign-in and consent, and refreshes the token without asking again. My keys lists these apps under Connected apps and can revoke them. On the local stack the token endpoint is plain http, and Claude Code and MCP Inspector 2.x refuse that off loopback, so there OAuth is proven server side by `scripts/oauth-check.sh`. The client proofs are pending on the VM (M8). Design: `docs/DESIGN.md`, "OAuth (SPEC 24)".
+
 From a terminal: `pnpm tsx scripts/mcp-smoke.ts http://mcp.127.0.0.1.nip.io/mcp <key> [tool] [json args]`.
 
 ## Use the chat agent
@@ -171,3 +173,4 @@ The Health page in the dashboard shows the last 60 minutes per server without Pr
 | undici             | 8.11.2 (gateway, pinned upstream connections)                                 |
 | minisearch         | 7.2.0 (gateway, tool search; published 2025-09-16)                            |
 | Prometheus         | `prom/prometheus:v3.15.0` (optional, `monitoring.enabled`; pushed 2026-09-25) |
+| MCP Inspector      | 2.9.0 (OAuth check; published 2026-09-30; proof pending on the VM)            |

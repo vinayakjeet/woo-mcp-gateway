@@ -56,10 +56,10 @@ export type Principal = {
   userId: string;
   email: string;
   role: 'admin' | 'member';
-  via: 'api_key' | 'agent';
+  via: 'api_key' | 'agent' | 'oauth';
   apiKeyId: string | null;
   toolMode: ToolMode;
-  // The key's own limit per minute. Null means the gateway default (always null for the agent).
+  // The key's own limit per minute. Null means the gateway default (always null for the agent and OAuth).
   rateLimitPerMin: number | null;
 };
 
