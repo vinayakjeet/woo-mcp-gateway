@@ -166,3 +166,16 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 ## The first sync is a flag, not a count
 
 `mcp_servers.tools_synced_at` (migration `0002`) is set by the first successful tool list, even an empty one. For a hosted server, `upsertTools` runs `update mcp_servers set tools_synced_at = now() where id = $1 and tools_synced_at is null returning id` inside its transaction and approves only when that returns a row. The row lock makes two replicas agree: exactly one approves, the other sees the flag after the first commits. Before this, a hosted server whose first list was empty got its later tools approved as a first sync. `persistTools` now writes on the first list even when it is empty. The migration backfills `now()` for every server that has at least one tool row. Store and system servers set the flag as well, so the column means the same for every kind. Because of the migration, the control-plane must ship before the gateway; gateway readiness waits for every journal entry.
+
+## OAuth on k3d is plain http by design (SPEC 24)
+
+Clients refuse to send credentials to a token endpoint that is not https, unless its host is `localhost`, `127.0.0.1` or `::1`. This is the rule of the MCP SDK 2.x client (MCP Inspector 2.9.0 stopped at the token step with it) and of Claude Code on its default v2 runtime (docs, "MCP client runtimes", and the check in the 2.1.301 binary). The local stack serves `http://app.127.0.0.1.nip.io`, and a nip.io name is not exempt.
+
+What that means for this repo:
+
+- The OAuth endpoints are written for https. `OAUTH_ISSUER` is `<scheme>://app.<domain>` from the chart, so on the VM it is https and the metadata documents carry https URLs.
+- On k3d everything up to the token step works with a real browser client: discovery, registration with CORS, login, the consent page and Deny. The token step and a call with the token are proven with `scripts/oauth-check.sh`, which talks to the server directly.
+- The proof with a real client (Inspector, then Claude Code) is the first check on the VM after TLS (`.notes/plans/M8-vm.md`).
+- API keys and agent JWTs work over http locally, as before.
+- Not done on purpose: a token URL override in the client, local TLS with a private CA, and the `MCP_SDK_GENERATION=v1` runtime switch in Claude Code. Task 12 extends this page with the rest of the OAuth design.
+
