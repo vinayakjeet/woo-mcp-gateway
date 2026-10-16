@@ -398,6 +398,7 @@ if [ "$consent_status" = 200 ]; then
   [ "$(redeem cimd)" = 200 ] || fail "the token endpoint refused the CIMD client_id ($(tok_error))"
   [ "$(psql_one "select metadata_url from oauth_clients where client_id = '$CIMD_URL'")" = "$CIMD_URL" ] ||
     fail "the CIMD client was not stored with its metadata_url"
+  cimd_done=1
   pass "a client named by a metadata document URL ($cimd_host): fetched by the control-plane, the consent page names the host, and the token endpoint accepts the URL as client_id"
 else
   reason=$(cimd_refusal "$cimd_since" "$cimd_host")
@@ -413,6 +414,82 @@ else
 fi
 CID=$CID_DCR
 CID_Q=''
+
+# 10c. Connected apps (Task 10b): list, revoke by the member and by an admin, a CIMD client id in
+# the path, access ending at the next call, and one audit row per revoke. The member gets a fresh
+# grant for the DCR client above and one for a second client.
+urlenc() { jq -rn --arg v "$1" '$v | @uri'; }
+admin_id=$(body "$(req oc-admin.jar GET /api/me)" | jq -r .user.id)
+admin_email=$(body "$(req oc-admin.jar GET /api/me)" | jq -r .user.email)
+[ "$(register "{\"client_name\":\"oauth-check other\",\"redirect_uris\":[\"$REDIRECT\"],\"token_endpoint_auth_method\":\"none\"}")" = 201 ] ||
+  fail "registration of the second client"
+CID2=$(jq -r .client_id "$S/oc-b")
+grant_code i1
+[ "$(redeem i1)" = 200 ] || fail "grant for the Connected apps rows"
+keep i1
+CID=$CID2
+grant_code j1
+[ "$(redeem j1)" = 200 ] || fail "grant for the second client"
+keep j1
+CID=$CID_DCR
+[ "$(probe oc-i1-at)" = 200 ] && [ "$(probe oc-j1-at)" = 200 ] || fail "a fresh access token was refused"
+r=$(req oc-member.jar GET /api/oauth/grants)
+[ "$(code "$r")" = 200 ] || fail "the member could not list grants"
+body "$r" | jq -e --arg a "$CID" --arg b "$CID2" '
+  ([.grants[] | select(.clientId == $a)] | length == 1 and (.[0] | .kind == "dcr" and .host == null and .name == "oauth-check")) and
+  ([.grants[] | select(.clientId == $b)] | length == 1)' >/dev/null || fail "the member's grant list is wrong"
+if [ "${cimd_done:-0}" = 1 ]; then
+  body "$r" | jq -e --arg c "$CIMD_URL" --arg h "$cimd_host" '
+    [.grants[] | select(.clientId == $c and .kind == "cimd" and .host == $h)] | length == 1' >/dev/null ||
+    fail "the CIMD grant is missing or has no host label"
+fi
+# Admin sees their own list by default, and a member who names another user is refused.
+[ "$(code "$(req oc-member.jar GET "/api/oauth/grants?userId=$admin_id")")" = 403 ] || fail "a member could name another user"
+body "$(req oc-admin.jar GET /api/oauth/grants)" | jq -e --arg a "$CID" '[.grants[] | select(.clientId == $a)] | length == 0' >/dev/null ||
+  fail "the admin's own list holds the member's grant"
+body "$(req oc-admin.jar GET "/api/oauth/grants?userId=$member_id")" | jq -e --arg a "$CID" '[.grants[] | select(.clientId == $a)] | length == 1' >/dev/null ||
+  fail "an admin could not list the member's grants"
+pass "Connected apps: the member lists their grants (dcr unverified, cimd with its host), a member naming another user gets 403, an admin can list a member's"
+
+revokes=0
+[ "$(code "$(req oc-member.jar DELETE "/api/oauth/grants/$(urlenc "$CID")")")" = 204 ] || fail "member revoke"
+revokes=$((revokes + 1))
+[ "$(probe oc-i1-at)" = 401 ] || fail "the access token of a revoked grant still works"
+[ "$(refresh i1)" = 400 ] && [ "$(tok_error)" = invalid_grant ] || fail "the refresh token of a revoked grant still works"
+CID=$CID2
+[ "$(probe oc-j1-at)" = 200 ] && [ "$(refresh j1)" = 200 ] || fail "revoking one app ended another"
+CID=$CID_DCR
+[ "$(code "$(req oc-member.jar DELETE "/api/oauth/grants/$(urlenc "$CID")")")" = 404 ] || fail "a second revoke was not 404"
+pass "member Revoke: the access token gets 401 on the next call, the refresh token is invalid_grant, another app is untouched, a second revoke is 404"
+
+# Approve the same client again. A token issued before the approval stays dead. The approval time
+# is in whole seconds, so wait one for the second approval to fall in a later second.
+sleep 1.2
+grant_code i2
+[ "$(redeem i2)" = 200 ] || fail "grant again after the revoke"
+keep i2
+[ "$(probe oc-i2-at)" = 200 ] || fail "a token of the new approval was refused"
+[ "$(probe oc-i1-at)" = 401 ] || fail "the old access token came back after the grant was approved again"
+pass "approve again: the new token works and the old access token stays dead"
+
+CID=$CID2
+[ "$(code "$(req oc-admin.jar DELETE "/api/oauth/grants/$(urlenc "$CID")?userId=$member_id")")" = 204 ] || fail "admin revoke"
+revokes=$((revokes + 1))
+[ "$(probe oc-j1-at)" = 401 ] || fail "the member's token still works after an admin revoke"
+CID=$CID_DCR
+if [ "${cimd_done:-0}" = 1 ]; then
+  [ "$(code "$(req oc-member.jar DELETE "/api/oauth/grants/$(urlenc "$CIMD_URL")")")" = 204 ] || fail "revoke of the CIMD client (URL id in the path)"
+  revokes=$((revokes + 1))
+  body "$(req oc-member.jar GET /api/oauth/grants)" | jq -e --arg c "$CIMD_URL" '[.grants[] | select(.clientId == $c)] | length == 0' >/dev/null ||
+    fail "the CIMD grant is still listed after Revoke"
+fi
+pass "an admin revokes a member's grant ($revokes revokes so far), and a CIMD client id (an https URL) works in the path"
+
+n=$(psql_one "select count(*) from audit_events where user_id = '$member_id' and tool_name = 'oauth_grant_revoked' and via = 'oauth' and server_slug = ''")
+[ "$n" = "$revokes" ] || fail "expected $revokes oauth_grant_revoked audit rows for the member, found $n"
+[ "$(psql_one "select count(*) from audit_events where user_id = '$member_id' and tool_name = 'oauth_grant_revoked' and error_message = 'revoked by $admin_email'")" = 1 ] ||
+  fail "the admin's revoke is not audited with the admin as the actor"
+pass "$revokes oauth_grant_revoked audit rows in the member's log, the admin's revoke names the admin"
 
 # 11. A disabled member, a tampered token, and the API key path.
 grant_code d1
