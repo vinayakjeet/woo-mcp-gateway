@@ -3,6 +3,7 @@ import { generateSessionToken } from '@woo/core';
 import type { FastifyInstance, FastifyServerOptions, LightMyRequestResponse } from 'fastify';
 import pg from 'pg';
 import { apiRoutes, type ApiOptions } from './api.js';
+import { oauthRoutes, type OAuthOptions } from './oauth.js';
 import { buildPublicApp } from './app.js';
 import type { Channel } from './db.js';
 import { migrateAndSeed } from './migrate-run.js';
@@ -18,6 +19,8 @@ export async function testApi(
   dbName: string,
   over: Partial<ApiOptions> = {},
   logger: FastifyServerOptions['logger'] = false,
+  // Passing options turns OAuth on, like OAUTH_ENABLED=true does in index.ts.
+  oauth?: Partial<Omit<OAuthOptions, 'pool'>>,
 ) {
   const url = await freshDatabase(process.env.TEST_DATABASE_URL!, dbName);
   const kek = randomBytes(32);
@@ -29,7 +32,11 @@ export async function testApi(
     seedServers: [],
   });
   const pool = new pg.Pool({ connectionString: url, max: 5 });
-  const app = buildPublicApp(pgDeps(pool), { appOrigin: ORIGIN, secureCookies: false }, logger);
+  const app = buildPublicApp(
+    pgDeps(pool),
+    { appOrigin: ORIGIN, secureCookies: false, oauthEnabled: oauth !== undefined },
+    logger,
+  );
   await app.register(apiRoutes, {
     pool,
     appOrigin: ORIGIN,
@@ -42,6 +49,7 @@ export async function testApi(
     checkUrl: async () => null,
     ...over,
   });
+  if (oauth) await app.register(oauthRoutes, { pool, issuer: ORIGIN, ...oauth });
   await app.ready();
   return {
     app,

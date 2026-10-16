@@ -10,6 +10,7 @@ import {
 } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
+import { OAUTH_ORIGIN_EXEMPT, pathOf } from './oauth.js';
 
 export type UserRow = {
   id: string;
@@ -31,7 +32,7 @@ export type Deps = {
   }): Promise<void>;
 };
 
-export type PublicConfig = { appOrigin: string; secureCookies: boolean };
+export type PublicConfig = { appOrigin: string; secureCookies: boolean; oauthEnabled?: boolean };
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const loginBody = z.object({
@@ -77,6 +78,7 @@ export function buildPublicApp(
   // SameSite=Lax is the first CSRF defense; this is the second (SPEC 7). Every later route inherits it.
   app.addHook('onRequest', async (req, reply) => {
     if (SAFE_METHODS.has(req.method)) return;
+    if (cfg.oauthEnabled && OAUTH_ORIGIN_EXEMPT.has(pathOf(req.url))) return;
     if (req.headers.origin !== cfg.appOrigin) return reply.code(403).send({ error: 'bad_origin' });
   });
 
