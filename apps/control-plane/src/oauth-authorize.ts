@@ -1,8 +1,15 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { OAUTH_CSRF_INFO, OAUTH_SCOPE, hashToken, oauthSubKey } from '@woo/core';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import { OAUTH_CSRF_INFO, OAUTH_SCOPE, hashToken, oauthSubKey, pinnedFetch } from '@woo/core';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { withTx } from './db.js';
 import { sessionUser, sidFromCookie } from './api-session.js';
+import {
+  MAX_CLIENT_ID_URL,
+  fetchClientMetadata,
+  hostOf,
+  isCimdId,
+  upsertCimdClient,
+} from './oauth-cimd.js';
 import { redirectMatches } from './oauth-clients.js';
 import { isForm, one, type Fields } from './oauth-form.js';
 import { consentHeaders, consentPage, errorHeaders, errorPage } from './oauth-consent-html.js';
@@ -11,18 +18,32 @@ import type { OAuthOptions } from './oauth.js';
 const AUTHORIZE_PATH = '/oauth/authorize';
 const CODE_TTL = '60 seconds';
 const MAX_STATE = 1000;
+// A fetch of a client's metadata document is a request the caller makes us send. Only a signed-in
+// user can cause one, and each IP gets this many a minute.
+const CIMD_PER_IP = 30;
+const CIMD_WINDOW_MS = 60_000;
+const MAX_DCR_CLIENT_ID = 200;
 // base64url of a SHA-256 digest (RFC 7636 4.2).
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 
 export type AuthRequest = {
   clientId: string;
   clientName: string;
+  // What the consent page says about where the name comes from.
+  clientNote: string;
+
   redirectUri: string;
   codeChallenge: string;
   scope: string;
   resource: string;
   state: string | null;
 };
+
+type Client = { name: string; redirectUris: string[]; note: string };
+type Loaded =
+  | { kind: 'client'; clientId: string; client: Client }
+  | { kind: 'page'; status: 400 | 429; message: string }
+  | { kind: 'sign-in' };
 
 type Checked =
   | { kind: 'page'; message: string }
@@ -37,18 +58,9 @@ type Checked =
 
 // RFC 6749 4.1.2.1. Until the client and the redirect URI are trusted nothing is redirected: the
 // user sees a page. After that every error goes back to the client with state and iss.
-async function check(o: OAuthOptions, f: Fields): Promise<Checked> {
-  const clientId = one(f, 'client_id');
-  if (!clientId || clientId.length > 200)
-    return { kind: 'page', message: 'This app is not known here.' };
-  const { rows } = await o.pool.query<{ name: string; redirect_uris: string[] }>(
-    'select name, redirect_uris from oauth_clients where client_id = $1',
-    [clientId],
-  );
-  const client = rows[0];
-  if (!client) return { kind: 'page', message: 'This app is not known here.' };
+function check(o: OAuthOptions, f: Fields, clientId: string, client: Client): Checked {
   const redirectUri = one(f, 'redirect_uri');
-  if (!redirectUri || !redirectMatches(client.redirect_uris, redirectUri))
+  if (!redirectUri || !redirectMatches(client.redirectUris, redirectUri))
     return { kind: 'page', message: 'The return address does not match what this app registered.' };
 
   const rawState = one(f, 'state');
@@ -80,6 +92,7 @@ async function check(o: OAuthOptions, f: Fields): Promise<Checked> {
     req: {
       clientId,
       clientName: client.name,
+      clientNote: client.note,
       redirectUri,
       codeChallenge: challenge,
       scope: OAUTH_SCOPE,
@@ -147,8 +160,75 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
     return sid && user ? { sid, user } : null;
   };
 
+  const fetchDoc = o.cimdFetch ?? pinnedFetch({ allowInsecure: false });
+  const cimdLimit = scope.createRateLimit({ max: CIMD_PER_IP, timeWindow: CIMD_WINDOW_MS });
+  const unknownApp: Loaded = { kind: 'page', status: 400, message: 'This app is not known here.' };
+
+  // Finds the client behind a client_id. A dcr_ id is a row. An https URL is fetched every time
+  // (decision 24): the row is only a copy for the token endpoint, never a fallback, so a document
+  // that goes away or changes stops working at the next authorize. The fetch needs a session and
+  // is rate limited, and the user is told one thing whatever went wrong, because "resolves to a
+  // private address" would let a signed-in user probe the cluster's DNS. The log has the reason.
+  async function loadClient(req: FastifyRequest, f: Fields, signedIn: boolean): Promise<Loaded> {
+    const clientId = one(f, 'client_id');
+    if (!clientId) return unknownApp;
+    if (isCimdId(clientId)) {
+      if (clientId.length > MAX_CLIENT_ID_URL) return unknownApp;
+      if (!signedIn) return { kind: 'sign-in' };
+      // isAllowed is true only for allow-listed keys; a counted request is within the limit until isExceeded.
+      const limit = await cimdLimit(req);
+      if (!limit.isAllowed && limit.isExceeded)
+        return {
+          kind: 'page',
+          status: 429,
+          message: 'Too many requests from this address. Wait a minute and try again.',
+        };
+      const doc = await fetchClientMetadata(clientId, {
+        fetch: fetchDoc,
+        timeoutMs: o.cimdTimeoutMs,
+      });
+      if (!doc.ok) {
+        req.log.warn({ reason: doc.reason, host: hostOf(clientId) }, 'client metadata refused');
+        return {
+          kind: 'page',
+          status: 400,
+          message: "This app's details could not be loaded from its web address.",
+        };
+      }
+      await upsertCimdClient(o.pool, clientId, doc);
+      const note = `metadata hosted at ${hostOf(clientId)}`;
+      return {
+        kind: 'client',
+        clientId,
+        client: { name: doc.name, redirectUris: doc.redirectUris, note },
+      };
+    }
+    if (clientId.length > MAX_DCR_CLIENT_ID) return unknownApp;
+    const { rows } = await o.pool.query<{ name: string; redirect_uris: string[] }>(
+      'select name, redirect_uris from oauth_clients where client_id = $1',
+      [clientId],
+    );
+    const row = rows[0];
+    if (!row) return unknownApp;
+    return {
+      kind: 'client',
+      clientId,
+      client: {
+        name: row.name,
+        redirectUris: row.redirect_uris,
+        note: 'unverified, self-registered',
+      },
+    };
+  }
+
   scope.get(AUTHORIZE_PATH, async (req, reply) => {
-    const c = await check(o, req.query as Fields);
+    const session = await sessionOf(req.headers.cookie);
+    const q = req.query as Fields;
+    const loaded = await loadClient(req, q, session !== null);
+    if (loaded.kind === 'page') return pageError(reply, loaded.status, loaded.message);
+    if (loaded.kind === 'sign-in')
+      return reply.redirect(`/login?next=${encodeURIComponent(req.url)}`, 302);
+    const c = check(o, q, loaded.clientId, loaded.client);
     if (c.kind === 'page') return pageError(reply, 400, c.message);
     if (c.kind === 'redirect')
       return reply.redirect(
@@ -160,7 +240,6 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
         }),
         302,
       );
-    const session = await sessionOf(req.headers.cookie);
     if (!session) return reply.redirect(`/login?next=${encodeURIComponent(req.url)}`, 302);
     const { req: r } = c;
     return html(
@@ -169,7 +248,7 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
       consentHeaders(new URL(r.redirectUri).origin),
       consentPage({
         clientName: r.clientName,
-        clientNote: 'unverified, self-registered',
+        clientNote: r.clientNote,
         redirectUri: r.redirectUri,
         email: session.user.email,
         fields: { ...fieldsOf(r), csrf: csrfToken(csrfKey, session.sid, r) },
@@ -182,7 +261,12 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
     if (!isForm(req))
       return pageError(reply, 415, 'This form must be posted from the consent page.');
     const f = (req.body ?? {}) as Fields;
-    const c = await check(o, f);
+    const session = await sessionOf(req.headers.cookie);
+    const loaded = await loadClient(req, f, session !== null);
+    if (loaded.kind === 'page') return pageError(reply, loaded.status, loaded.message);
+    if (loaded.kind === 'sign-in')
+      return pageError(reply, 403, 'Your sign-in ended. Open the app again to start over.');
+    const c = check(o, f, loaded.clientId, loaded.client);
     if (c.kind === 'page') return pageError(reply, 400, c.message);
     if (c.kind === 'redirect')
       return reply.redirect(
@@ -195,7 +279,6 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
         303,
       );
     const { req: r } = c;
-    const session = await sessionOf(req.headers.cookie);
     if (!session) return reply.redirect(`/login?next=${encodeURIComponent(authorizeUrl(r))}`, 303);
     const sent = one(f, 'csrf');
     if (!sent || !sameToken(sent, csrfToken(csrfKey, session.sid, r)))

@@ -32,12 +32,13 @@ describe.skipIf(!base)('OAuth authorization server metadata (needs TEST_DATABASE
       token_endpoint_auth_methods_supported: ['none'],
       code_challenge_methods_supported: ['S256'],
       authorization_response_iss_parameter_supported: true,
+      client_id_metadata_document_supported: true,
     });
   });
 
-  it('client_id_metadata_document_supported is absent until CIMD lands', async () => {
+  it('advertises Client ID Metadata Documents, as the boolean true', async () => {
     const body = (await call(on.app, 'GET', META)).json();
-    expect('client_id_metadata_document_supported' in body).toBe(false);
+    expect(body.client_id_metadata_document_supported).toBe(true);
   });
 
   it('answers a foreign Origin with Access-Control-Allow-Origin * and no credentials', async () => {

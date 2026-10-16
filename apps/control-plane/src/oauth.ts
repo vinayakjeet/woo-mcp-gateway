@@ -1,5 +1,5 @@
 import rateLimit from '@fastify/rate-limit';
-import { errorCode } from '@woo/core';
+import { errorCode, type PinnedFetch } from '@woo/core';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import {
@@ -31,6 +31,10 @@ export type OAuthOptions = {
   jwtKey: string;
   // The gateway URL: the only `resource` a request may name (RFC 8707).
   resource: string;
+  // Fetches a client's metadata document (CIMD). Production uses the pinned fetch from core with
+  // https only; tests pass a stub.
+  cimdFetch?: PinnedFetch;
+  cimdTimeoutMs?: number;
 };
 
 export const pathOf = (url: string): string => url.split('?', 1)[0] ?? '';
