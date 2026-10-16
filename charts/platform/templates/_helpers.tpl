@@ -63,6 +63,11 @@ capabilities:
 {{- end -}}
 {{- end }}
 
+{{/* The OAuth issuer is the app origin with no path, so its metadata sits at the well-known root. */}}
+{{- define "platform.oauthIssuer" -}}
+{{ printf "%s://app.%s" .Values.global.scheme .Values.global.domain }}
+{{- end }}
+
 {{- define "platform.gatewayUrl" -}}
 {{ printf "%s://mcp.%s/mcp" .Values.global.scheme .Values.global.domain }}
 {{- end }}

@@ -14,6 +14,10 @@ agent:
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b
 
+# OAuth for MCP clients (SPEC 24, M13). Plain http here, so the Claude Code proof is on the VM.
+oauth:
+  enabled: true
+
 # Stores from the dashboard (SPEC 18, M9).
 gateway:
   # Roomy for demos and e2e; the chart default is 60.

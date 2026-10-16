@@ -113,6 +113,12 @@ spec:
               value: {{ include "platform.gatewayUrl" . | quote }}
             - name: ALLOW_INSECURE_UPSTREAMS
               value: {{ .Values.gateway.allowInsecureUpstreams | default false | toString | quote }}
+            - name: OAUTH_ENABLED
+              value: {{ .Values.oauth.enabled | default false | toString | quote }}
+            {{- if .Values.oauth.enabled }}
+            - name: OAUTH_ISSUER
+              value: {{ include "platform.oauthIssuer" . | quote }}
+            {{- end }}
             - name: APP_VERSION
               value: {{ .Values.global.imageTag | quote }}
             - name: PROVISIONER_ENABLED

@@ -27,3 +27,12 @@ spec:
                 name: gateway
                 port:
                   number: 8080
+          {{- if .Values.oauth.enabled }}
+          - path: /.well-known/oauth-protected-resource
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+          {{- end }}
