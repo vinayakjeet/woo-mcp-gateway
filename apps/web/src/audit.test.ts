@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auditQuery, EMPTY_FILTERS, outcomeTone } from './audit';
+import { auditEvent, auditQuery, EMPTY_FILTERS, outcomeTone } from './audit';
 
 describe('auditQuery', () => {
   it('leaves out empty filters', () => {
@@ -31,4 +31,41 @@ describe('outcomeTone', () => {
     ['timeout', 'bad'],
     ['upstream_error', 'bad'],
   ])('%s is %s', (o, tone) => expect(outcomeTone(o)).toBe(tone));
+});
+
+describe('auditEvent', () => {
+  const row = (over: Record<string, unknown>) => ({
+    toolName: 'fx__get_info',
+    via: 'api_key',
+    serverSlug: 'fx',
+    errorMessage: null,
+    ...over,
+  });
+  it('a grant revoke is an event: server OAuth, a capitalised neutral detail', () => {
+    expect(
+      auditEvent(
+        row({
+          toolName: 'oauth_grant_revoked',
+          via: 'oauth',
+          serverSlug: '',
+          errorMessage: 'revoked by admin@example.com',
+        }),
+      ),
+    ).toEqual({ isEvent: true, server: 'OAuth', detail: 'Revoked by admin@example.com' });
+  });
+  it('a tool call keeps its server and has no detail, and its error stays an error', () => {
+    expect(auditEvent(row({ errorMessage: 'boom' }))).toEqual({
+      isEvent: false,
+      server: 'fx',
+      detail: null,
+    });
+  });
+  it('only an oauth row with no server slug counts, so a server named like the tool does not', () => {
+    expect(auditEvent(row({ toolName: 'oauth_grant_revoked', via: 'api_key' })).isEvent).toBe(
+      false,
+    );
+    expect(
+      auditEvent(row({ toolName: 'oauth_grant_revoked', via: 'oauth', serverSlug: 'fx' })).isEvent,
+    ).toBe(false);
+  });
 });
