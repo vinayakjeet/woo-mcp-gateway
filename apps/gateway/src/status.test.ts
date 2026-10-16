@@ -89,6 +89,25 @@ describe.skipIf(!TEST_DATABASE_URL)('StatusWriter', () => {
     await follower.close();
   });
 
+  it('sends tools_changed on a state change only, from the leader only', async () => {
+    const { leader, follower } = await pair();
+    const listen = new pg.Client({ connectionString: url });
+    const got: string[] = [];
+    await listen.connect();
+    listen.on('notification', (n) => got.push(n.payload ?? 'none'));
+    await listen.query('LISTEN tools_changed');
+
+    await leader.write(up(), true);
+    await leader.write(up({ toolCount: 4 }), false);
+    await follower.write(up({ state: 'unreachable' }), true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(got).toEqual(['']);
+
+    await listen.end();
+    await leader.close();
+    await follower.close();
+  });
+
   it('stores the error kind and message', async () => {
     const { leader, follower } = await pair();
     await leader.write(

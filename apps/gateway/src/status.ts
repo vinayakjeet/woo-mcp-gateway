@@ -56,7 +56,11 @@ export class StatusWriter {
       .insert(schema.mcpServerStatus)
       .values({ serverId: u.record.id, ...values })
       .onConflictDoUpdate({ target: schema.mcpServerStatus.serverId, set: values });
-    if (changed) await this.o.db.execute(sql`select pg_notify('status_changed', ${u.record.id})`);
+    if (changed) {
+      await this.o.db.execute(sql`select pg_notify('status_changed', ${u.record.id})`);
+      // A server that went down or came back changes which tools clients can use.
+      await this.o.db.execute(sql`select pg_notify('tools_changed', '')`);
+    }
   }
 
   async close(): Promise<void> {

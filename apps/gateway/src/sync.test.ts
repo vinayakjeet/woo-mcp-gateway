@@ -3,7 +3,7 @@ import type { Tool } from '@modelcontextprotocol/client';
 import { encryptSecret } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { and, eq } from 'drizzle-orm';
-import type pg from 'pg';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { definitionHash, loadServers, upsertTools, type LoadedServer } from './registry-db.js';
 import { PolicyStore } from './policies.js';
@@ -311,6 +311,7 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
       const registry = new FakeRegistry();
       const auth = { purge: vi.fn(), purgeAll: vi.fn() };
       const policies = new PolicyStore(db);
+      const onToolsChanged = vi.fn();
       const sync = new GatewaySync({
         databaseUrl: url,
         db,
@@ -319,10 +320,11 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
         auth,
         policies,
         log: quietLog,
+        onToolsChanged,
         reconnectMinMs: 20,
         reconnectMaxMs: 100,
       });
-      return { registry, auth, policies, sync };
+      return { registry, auth, policies, sync, onToolsChanged };
     }
     const notify = (channel: string, payload: string) =>
       pool.query('select pg_notify($1, $2)', [channel, payload]);
@@ -468,6 +470,56 @@ describe.skipIf(!TEST_DATABASE_URL)('registry from Postgres', () => {
         },
       );
       expect(auth.purgeAll).toHaveBeenCalled();
+      await sync.close();
+    });
+
+    it('tells the listen streams on a tools_changed NOTIFY, which carries no payload', async () => {
+      const { auth, onToolsChanged, sync } = start();
+      await sync.start();
+      await notify('tools_changed', '');
+      await vi.waitFor(() => expect(onToolsChanged).toHaveBeenCalledTimes(1));
+      expect(auth.purge).not.toHaveBeenCalled();
+      await sync.close();
+    });
+
+    it('tells the listen streams once after the listen connection comes back, since NOTIFYs may be lost', async () => {
+      const { onToolsChanged, sync } = start();
+      await sync.start();
+      expect(onToolsChanged).not.toHaveBeenCalled();
+      await pool.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where application_name = 'gateway-listen' and datname = current_database()",
+      );
+      await vi.waitFor(() => expect(onToolsChanged).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      await new Promise((r) => setTimeout(r, 300));
+      expect(onToolsChanged).toHaveBeenCalledTimes(1);
+      await sync.close();
+    });
+
+    it('sends tools_changed only when the stored tool set changes', async () => {
+      const id = ids.shop2!;
+      const listen = new pg.Client({ connectionString: url });
+      const got: string[] = [];
+      await listen.connect();
+      listen.on('notification', (n) => got.push(n.payload ?? 'none'));
+      await listen.query('LISTEN tools_changed');
+      const upstream = (tools: Tool[]) => ({
+        record: { id, slug: 'shop2', kind: 'store' } as ServerRecord,
+        tools: () => tools,
+      });
+      const settle = () => new Promise((r) => setTimeout(r, 200));
+      const { sync } = start();
+      await sync.start();
+      sync.persistTools(upstream([tool('n1')]));
+      await vi.waitFor(() => expect(got).toHaveLength(1));
+      sync.persistTools(upstream([tool('n1')]));
+      // title is outside the definition hash: nothing is written, so nothing is announced.
+      sync.persistTools(upstream([tool('n1', { title: 'N' })]));
+      await settle();
+      expect(got).toHaveLength(1);
+      sync.persistTools(upstream([tool('n1', { description: 'other text' })]));
+      await vi.waitFor(() => expect(got).toHaveLength(2));
+      expect(got).toEqual(['', '']);
+      await listen.end();
       await sync.close();
     });
 

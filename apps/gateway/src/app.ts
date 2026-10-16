@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { OAUTH_SCOPE, errorCode, requestIdOptions } from '@woo/core';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import { ListenHub } from './listen.js';
 import { createGatewayServer, type GatewayServerOptions } from './mcp.js';
 import { parseToolModeOverride } from './search.js';
 import type { GatewayMetrics } from './metrics.js';
@@ -27,12 +28,65 @@ export type GatewayAppOptions = {
   oauth?: { resource: string; issuer: string };
   replica: string;
   allowedOrigins: string[];
+  // Owns the subscriptions/listen streams of this replica. Tests and main.ts bring their own.
+  listen?: ListenHub;
   logger?: FastifyServerOptions['logger'];
   // A seam for tests that watch which options the server gets.
   createServer?: (options: GatewayServerOptions) => ReturnType<typeof createGatewayServer>;
 };
 
 const PRM_ROOT = '/.well-known/oauth-protected-resource';
+
+// Largest body read ahead to see whether a request is a listen. The SDK refuses more than 4 MiB itself.
+const PEEK_LIMIT = 4 * 1024 * 1024;
+
+type MutableReq = IncomingMessage & { auth?: AuthInfo };
+
+// A listen request must be counted before the SDK serves it, and the SDK reads the body itself. So the
+// body is read here (bounded), looked at, and handed on as a replay: the SDK still parses it and still
+// owns every parse error. Only a body that fits the limit can open a stream, so only those are looked at.
+async function peekListen(raw: MutableReq): Promise<{ req: MutableReq; listen: boolean }> {
+  const it = raw[Symbol.asyncIterator]();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let ended = false;
+  while (size <= PEEK_LIMIT) {
+    const r = await it.next();
+    if (r.done) {
+      ended = true;
+      break;
+    }
+    const chunk = Buffer.from(r.value as Uint8Array);
+    chunks.push(chunk);
+    size += chunk.length;
+  }
+  const replay = {
+    method: raw.method,
+    url: raw.url,
+    headers: raw.headers,
+    auth: raw.auth,
+    async *[Symbol.asyncIterator]() {
+      yield* chunks;
+      while (!ended) {
+        const r = await it.next();
+        if (r.done) return;
+        yield r.value as Uint8Array;
+      }
+    },
+  } as unknown as MutableReq;
+  if (!ended) return { req: replay, listen: false };
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return { req: replay, listen: false };
+  }
+  const isListen = (m: unknown) =>
+    typeof m === 'object' &&
+    m !== null &&
+    (m as { method?: unknown }).method === 'subscriptions/listen';
+  return { req: replay, listen: Array.isArray(body) ? body.some(isListen) : isListen(body) };
+}
 
 const rpcError = (code: number, message: string) => ({
   jsonrpc: '2.0',
@@ -86,6 +140,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
     }
   }
 
+  const hub = o.listen ?? new ListenHub({ authenticate: o.authenticate, log });
   const handler = createMcpHandler(
     (ctx) => {
       const principal = ctx.authInfo?.extra?.principal as Principal | undefined;
@@ -102,9 +157,11 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         requestId: ctx.authInfo?.extra?.requestId as string | undefined,
         replica: o.replica,
         log,
+        era: ctx.era,
       });
     },
     {
+      bus: hub,
       keepAliveMs: 25_000,
       onerror: (err) => log.warn({ code: errorCode(err) }, 'mcp request rejected'),
     },
@@ -164,16 +221,32 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
         scopes: [],
         extra: { principal, toolModeOverride, requestId: req.id },
       };
-      (req.raw as IncomingMessage & { auth?: AuthInfo }).auth = auth;
+      const raw = req.raw as MutableReq;
+      raw.auth = auth;
+      let served = raw;
+      if (req.method === 'POST') {
+        const peek = await peekListen(raw);
+        served = peek.req;
+        // The cap is per key, or per user for a token that has no key. It is answered before the stream starts.
+        const subject = principal.apiKeyId ?? `user:${principal.userId}`;
+        if (peek.listen && !hub.open(subject, req.headers.authorization ?? '', reply.raw)) {
+          return reply
+            .code(429)
+            .header('retry-after', '60')
+            .send(rpcError(-32000, 'Too many open listen streams for this key'));
+        }
+      }
       reply.raw.setHeader('x-accel-buffering', 'no');
       reply.hijack();
-      await mcp(req.raw, reply.raw).catch((err: unknown) =>
+      await mcp(served, reply.raw).catch((err: unknown) =>
         log.error({ code: errorCode(err) }, 'mcp handler failed'),
       );
     },
   });
 
   app.addHook('onClose', async () => {
+    // An injected hub belongs to the caller, who may still be using it.
+    if (!o.listen) hub.close();
     await handler.close();
   });
 
