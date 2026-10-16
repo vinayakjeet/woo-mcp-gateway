@@ -3,7 +3,7 @@
 #   S=<scratchpad> scripts/hosted-check.sh create <slug> [NAME=VALUE ...]
 #   S=<scratchpad> scripts/hosted-check.sh check|delete|offline <slug>
 #   S=<scratchpad> scripts/hosted-check.sh all
-# create applies the demo image (fx-mcp:dev) with optional plain env and waits for ready. check
+# create applies the demo image (HOSTED_IMAGE, default fx-mcp:dev) with optional plain env and waits for ready. check
 # proves the tools, the pod security, the object count, the rejections and that no secret value
 # leaks. delete proves the tools vanish at once and that nothing labeled for the slug stays. all
 # runs the three on slug fx2. offline creates the server with an unroutable rates API, expects
@@ -18,6 +18,10 @@ cd "$(dirname "$0")/.."
 : "${S:?set S to a private scratch directory}"
 APP=${APP:-http://app.127.0.0.1.nip.io}
 MCP=${MCP:-http://mcp.127.0.0.1.nip.io/mcp}
+# On the VM the allowed prefix is ghcr.io/vinayakjeet/, so the demo image must come from there:
+# HOSTED_IMAGE=ghcr.io/vinayakjeet/fx-mcp:<version>-<sha>. The refusal rows use the same repository.
+HOSTED_IMAGE=${HOSTED_IMAGE:-fx-mcp:dev}
+HOSTED_REPO=${HOSTED_IMAGE%:*}
 NS=mcp-hosted
 umask 077
 mkdir -p "$S"
@@ -60,8 +64,8 @@ create() { # slug [NAME=VALUE ...] as plain env
   shift
   login
   head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$S/hosted-demo-secret"
-  jq -n --arg slug "$slug" --rawfile secret "$S/hosted-demo-secret" '{
-    slug: $slug, image: "fx-mcp:dev", port: 8080, path: "/mcp", cpu: "200m", memory: "128Mi",
+  jq -n --arg slug "$slug" --arg image "$HOSTED_IMAGE" --rawfile secret "$S/hosted-demo-secret" '{
+    slug: $slug, image: $image, port: 8080, path: "/mcp", cpu: "200m", memory: "128Mi",
     env: ($ARGS.positional | map(capture("^(?<name>[^=]+)=(?<value>.*)$"))),
     secretEnv: [{name: "DEMO_SECRET", value: $secret}]}' --args "$@" >"$S/hosted-create.json"
   r=$(curl -s -b "$S/hosted.jar" -H "origin: $APP" -H 'content-type: application/json' \
@@ -157,12 +161,12 @@ check() { # slug [WANT for the tool calls, see answered]
   }
   base='"slug":"hostedchk","port":8080,"cpu":"200m","memory":"128Mi"'
   [ "$(post hosted.jar "{$base,\"image\":\"busybox:1.37\"}")" = 400 ] || fail "busybox:1.37 was not refused"
-  [ "$(post hosted.jar "{$base,\"image\":\"fx-mcp:latest\"}")" = 400 ] || fail "fx-mcp:latest was not refused"
-  [ "$(post hosted.jar "{\"slug\":\"hostedchk\",\"port\":8080,\"cpu\":\"600m\",\"memory\":\"128Mi\",\"image\":\"fx-mcp:dev\"}")" = 400 ] ||
+  [ "$(post hosted.jar "{$base,\"image\":\"$HOSTED_REPO:latest\"}")" = 400 ] || fail "$HOSTED_REPO:latest was not refused"
+  [ "$(post hosted.jar "{\"slug\":\"hostedchk\",\"port\":8080,\"cpu\":\"600m\",\"memory\":\"128Mi\",\"image\":\"$HOSTED_IMAGE\"}")" = 400 ] ||
     fail "cpu 600m was not refused"
-  [ "$(post hosted.jar '{"slug":"fx","port":8080,"cpu":"200m","memory":"128Mi","image":"fx-mcp:dev"}')" = 409 ] ||
+  [ "$(post hosted.jar "{\"slug\":\"fx\",\"port\":8080,\"cpu\":\"200m\",\"memory\":\"128Mi\",\"image\":\"$HOSTED_IMAGE\"}")" = 409 ] ||
     fail "slug fx (a seeded server) was not refused with 409"
-  pass "busybox:1.37, fx-mcp:latest and cpu 600m answer 400; slug fx answers 409"
+  pass "busybox:1.37, $HOSTED_REPO:latest and cpu 600m answer 400; slug fx answers 409"
 
   # asha is the demo member (demo-reset.sh keeps her password in .notes/demo/asha.pw).
   [ -s .notes/demo/asha.pw ] || fail "no .notes/demo/asha.pw: run demo-reset.sh --reset-member-password"
@@ -171,7 +175,7 @@ check() { # slug [WANT for the tool calls, see answered]
     --data-binary @"$S/member-login.json" -w '\n%{http_code}' "$APP/api/auth/login")
   rm -f "$S/member-login.json"
   [ "$(code "$r")" = 200 ] || fail "member login gave $(code "$r")"
-  [ "$(post hosted-member.jar "{$base,\"image\":\"fx-mcp:dev\"}")" = 403 ] || fail "a member could POST /api/hosted"
+  [ "$(post hosted-member.jar "{$base,\"image\":\"$HOSTED_IMAGE\"}")" = 403 ] || fail "a member could POST /api/hosted"
   [ "$(code "$(req hosted-member.jar GET /api/hosted)")" = 403 ] || fail "a member could GET /api/hosted"
   rm -f "$S/hosted-member.jar"
   pass "a member gets 403 on GET and POST /api/hosted"

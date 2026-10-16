@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 : "${S:?set S to a private scratch directory}"
 APP=${APP:-http://app.127.0.0.1.nip.io}
 MCP=${MCP:-http://mcp.127.0.0.1.nip.io/mcp}
-DOMAIN=${DOMAIN:-127.0.0.1.nip.io}
+# The store hosts follow APP: https://app.<domain> gives https://<slug>.shop.<domain>.
+SCHEME=${APP%%://*}
+DOMAIN=${DOMAIN:-${APP#*://app.}}
 umask 077
 mkdir -p "$S"
 # shellcheck source=scripts/api-lib.sh
@@ -124,7 +126,7 @@ phase_ready() { # SLUG NAME
   pass "$1 ready $elapsed s after polling started"
   [ "$(kubectl get ns "store-$1" -o jsonpath='{.metadata.labels.urumi\.io/managed}')" = true ] ||
     fail "namespace store-$1 lacks urumi.io/managed=true"
-  [ "$(curl -s "http://$1.shop.$DOMAIN/wp-json/" | jq -r .name)" = "$2" ] || fail "storefront name of $1"
+  [ "$(curl -s "$SCHEME://$1.shop.$DOMAIN/wp-json/" | jq -r .name)" = "$2" ] || fail "storefront name of $1"
   pass "store-$1 is labeled and its storefront answers with \"$2\""
   t0=$(now)
   until out=$(tools "${1}__get_info" '{}' 2>/dev/null) && grep -qF "$2" <<<"$out"; do
