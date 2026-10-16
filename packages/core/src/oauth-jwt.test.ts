@@ -6,6 +6,7 @@ import {
   OAuthJwtError,
   oauthKeys,
   oauthSubKey,
+  parseOAuthIssuer,
   OAUTH_CSRF_INFO,
   signAccessToken,
   verifyAccessToken,
@@ -225,5 +226,35 @@ describe('access token', () => {
       `${b64([])}.${b64(claims)}.AA`,
     ])
       expect(() => verifyAccessToken(t, o)).toThrow(OAuthJwtError);
+  });
+});
+
+describe('parseOAuthIssuer', () => {
+  it('accepts an http or https origin, with a port', () => {
+    expect(parseOAuthIssuer('https://app.example.test')).toBe('https://app.example.test');
+    expect(parseOAuthIssuer('http://app.127.0.0.1.nip.io:8080')).toBe(
+      'http://app.127.0.0.1.nip.io:8080',
+    );
+  });
+  it('refuses a missing value, a path, a trailing slash, a query, userinfo and other schemes', () => {
+    for (const bad of [
+      undefined,
+      '',
+      'https://app.example.test/',
+      'https://app.example.test/oauth',
+      'https://app.example.test?x=1',
+      'https://app.example.test#frag',
+      'https://user:secretpw@app.example.test',
+      'https://app.example.test:443',
+      'app.example.test',
+      'ftp://app.example.test',
+    ]) {
+      expect(() => parseOAuthIssuer(bad)).toThrow('OAUTH_ISSUER');
+    }
+  });
+  it('never puts the value in the message', () => {
+    expect(() => parseOAuthIssuer('https://user:secretpw@app.example.test')).toThrow(
+      /^(?!.*secretpw)/s,
+    );
   });
 });

@@ -36,6 +36,22 @@ export type AccessClaims = {
 
 export class OAuthJwtError extends Error {}
 
+// The issuer is compared as a string with the token's iss and sent back as the RFC 9207 iss
+// parameter, so it must be one canonical form: an origin with no path, query or userinfo.
+// Messages name the variable only, never the value.
+export function parseOAuthIssuer(raw: string | undefined): string {
+  if (!raw) throw new Error('OAUTH_ISSUER is required when OAUTH_ENABLED is true');
+  const bad = new Error('OAUTH_ISSUER must be an origin such as https://app.example.com');
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw bad;
+  }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin !== raw) throw bad;
+  return raw;
+}
+
 const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const nowS = () => Math.floor(Date.now() / 1000);
 

@@ -1,5 +1,5 @@
 import { hostname } from 'node:os';
-import { parseKek } from '@woo/core';
+import { parseKek, parseOAuthIssuer } from '@woo/core';
 
 export type GatewayConfig = {
   databaseUrl: string;
@@ -36,20 +36,6 @@ function parseRateLimit(raw: string | undefined): number {
   return n;
 }
 
-// An issuer is an origin with no path, query or userinfo, so it can be compared as a string.
-function parseIssuer(raw: string | undefined): string {
-  if (!raw) throw new Error('OAUTH_ISSUER is required when OAUTH_ENABLED is true');
-  const bad = new Error('OAUTH_ISSUER must be an origin such as https://app.example.com');
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    throw bad;
-  }
-  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin !== raw) throw bad;
-  return raw;
-}
-
 // Errors name variables only, never values.
 export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
   const missing = REQUIRED.filter((n) => !env[n]);
@@ -71,6 +57,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     allowInsecureUpstreams: env.ALLOW_INSECURE_UPSTREAMS === 'true',
     rateLimitPerMinute: parseRateLimit(env.RATE_LIMIT_PER_MINUTE),
     oauthEnabled,
-    oauthIssuer: oauthEnabled ? parseIssuer(env.OAUTH_ISSUER) : null,
+    oauthIssuer: oauthEnabled ? parseOAuthIssuer(env.OAUTH_ISSUER) : null,
   };
 }
