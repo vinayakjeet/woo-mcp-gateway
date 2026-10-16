@@ -57,4 +57,43 @@ describe('loadConfig', () => {
       true,
     );
   });
+
+  it('OAUTH_ENABLED is true only for the exact string true', () => {
+    const issuer = 'https://app.example.test';
+    expect(loadConfig(full)).toMatchObject({ oauthEnabled: false, oauthIssuer: null });
+    for (const v of ['TRUE', 'True', '1', 'yes', 'false', ' true', '']) {
+      expect(loadConfig({ ...full, OAUTH_ENABLED: v, OAUTH_ISSUER: issuer }).oauthEnabled).toBe(
+        false,
+      );
+    }
+    expect(loadConfig({ ...full, OAUTH_ENABLED: 'true', OAUTH_ISSUER: issuer })).toMatchObject({
+      oauthEnabled: true,
+      oauthIssuer: issuer,
+    });
+  });
+
+  it('OAUTH_ISSUER is required when enabled and must be an origin with no path', () => {
+    const on = { ...full, OAUTH_ENABLED: 'true' };
+    expect(() => loadConfig(on)).toThrow('OAUTH_ISSUER');
+    for (const bad of [
+      'https://app.example.test/',
+      'https://app.example.test/oauth',
+      'https://app.example.test?x=1',
+      'https://user:pw@app.example.test',
+      'app.example.test',
+      'ftp://app.example.test',
+    ]) {
+      expect(() => loadConfig({ ...on, OAUTH_ISSUER: bad })).toThrow('OAUTH_ISSUER');
+    }
+    expect(
+      loadConfig({ ...on, OAUTH_ISSUER: 'http://app.127.0.0.1.nip.io:8080' }).oauthIssuer,
+    ).toBe('http://app.127.0.0.1.nip.io:8080');
+  });
+
+  it('never prints a bad OAUTH_ISSUER and ignores it while oauth is off', () => {
+    expect(() =>
+      loadConfig({ ...full, OAUTH_ENABLED: 'true', OAUTH_ISSUER: 'https://u:secretpw@x.test' }),
+    ).toThrow(/^(?!.*secretpw)/s);
+    expect(loadConfig({ ...full, OAUTH_ISSUER: 'not a url' }).oauthIssuer).toBeNull();
+  });
 });

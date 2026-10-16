@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { encryptSecret, generateApiKey } from '@woo/core';
+import { encryptSecret, generateApiKey, oauthKeys, signAccessToken } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { eq, inArray } from 'drizzle-orm';
 import type pg from 'pg';
@@ -12,6 +12,8 @@ import type { Db } from './types.js';
 
 const PEPPER = 'main-pepper';
 const kek = randomBytes(32);
+const ISSUER = 'http://app.test';
+const AUDIENCE = 'http://mcp.test/mcp';
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 
 describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
@@ -24,6 +26,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
   const mainAuth: string[] = [];
   let key: string;
   let keyId: string;
+  let userId: string;
   let fxId: string;
   let mcpUrl: URL;
 
@@ -55,6 +58,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       .returning({ id: schema.apiKeys.id });
     key = k.key;
     keyId = kr!.id;
+    userId = u!.id;
     const servers = await db
       .insert(schema.mcpServers)
       .values([
@@ -83,13 +87,15 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
         kek,
         pepper: PEPPER,
         jwtKey: 'jwt',
-        audience: 'http://mcp.test/mcp',
+        audience: AUDIENCE,
         replica: 'gw-e2e-0',
         allowedOrigins: [],
         port: 0,
         healthPort: 0,
         allowInsecureUpstreams: false,
         rateLimitPerMinute: 60,
+        oauthEnabled: true,
+        oauthIssuer: ISSUER,
       },
       { host: '127.0.0.1', logger: false, upstream: { healthIntervalMs: 200 } },
     );
@@ -151,6 +157,55 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
       serverSlug: 'main',
     });
     expect(row?.argsSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('serves resource metadata and accepts an OAuth access token, audited via oauth', async () => {
+    const base = `http://127.0.0.1:${gw.port}`;
+    const prm = await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json();
+    expect(prm).toMatchObject({ resource: AUDIENCE, authorization_servers: [ISSUER] });
+    const noToken = await fetch(`${base}/mcp`, { method: 'POST' });
+    expect(noToken.status).toBe(401);
+    expect(noToken.headers.get('www-authenticate')).toContain(
+      'resource_metadata="http://mcp.test/.well-known/oauth-protected-resource"',
+    );
+
+    // The control-plane signs with the same JWT_SIGNING_KEY the gateway was started with ('jwt').
+    const token = signAccessToken({
+      keys: oauthKeys('jwt'),
+      iss: ISSUER,
+      aud: AUDIENCE,
+      sub: userId,
+      clientId: 'dcr_main_test',
+      scope: 'mcp:tools',
+    });
+    const c = new Client({ name: 'e2e-oauth', version: '0.0.0' });
+    await c.connect(
+      new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }),
+    );
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await c.listTools(undefined, { cacheMode: 'bypass' })).tools.length,
+        ).toBeGreaterThan(0),
+      { timeout: 5000 },
+    );
+    await c.callTool({ name: 'fx__get_info', arguments: {} });
+    await c.close();
+    const rows = await db
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.via, 'oauth'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ userId, apiKeyId: null, exposedName: 'fx__get_info' });
+
+    const bad = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer eyJhbGciOiJub25lIn0.e30.' },
+    });
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get('www-authenticate')).toContain('error="invalid_token"');
   });
 
   it('stores meta_tool on search and call_tool audit rows', async () => {

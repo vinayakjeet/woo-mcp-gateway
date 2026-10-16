@@ -18,9 +18,10 @@ const principal = (p: Partial<Principal>): Principal => ({
 });
 
 describe('rateSubject', () => {
-  it('is key:<id> for a key and user:<id> for the agent', () => {
+  it('is key:<id> for a key and user:<id> for the agent and for OAuth', () => {
     expect(rateSubject(principal({ via: 'api_key', apiKeyId: 'k9' }))).toBe('key:k9');
     expect(rateSubject(principal({ via: 'agent', apiKeyId: null, userId: 'u7' }))).toBe('user:u7');
+    expect(rateSubject(principal({ via: 'oauth', apiKeyId: null, userId: 'u8' }))).toBe('user:u8');
   });
 });
 

@@ -26,7 +26,8 @@ export class RateLimiter {
 }
 
 export function rateSubject(p: Principal): string {
-  return p.via === 'agent' ? `user:${p.userId}` : `key:${p.apiKeyId}`;
+  // Only a key has an id of its own: agent and OAuth calls share the user's bucket.
+  return p.via === 'api_key' ? `key:${p.apiKeyId}` : `user:${p.userId}`;
 }
 
 // The seam the call path uses. The key's own limit beats the default.

@@ -51,6 +51,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     pepper: cfg.pepper,
     jwtKey: cfg.jwtKey,
     audience: cfg.audience,
+    oauthIssuer: cfg.oauthIssuer ?? undefined,
     log,
   });
   const writeStatus = (
@@ -96,6 +97,7 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
     limiter: callLimiter(new RateLimiter(db), cfg.rateLimitPerMinute),
     metrics,
     authenticate: (h) => auth.authenticate(h),
+    oauth: cfg.oauthIssuer ? { resource: cfg.audience, issuer: cfg.oauthIssuer } : undefined,
     replica: cfg.replica,
     allowedOrigins: cfg.allowedOrigins,
     logger,
