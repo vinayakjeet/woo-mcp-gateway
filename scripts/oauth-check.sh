@@ -4,6 +4,9 @@
 # call through the gateway audited via oauth, rotating refresh tokens with the 30 s grace window,
 # a disabled member, and a grep of the live logs for secrets. A throwaway member is invited, used
 # and disabled, like e2e.sh. Needs kubectl, curl, jq, openssl and pnpm.
+# One row (cimd) needs the control-plane pod to fetch a public metadata document. When the pod
+# itself reports that it could not reach the host, the row is skipped, listed on its own, and the
+# script ends INCOMPLETE with exit 3 instead of OK. Any other refusal is a failure.
 # Codes, verifiers, tokens and cookies live in mode 600 files under $S. They are sent with
 # --data-binary @file or -H @file, so none is in a process list, and none is printed.
 set -euo pipefail
@@ -20,7 +23,20 @@ start_ts=$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)
 # shellcheck source=scripts/api-lib.sh
 source scripts/api-lib.sh
 
+# A skip is not a pass: pass counts, skip lists, and only a run with no skips ends OK.
+passed=0
+skipped=()
+pass() {
+  passed=$((passed + 1))
+  echo "PASS: $*"
+}
+skip() {
+  skipped+=("$1 ($2)")
+  echo "SKIP $1 ($2)"
+}
+
 REDIRECT=http://127.0.0.1:53682/callback
+CID_Q=''
 REDIRECT_ENC=$(jq -rn --arg v "$REDIRECT" '$v | @uri')
 RES_ENC=$(jq -rn --arg v "$MCP" '$v | @uri')
 ISS_ENC=$(jq -rn --arg v "$APP" '$v | @uri')
@@ -81,19 +97,30 @@ browser_origin() {
     echo "$APP"
   fi
 }
-# open_consent NAME: a fresh PKCE pair, then the consent page. Sets Q (the query), ST, CSRF, and
-# BROWSER_ORIGIN and BROWSER_REFERER, which a browser would send with the form post.
-open_consent() {
+# consent_get NAME: a fresh PKCE pair, then the authorize request. Sets Q (the query), ST and
+# consent_status, and keeps the page in oc-az.html. It never fails on the status, so a row can
+# decide what a refusal means.
+consent_get() {
   rand_url 32 >"$S/oc-$1.verifier"
   ST=$(rand_url 12)
-  Q="response_type=code&client_id=$CID&redirect_uri=$REDIRECT_ENC&code_challenge=$(challenge_of "$S/oc-$1.verifier")&code_challenge_method=S256&scope=mcp%3Atools&resource=$RES_ENC&state=$ST"
-  [ "$(curl -s -D "$S/oc-az.hdr" -o "$S/oc-az.html" -w '%{http_code}' -b "$S/oc-member.jar" "$APP/oauth/authorize?$Q")" = 200 ] ||
-    fail "consent page for $1"
+  Q="response_type=code&client_id=${CID_Q:-$CID}&redirect_uri=$REDIRECT_ENC&code_challenge=$(challenge_of "$S/oc-$1.verifier")&code_challenge_method=S256&scope=mcp%3Atools&resource=$RES_ENC&state=$ST"
+  consent_status=$(curl -s -D "$S/oc-az.hdr" -o "$S/oc-az.html" -w '%{http_code}' -b "$S/oc-member.jar" "$APP/oauth/authorize?$Q") ||
+    consent_status=000
+}
+# consent_parse: after a 200 from consent_get. Sets CSRF, BROWSER_ORIGIN and BROWSER_REFERER, which
+# a browser would send with the form post.
+consent_parse() {
   CSRF=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$S/oc-az.html")
   [ -n "$CSRF" ] || fail "no csrf field on the consent page"
   BROWSER_ORIGIN=$(browser_origin "$S/oc-az.hdr")
   BROWSER_REFERER=''
   [ "$(hdr "$S/oc-az.hdr" referrer-policy)" = no-referrer ] || BROWSER_REFERER="$APP/oauth/authorize?$Q"
+}
+# open_consent NAME: consent_get and consent_parse, failing unless the page is a 200.
+open_consent() {
+  consent_get "$1"
+  [ "$consent_status" = 200 ] || fail "consent page for $1 answered $consent_status"
+  consent_parse
 }
 # post_consent FORM_SUFFIX [ORIGIN]: the consent form, with the headers Chrome sends for it
 # (Origin and Referer from the page's policy; it adds no Sec-Fetch-* to a plain-http host that is
@@ -150,9 +177,10 @@ pass "protected resource metadata at both paths, with open CORS"
 jq -e --arg a "$APP" '.issuer == $a and .authorization_endpoint == ($a + "/oauth/authorize")
   and .token_endpoint == ($a + "/oauth/token") and .registration_endpoint == ($a + "/oauth/register")
   and .code_challenge_methods_supported == ["S256"] and .token_endpoint_auth_methods_supported == ["none"]
-  and .authorization_response_iss_parameter_supported == true' "$S/oc-b" >/dev/null || fail "AS metadata body"
+  and .authorization_response_iss_parameter_supported == true
+  and .client_id_metadata_document_supported == true' "$S/oc-b" >/dev/null || fail "AS metadata body"
 [ "$(hdr "$S/oc-h" access-control-allow-origin)" = '*' ] || fail "AS metadata has no open CORS"
-pass "authorization server metadata: issuer $APP, code_challenge_methods_supported exactly S256"
+pass "authorization server metadata: issuer $APP, code_challenge_methods_supported exactly S256, CIMD supported"
 
 pre=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS "$APP/oauth/token" -H 'origin: http://localhost:6274' \
   -H 'access-control-request-method: POST' -H 'access-control-request-headers: content-type' -D "$S/oc-h")
@@ -323,6 +351,69 @@ sleep 31
   [ "$(tok_error)" = invalid_grant ] || fail "the live token survived a reuse after 31 s"
 pass "a reuse 31 s after the rotation is invalid_grant and revokes the whole grant"
 
+# 10b. Client ID Metadata Documents: the client_id is the URL of a document on the internet. The
+# control-plane fetches it over its public 443 egress. Claude Code publishes one with loopback
+# redirect URIs, so it is a real document that needs no setup here. Whether the row can run is
+# decided by the control-plane pod, not by this machine: the authorize page is requested, and when
+# it refuses, the reason code the control-plane logged says why.
+CIMD_URL=${CIMD_URL:-https://claude.ai/oauth/claude-code-client-metadata}
+cimd_host=$(sed -E 's|^https://([^/:?]+).*|\1|' <<<"$CIMD_URL")
+cp_pod=$(kubectl -n platform get pod -l app.kubernetes.io/name=control-plane -o jsonpath='{.items[0].metadata.name}')
+[ -n "$cp_pod" ] || fail "no control-plane pod"
+# pod_reach HOST PORT: open, refused, timeout or error <code>, from inside the control-plane
+# container (its image has Node and no curl). Same helper as in netpol-check.sh.
+pod_reach() {
+  kubectl -n platform exec "$cp_pod" -c control-plane -- node -e '
+const net = process.getBuiltinModule("node:net");
+const s = net.connect({ host: process.argv[1], port: Number(process.argv[2]), timeout: 3000 });
+s.on("connect", () => { console.log("open"); s.destroy(); });
+s.on("timeout", () => { console.log("timeout"); s.destroy(); });
+s.on("error", (e) => console.log(e.code === "ECONNREFUSED" ? "refused" : "error " + e.code));
+' "$1" "$2"
+}
+# cimd_refusal SINCE HOST: the reason code of the newest "client metadata refused" line the
+# control-plane logged for HOST since SINCE, or nothing. The log has the code and the host, never
+# the URL. The line can trail the response by a moment, so it is looked for three times.
+cimd_refusal() {
+  local n r=''
+  for n in 1 2 3; do
+    r=$(kubectl -n platform logs "$cp_pod" -c control-plane --tail=-1 --since-time="$1" |
+      jq -R -r --arg h "$2" 'fromjson? | select(.msg == "client metadata refused" and .host == $h) | .reason' | tail -n 1)
+    [ -n "$r" ] && break
+    sleep 1
+  done
+  printf '%s' "$r"
+}
+CID_DCR=$CID
+CID=$CIMD_URL
+CID_Q=$(jq -rn --arg v "$CIMD_URL" '$v | @uri')
+cimd_since=$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)
+consent_get cimd
+if [ "$consent_status" = 200 ]; then
+  consent_parse
+  grep -qF -- "metadata hosted at $cimd_host" "$S/oc-az.html" ||
+    fail "the consent page for a CIMD client does not name the host $cimd_host"
+  ! grep -q 'unverified, self-registered' "$S/oc-az.html" || fail "a CIMD client is labelled as self-registered"
+  grant_code cimd
+  [ "$(redeem cimd)" = 200 ] || fail "the token endpoint refused the CIMD client_id ($(tok_error))"
+  [ "$(psql_one "select metadata_url from oauth_clients where client_id = '$CIMD_URL'")" = "$CIMD_URL" ] ||
+    fail "the CIMD client was not stored with its metadata_url"
+  pass "a client named by a metadata document URL ($cimd_host): fetched by the control-plane, the consent page names the host, and the token endpoint accepts the URL as client_id"
+else
+  reason=$(cimd_refusal "$cimd_since" "$cimd_host")
+  case "$reason" in
+    fetch | timeout)
+      # The pod could not reach the host. Only that is a skip. 1.1.1.1 tells a dead host from no
+      # public 443 at all; netpol-check.sh platform fails if the egress policy is the cause.
+      skip cimd "the control-plane pod could not fetch the document from $cimd_host: reason $reason; 1.1.1.1:443 from the pod is $(pod_reach 1.1.1.1 443)"
+      ;;
+    '') fail "the authorize page for the CIMD client answered $consent_status and the control-plane logged no refusal for $cimd_host" ;;
+    *) fail "the control-plane refused the metadata document of $cimd_host: reason $reason (the page answered $consent_status)" ;;
+  esac
+fi
+CID=$CID_DCR
+CID_Q=''
+
 # 11. A disabled member, a tampered token, and the API key path.
 grant_code d1
 [ "$(redeem d1)" = 200 ] || fail "third grant"
@@ -389,4 +480,11 @@ BCID=$(jq -r .client_id "$S/oc-b")
 bch=$(rand_url 32 | openssl dgst -sha256 -binary | base64 -w0 | tr '+/' '-_' | tr -d '=')
 echo "Browser check URL (a fresh client, no token in it):"
 echo "$APP/oauth/authorize?response_type=code&client_id=$BCID&redirect_uri=$REDIRECT_ENC&code_challenge=$bch&code_challenge_method=S256&scope=mcp%3Atools&resource=$RES_ENC&state=browser-check"
+if [ "${#skipped[@]}" -gt 0 ]; then
+  echo "SKIPPED (${#skipped[@]}), not counted as passed:"
+  printf '  %s\n' "${skipped[@]}"
+  echo "INCOMPLETE: $passed passed, ${#skipped[@]} skipped, 0 failed"
+  exit 3
+fi
+echo "$passed passed, 0 skipped"
 echo OK
