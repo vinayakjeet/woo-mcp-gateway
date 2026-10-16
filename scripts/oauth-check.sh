@@ -65,7 +65,24 @@ tok() {
 }
 tok_error() { jq -r '.error // empty' "$S/oc-tok.out"; }
 
-# open_consent NAME: a fresh PKCE pair, then the consent page. Sets Q (the query), ST and CSRF.
+# browser_origin HEADERFILE: the Origin a browser sends when a form on that page posts. A form post
+# is a navigation, not a CORS request, so the page's own headers decide (Fetch spec, "append a
+# request Origin header"): no-referrer, or a CSP sandbox without allow-same-origin, makes it "null".
+# curl would send whatever it is told, which is how a bad Referrer-Policy once passed this script.
+browser_origin() {
+  local policy csp
+  policy=$(hdr "$1" referrer-policy)
+  csp=$(hdr "$1" content-security-policy)
+  if [ "$policy" = no-referrer ]; then
+    echo null
+  elif grep -qE '(^|;)[[:space:]]*sandbox' <<<"$csp" && ! grep -q allow-same-origin <<<"$csp"; then
+    echo null
+  else
+    echo "$APP"
+  fi
+}
+# open_consent NAME: a fresh PKCE pair, then the consent page. Sets Q (the query), ST, CSRF, and
+# BROWSER_ORIGIN and BROWSER_REFERER, which a browser would send with the form post.
 open_consent() {
   rand_url 32 >"$S/oc-$1.verifier"
   ST=$(rand_url 12)
@@ -74,12 +91,21 @@ open_consent() {
     fail "consent page for $1"
   CSRF=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$S/oc-az.html")
   [ -n "$CSRF" ] || fail "no csrf field on the consent page"
+  BROWSER_ORIGIN=$(browser_origin "$S/oc-az.hdr")
+  BROWSER_REFERER=''
+  [ "$(hdr "$S/oc-az.hdr" referrer-policy)" = no-referrer ] || BROWSER_REFERER="$APP/oauth/authorize?$Q"
 }
-# post_consent FORM_SUFFIX [ORIGIN]: the consent form. Headers go to oc-az.hdr.
+# post_consent FORM_SUFFIX [ORIGIN]: the consent form, with the headers a browser sends for it
+# (Origin and Referer from the page's policy, Sec-Fetch-*). An explicit ORIGIN replaces them, for
+# the rows that send a foreign or null one. Headers go to oc-az.hdr, the body to oc-az.out.
 post_consent() {
+  local origin=${2-$BROWSER_ORIGIN} referer=()
+  if [ $# -lt 2 ] && [ -n "$BROWSER_REFERER" ]; then referer=(-H "referer: $BROWSER_REFERER"); fi
   printf '%s&%s' "$Q" "$1" >"$S/oc-az.body"
-  curl -s -D "$S/oc-az.hdr" -o /dev/null -w '%{http_code}' -b "$S/oc-member.jar" \
-    -H "origin: ${2:-$APP}" -H 'content-type: application/x-www-form-urlencoded' \
+  curl -s -D "$S/oc-az.hdr" -o "$S/oc-az.out" -w '%{http_code}' -b "$S/oc-member.jar" \
+    -H "origin: $origin" ${referer[@]+"${referer[@]}"} -H 'sec-fetch-site: same-origin' \
+    -H 'sec-fetch-mode: navigate' -H 'sec-fetch-dest: document' \
+    -H 'content-type: application/x-www-form-urlencoded' \
     --data-binary @"$S/oc-az.body" "$APP/oauth/authorize"
 }
 # grant_code NAME: consent and Approve. Leaves oc-NAME.verifier and oc-NAME.code.
@@ -212,9 +238,18 @@ case "$csp" in *"frame-ancestors 'none'"*) ;; *) fail "consent CSP lacks frame-a
 ! grep -qi '<script' "$S/oc-az.html" || fail "consent page has a script"
 pass "consent page names the client as unverified, shows the redirect URI and email; CSP, X-Frame-Options and no-store set, no script"
 
-[ "$(post_consent 'decision=approve')" = 403 ] || fail "a consent POST with no CSRF token was not 403"
-[ "$(post_consent "csrf=$CSRF&decision=approve" http://evil.example)" = 403 ] || fail "a consent POST from a foreign Origin was not 403"
-pass "the consent POST without the CSRF token, or from a foreign Origin, is 403"
+# The page must let a browser send the real Origin. The checks below then fail for the reason named.
+[ "$BROWSER_ORIGIN" = "$APP" ] ||
+  fail "a browser would post Origin: $BROWSER_ORIGIN from the consent page (Referrer-Policy '$(hdr "$S/oc-az.hdr" referrer-policy)')"
+pass "the consent page lets a browser send the app origin on the form post (Referrer-Policy $(hdr "$S/oc-az.hdr" referrer-policy))"
+
+[ "$(post_consent 'decision=approve')" = 403 ] && grep -q 'no longer valid' "$S/oc-az.out" ||
+  fail "a consent POST with the browser's Origin and no CSRF token was not refused by the CSRF check"
+[ "$(post_consent "csrf=$CSRF&decision=approve" http://evil.example)" = 403 ] && grep -q bad_origin "$S/oc-az.out" ||
+  fail "a consent POST from a foreign Origin was not refused as bad_origin"
+[ "$(post_consent "csrf=$CSRF&decision=approve" null)" = 403 ] && grep -q bad_origin "$S/oc-az.out" ||
+  fail "a consent POST with Origin: null and a valid token was not refused as bad_origin"
+pass "the consent POST is refused for its own reason: no CSRF token, a foreign Origin, and Origin: null with a valid token"
 
 # 8. Codes and PKCE.
 grant_code bad
