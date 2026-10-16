@@ -10,23 +10,7 @@ ms_since() { echo $((($(date +%s%N) - $1) / 1000000)); }
 # under SECONDS MAX: true when a curl time_total is below MAX seconds.
 under() { awk -v t="$1" -v max="$2" 'BEGIN { exit !(t < max) }'; }
 
-# A run whose APP points at one cluster while kubectl points at another would test the wrong thing
-# or, worse, change it. nip.io URLs need the k3d context; any other APP needs the VM context.
-# EXPECT_CONTEXT overrides both.
-expect_kube_context() {
-  local want have
-  if [ -n "${EXPECT_CONTEXT:-}" ]; then
-    want=$EXPECT_CONTEXT
-  elif [[ "$APP" == *nip.io* ]]; then
-    want=k3d-${CLUSTER:-urumi}
-  else
-    want=urumi-vm
-  fi
-  have=$(kubectl config current-context 2>/dev/null) || have=''
-  [ "$have" = "$want" ] ||
-    fail "APP is $APP, so kubectl must use context $want, but it uses '${have:-none}': kubectl config use-context $want"
-}
-expect_kube_context
+source "$(dirname "${BASH_SOURCE[0]}")/kube-context.sh"
 
 # req JAR METHOD PATH [JSON]: the body, then the status code on its own last line.
 req() {

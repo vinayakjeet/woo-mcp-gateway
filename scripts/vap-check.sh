@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # SPEC 18 and 22.3 proofs for the control-plane admission policy.
 #   S=<scratchpad> scripts/vap-check.sh
+# Runs against the k3d context. For the VM: EXPECT_CONTEXT=urumi-vm S=<scratchpad> scripts/vap-check.sh
 # The first rows impersonate the ServiceAccount with --as and --dry-run=server, so nothing is stored.
 # Every denial must name the policy: RBAC already allows these verbs, so a refusal without the
 # policy name would mean something else stopped the request. The last rows use a real token.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/kube-context.sh
 
 S=${S:?set S to the scratchpad directory}
 SA=system:serviceaccount:platform:control-plane

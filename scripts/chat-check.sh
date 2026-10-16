@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Live check for the chat agent (M6) on k3d. Prints no passwords, cookies, tokens or keys.
+# Live check for the chat agent (M6). Prints no passwords, cookies, tokens or keys.
 # Usage: S=<private scratch dir> scripts/chat-check.sh
+# On the VM: APP=https://app.vinayak-urum.me S=<private scratch dir> scripts/chat-check.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${S:?set S to a private scratch directory}"
 APP=${APP:-http://app.127.0.0.1.nip.io}
 NS=platform
+source scripts/kube-context.sh
 
 fail() {
   echo "FAIL: $*" >&2

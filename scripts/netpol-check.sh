@@ -3,10 +3,12 @@
 #   scripts/netpol-check.sh <slug-a> [<slug-b>]
 #   scripts/netpol-check.sh platform
 #   scripts/netpol-check.sh hosted <slug>
+# Runs against the k3d context. For the VM: EXPECT_CONTEXT=urumi-vm scripts/netpol-check.sh ...
 # Each probe sleeps 5 s first: kube-router admits a new pod's IP late, so the first request of a
 # brand new pod is refused even where a policy allows it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/kube-context.sh
 
 A=${1:?usage: $0 <slug-a> [<slug-b>] | platform | hosted <slug>}
 B=${2:-}
