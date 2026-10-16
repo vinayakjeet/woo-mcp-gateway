@@ -11,6 +11,7 @@ import { inClusterKube } from './kube.js';
 import { createProvisionerMetrics } from './metrics.js';
 import { Provisioner } from './provisioner.js';
 import { pgDeps } from './repo.js';
+import { startAuditRetention } from './retention.js';
 import { urlCheckFromEnv } from './ssrf.js';
 import { provisionerConfig } from './store-values.js';
 
@@ -77,6 +78,8 @@ if (provisioner) {
   });
 }
 await stores?.start();
+// Runs on every replica whether or not the provisioner is on: the advisory lock lets one of them prune.
+const retention = startAuditRetention(pool, pub.log.child({ component: 'retention' }));
 
 await pub.listen({ host: '0.0.0.0', port: Number(process.env.PUBLIC_PORT ?? 3000) });
 await internal.listen({ host: '0.0.0.0', port: Number(process.env.INTERNAL_PORT ?? 3001) });
@@ -85,6 +88,7 @@ installGracefulShutdown({
   servers: [pub.server, internal.server],
   close: async () => {
     await stores?.close();
+    await retention.stop();
     await Promise.all([pub.close(), internal.close()]);
     await pool.end();
   },
