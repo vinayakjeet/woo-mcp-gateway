@@ -87,6 +87,24 @@ describe('access token', () => {
     expect(() => signAccessToken({ ...a, ttlSeconds: 900 })).not.toThrow();
   });
 
+  it('the same claims, now and jti give the same token, so a replayed refresh can return it again', () => {
+    const a = { keys, iss, aud, sub, clientId: 'c', scope: 'mcp:tools', now, jti: 'row-1' };
+    expect(signAccessToken(a)).toBe(signAccessToken(a));
+    expect(signAccessToken({ ...a, jti: 'row-2' })).not.toBe(signAccessToken(a));
+    const c = verifyAccessToken(signAccessToken(a), {
+      publicKey: keys.publicKey,
+      kid: keys.kid,
+      iss,
+      aud,
+      now,
+    });
+    expect(c.jti).toBe('row-1');
+  });
+  it('without a jti every token gets a fresh one', () => {
+    const a = { keys, iss, aud, sub, clientId: 'c', scope: 'mcp:tools', now };
+    expect(signAccessToken(a)).not.toBe(signAccessToken(a));
+  });
+
   it('refuses alg none, HS256 signed with the public key bytes, RS256, ES256 and lowercase eddsa', () => {
     const pubBytes = keys.publicKey.export({ format: 'der', type: 'spki' });
     const hs = (() => {

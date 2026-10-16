@@ -15,6 +15,7 @@ export const OAUTH_SCOPE = 'mcp:tools';
 // One label per use, so the signing seed and the consent CSRF key never share bytes.
 export const OAUTH_EDDSA_INFO = 'urumi oauth eddsa v1';
 export const OAUTH_CSRF_INFO = 'urumi oauth csrf v1';
+export const OAUTH_REFRESH_INFO = 'urumi oauth refresh v1';
 // Pods share one node clock locally, but a VPS node and a future second node may drift.
 const CLOCK_SKEW_S = 30;
 // DER prefix that wraps a raw 32-byte Ed25519 seed as a PKCS#8 private key.
@@ -83,6 +84,9 @@ export function signAccessToken(o: {
   scope: string;
   ttlSeconds?: number;
   now?: number;
+  // Ed25519 signs deterministically, so a fixed jti and now give a fixed token. A refresh replayed
+  // inside the grace window uses that to return the exact pair of the first answer.
+  jti?: string;
 }): string {
   const ttl = o.ttlSeconds ?? ACCESS_TOKEN_TTL_S;
   if (ttl <= 0 || ttl > ACCESS_TOKEN_TTL_S) throw new OAuthJwtError('ttl must be 1 to 900 seconds');
@@ -95,7 +99,7 @@ export function signAccessToken(o: {
     scope: o.scope,
     iat,
     exp: iat + ttl,
-    jti: randomUUID(),
+    jti: o.jti ?? randomUUID(),
   };
   const body = `${enc({ alg: 'EdDSA', typ: ACCESS_TOKEN_TYP, kid: o.keys.kid })}.${enc(claims)}`;
   return `${body}.${sign(null, Buffer.from(body), o.keys.privateKey).toString('base64url')}`;
