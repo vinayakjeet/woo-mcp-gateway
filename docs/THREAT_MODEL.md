@@ -216,9 +216,25 @@ Stops: metrics or stats leaking secrets or user data; a client writing its own t
 - Request ids and trace ids. Request ids are UUIDs made by the server. A client `x-request-id` is never read. A `traceparent` is accepted only in the exact W3C form (version `00`, lowercase hex, non-zero ids), so a client cannot put free text into a log line through it. The gateway forwards only a new parent id with that trace id to an upstream. `tracestate` and any other client `_meta` key stop at the gateway. The gateway call log line carries ids, the server slug, the tool name from the registry, the outcome and the time. It never carries arguments, results, emails or keys; names the registry did not resolve are logged as `_unknown`. fx-mcp and woo-mcp log the tool name, the trace id and the time only.
 - Proof: `S=... scripts/obs-check.sh` (ends `OK`), `scripts/netpol-check.sh platform`, and `pnpm --filter @woo/gateway exec vitest run metrics app mcp`.
 
-## 14. OAuth refresh tokens (M13)
+## 14. OAuth (M13)
 
-Stops: a stolen refresh token being used quietly for 30 days.
+Stops: a stolen authorization code or refresh token being used, a token meant for another service being accepted, a forged approval click, and a client lying about who it is. The flow is in `docs/DESIGN.md`, "OAuth (SPEC 24)".
+
+Controls:
+
+- PKCE S256 only. `/oauth/authorize` refuses a missing challenge and any other method, and the metadata lists only S256. A stolen code is useless without the verifier.
+- Authorization codes are 32 random bytes, stored as sha256, valid 60 s and spent by one guarded update. A wrong verifier, client or redirect URI also spends the code. A code must come back with the exact `redirect_uri` it was issued for.
+- Exact redirect URI match. The only relaxation is the port of an http loopback URI (RFC 8252 7.3). Registered URIs are https or loopback only, so a code cannot be sent to a custom scheme another app could claim.
+- Audience and issuer. The access token carries `iss` and `aud` (the gateway URL). The gateway refuses a wrong `iss` or `aud`, an expired token, any `alg` other than EdDSA and any `typ` other than `at+jwt`. A `resource` other than the gateway URL is `invalid_target`.
+- `iss` in the authorization response (RFC 9207), so a client can tell which authorization server answered.
+- Consent CSRF and framing. The approve and deny POST needs the app Origin and a token bound to the session and the request. The page has `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `Cache-Control: no-store` and no script.
+- Public clients only (`token_endpoint_auth_method: none`). There is no client secret to steal.
+- Open DCR with the rate limit and the label. Anyone can register, at 10 a minute per IP. The consent page calls a DCR client "unverified, self-registered", shows the full redirect URI and the signed-in email, and the user decides.
+- CIMD goes through the SSRF guard (below). Per IP: 30 CIMD fetches and 30 token requests a minute.
+- Connected apps and Revoke (below): the user can end a grant, and an access token dies with it.
+- Logs. No code, verifier, token, cookie or CSRF value is logged. `oauth-check.sh` greps both services' logs for the values it used.
+
+Refresh tokens, client documents and grants:
 
 - Rotation. Each use of a refresh token returns a new one and revokes the old one (`apps/control-plane/src/oauth-token.ts`). Only the sha256 of a refresh token is stored.
 - Reuse. A rotated token that comes back more than 30 s after its rotation, or any token that is not the direct parent of the live one, revokes every row in its chain, the live token included. The client has to authorize again.
@@ -238,6 +254,18 @@ Stops: a stolen refresh token being used quietly for 30 days.
 - Revoke ends access on the next call. A user revokes an app on My keys ("Connected apps"; an admin can revoke for another user). Revoke sets `revoked_at` on every live refresh token of that user and client, marks unredeemed codes of the pair as used, and deletes the `oauth_consents` row, in one transaction. The gateway reads that row in the same query as the user row on every OAuth call, so an access token of a revoked grant is refused at the next call, not after its 15 minutes. A token also has to be issued at or after the approval second of the consent row: revoke and approve again inside 15 minutes does not bring the old access token back. Cost: the user lookup joins one more table by its primary key. Limits: the check compares whole seconds, so a token issued in the same second as an earlier approval that was revoked and approved again within that second would pass; and it relies on the control-plane and Postgres clocks being within a second. Each revoke writes one `audit_events` row (tool `oauth_grant_revoked`, the client id in `exposed_name`, "revoked by <email>" in the message, in the grant owner's log, no server slug so Health ignores it). It never holds a token or a hash.
   - Proof: `pnpm --filter @woo/control-plane exec vitest run oauth-grants` and `pnpm --filter @woo/gateway exec vitest run auth` (rows "revoke ends access on the next call" and "revoke then approve again within 15 minutes does not revive the old token").
 - Proof: `pnpm --filter @woo/control-plane exec vitest run oauth-token` (rows under "reuse grace window of 30 s": four concurrent refreshes give one pair and one new row; a replay at 29 s is identical; a reuse at 31 s revokes; a token two generations old revokes inside the window).
+
+Proofs: `scripts/oauth-check.sh` (the flow against the cluster, `OK` at the end), and the test files `oauth-jwt.test.ts` (core), `oauth-metadata`, `oauth-register`, `oauth-clients`, `oauth-authorize`, `oauth-token`, `oauth-cimd` and `oauth-grants` (control-plane) and `auth.test.ts` and `app.test.ts` (gateway).
+
+Gaps:
+
+- Access tokens live 15 minutes. A revoked grant, a disabled user and a deleted consent row end access on the next call, because the gateway reads them on every request. A stolen token stays valid until `exp` only if none of those happens.
+- A reused authorization code does not revoke the tokens already issued from it: no column links a code to its tokens. The code itself is spent, so the second use fails.
+- The gateway holds `JWT_SIGNING_KEY`, so a gateway compromise could mint tokens (decision A1). The gateway code only verifies. A leaked key lets an attacker mint a token for any user who has approved an app, because the gateway also needs that user's consent row. Rotating the key ends all access tokens; refresh tokens still work.
+- Open DCR adds a row per registration. The rate limit bounds the speed, and nothing deletes unused clients.
+- Rate limits are per IP behind one trusted proxy hop. Many clients behind one NAT share a bucket.
+- The scope is one value, `mcp:tools`. A token acts as its user with the role that user has now, not as a subset of it.
+- Client proofs are pending. Inspector 2.9.0 and Claude Code refuse an http token endpoint off loopback, so they are proven on the VM over TLS (M8). Until then the token step is proven server side by `oauth-check.sh`.
 
 ## 15. Listen streams (M13)
 
@@ -265,3 +293,4 @@ Cannot be finished or proven on k3d:
 7. Decide whether to deny the VM's own public IP in the SSRF guard (item 1).
 8. Hosted servers (section 11): set `hosted.allowedImagePrefixes` to `ghcr.io/<owner>/` and require `@sha256` digests for every hosted create (section 11, gap 1). Run `hosted-check.sh all`, `netpol-check.sh hosted fx2` and `vap-check.sh` there. Confirm the pull works (a private package gives `ErrImagePull`).
 9. M12: `deploy/values-prod.yaml` sets `gateway.replicas: 2`, `gateway.pdb.enabled: true`, `gateway.rateLimitPerMinute: 60` and `monitoring.enabled: true`. The HPA stays off until the headroom is measured; if it is turned on, turn it on from the first deploy with `minReplicas` of 2 or more (switching later from a fixed count drops the gateway to one pod until the HPA acts). Run `replica-demo.sh` through TLS, the PDB eviction pair (201 then 429), `obs-check.sh`, and `netpol-check.sh platform` with Prometheus up. Confirm k3s 1.30 or later (the gateway `preStop` sleep).
+10. M13 (OAuth), first check after TLS, details in `.notes/plans/M8-vm.md`: Inspector 2.9.0 and Claude Code (`claude mcp add --transport http urumi-oauth https://mcp.<domain>/mcp`, no header) complete the flow, with consent, tools, an `oauth` audit row and a silent refresh after 15 minutes; Claude Code's own CIMD document works; the PRM, the AS metadata and the 401 `WWW-Authenticate` show https URLs; `oauth-check.sh` ends `OK` on the VM; the `Secure` session cookie survives login and the return to consent; a token verifies on both gateway replicas; NTP is in sync (the skew allowance is 30 s); the CIMD fetch works over the VM's 443 egress, and the decision in item 7 about the VM's public IP covers CIMD URLs; the daily `audit retention` log line appears; the e2e listen row passes through TLS. `oauth.enabled: true` goes into `values-prod.yaml` after those pass.
