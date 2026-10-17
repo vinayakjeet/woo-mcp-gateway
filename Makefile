@@ -1,4 +1,4 @@
-.PHONY: guard-local guard-tag cluster images image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway image-web image-agent store platform up e2e down
+.PHONY: tunnel-up tunnel-down guard-local guard-tag cluster images image-store-wordpress image-woo-mcp image-fx-mcp image-control-plane image-gateway image-web image-agent store platform up e2e down
 
 CLUSTER ?= urumi
 IMAGE_TAG ?= dev
@@ -30,6 +30,22 @@ endif
 STORE_SECRETS := deploy/secrets/store-$(SLUG)$(SECRETS_SUFFIX).yaml
 HELM_FLAGS ?= --wait --rollback-on-failure --timeout 15m
 comma := ,
+
+# The VM's API port 6443 is closed in the NSG. The urumi-vm kubeconfig points at 127.0.0.1:16443,
+# a port k3d never uses, and this tunnel carries it to 6443 on the VM. The control socket lets
+# tunnel-down close exactly this tunnel.
+VM_HOST ?= azureuser@20.193.153.146
+VM_KEY ?= $(HOME)/.ssh/urumi-key.pem
+TUNNEL_PORT ?= 16443
+TUNNEL_SOCK ?= $(or $(XDG_RUNTIME_DIR),/tmp)/urumi-vm-tunnel.sock
+TUNNEL_SSH = ssh -i $(VM_KEY) -o IdentitiesOnly=yes -S $(TUNNEL_SOCK)
+
+tunnel-up:
+	@$(TUNNEL_SSH) -O check $(VM_HOST) 2>/dev/null && echo "tunnel already up on 127.0.0.1:$(TUNNEL_PORT)" || \
+		($(TUNNEL_SSH) -fN -M -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -L $(TUNNEL_PORT):127.0.0.1:6443 $(VM_HOST) && echo "tunnel up on 127.0.0.1:$(TUNNEL_PORT)")
+
+tunnel-down:
+	@$(TUNNEL_SSH) -O exit $(VM_HOST) 2>/dev/null && echo "tunnel closed" || echo "no tunnel running"
 
 # k3d image import only makes sense on the laptop. The VM pulls what CI pushed to GHCR.
 guard-local:
