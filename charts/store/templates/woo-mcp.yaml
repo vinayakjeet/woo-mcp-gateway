@@ -64,8 +64,10 @@ spec:
             - name: WC_BASE_URL
               value: http://wordpress.{{ .Release.Namespace }}.svc.cluster.local
             # WooCommerce rebuilds the signature base string from its home URL, not from the Host header.
+            # The scheme comes from is_ssl() on the request it receives. This hop is plain http even when the
+            # public site is https, so sign with http or WooCommerce answers "Invalid signature".
             - name: WC_SIGNING_BASE_URL
-              value: {{ include "store.url" . | quote }}
+              value: {{ printf "http://%s" (include "store.host" .) | quote }}
             - name: WC_CONSUMER_KEY
               valueFrom: { secretKeyRef: { name: store-wc-api, key: WC_CONSUMER_KEY } }
             - name: WC_CONSUMER_SECRET

@@ -272,11 +272,18 @@ helm lint charts/store -f deploy/store-values-prod.yaml --set slug=main --set mc
 p=$(prod)
 lacks "$p" ":latest" "prod"
 lacks "$p" "nip.io" "prod"
-for want in "host: main.shop.vinayak-urum.me" "secretName: wordpress-tls" "cert-manager.io/cluster-issuer: letsencrypt-staging" \
+for want in "host: main.shop.vinayak-urum.me" "secretName: wordpress-tls" "cert-manager.io/cluster-issuer: letsencrypt-prod" \
   "image: ghcr.io/vinayakjeet/store-wordpress:1.0.0-abc1234" "image: ghcr.io/vinayakjeet/woo-mcp:1.0.0-abc1234" \
   "https://main.shop.vinayak-urum.me" "WP_ENVIRONMENT_TYPE', 'production'" "storage: 2Gi"; do
   has "$p" "$want" "prod"
 done
 pass "prod values: host, TLS, GHCR images, production environment type"
+
+# woo-mcp reaches WordPress over plain http inside the cluster. WooCommerce builds the signature base
+# URL with the scheme of that request (is_ssl()), so a public https scheme here fails with "Invalid signature".
+signing_url() { sed -n '/name: WC_SIGNING_BASE_URL/{n;s/^ *value: *"\(.*\)"$/\1/p}' <<<"$1"; }
+[ "$(signing_url "$(show woo-mcp.yaml)")" = "http://main.shop.127.0.0.1.nip.io" ] || fail "signing url over http: $(signing_url "$(show woo-mcp.yaml)")"
+[ "$(signing_url "$(prod --show-only templates/woo-mcp.yaml)")" = "http://main.shop.vinayak-urum.me" ] || fail "signing url under https: $(signing_url "$(prod --show-only templates/woo-mcp.yaml)")"
+pass "woo-mcp signs with the internal http scheme, also when the public scheme is https"
 
 echo "OK"

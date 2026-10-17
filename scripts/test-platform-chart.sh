@@ -599,7 +599,7 @@ lacks "$p" ":latest" "prod"
 lacks "$p" "nip.io" "prod"
 lacks "$p" "127.0.0.1" "prod"
 for want in "host: app.vinayak-urum.me" "host: mcp.vinayak-urum.me" "secretName: app-tls" "secretName: mcp-tls" \
-  "cert-manager.io/cluster-issuer: letsencrypt-staging" "image: ghcr.io/vinayakjeet/gateway:1.0.0-abc1234" \
+  "cert-manager.io/cluster-issuer: letsencrypt-prod" "image: ghcr.io/vinayakjeet/gateway:1.0.0-abc1234" \
   "image: ghcr.io/vinayakjeet/control-plane:1.0.0-abc1234" "kind: PodDisruptionBudget" "replicas: 2" \
   '"https://app.vinayak-urum.me"' '"https://mcp.vinayak-urum.me/mcp"' '[\"ghcr.io/vinayakjeet/\"]' \
   '\"environmentType\":\"production\"' '\"scheme\":\"https\"'; do
