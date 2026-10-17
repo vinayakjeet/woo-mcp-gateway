@@ -280,6 +280,7 @@ Stops: a stream opened with a credential that later dies, and one key holding th
 ## Known limitations
 
 - Audit events reuse the tool-call table; a dedicated events table would need a migration. A revoked OAuth grant is stored as an `audit_events` row with an empty server slug, tool `oauth_grant_revoked` and the actor in `error_message`. The Audit page shows it as an event (server "OAuth", a neutral "Revoked by <email>" detail, no duration), and Health ignores it. Anything that counts or filters `audit_events` rows by tool or outcome would count it as a call, so a new reader of the table has to know this.
+- The tool list is eventually consistent across gateway replicas, within about 3 health intervals (~30 s); calls to a down server fail cleanly meanwhile.
 
 ## On the VM (M8)
 
