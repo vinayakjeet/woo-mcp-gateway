@@ -165,6 +165,7 @@ Stops: Kubernetes Secrets readable from an etcd or disk snapshot of the VM.
 
 - On the VM: `secrets-encryption: true` in the k3s config. Proof: `k3s secrets-encrypt status` prints `Encryption Status: Enabled`.
 - Not provable on k3d. M10 documents it; M8 applies and proves it.
+- Proved on the VM (k3s v1.36.5+k3s1, 2026-10-17): status is `Enabled` with the key `aescbckey` (AES-CBC, the k3s default). A probe Secret read straight from the k3s datastore (`state.db`, read only) started with `k8s:enc:aescbc:v1:aescbckey:` and did not contain its plaintext value. The probe was deleted. Hosted Secrets (section 11) are covered because the setting applies to all Secrets.
 
 ## 11. Hosted MCP servers (M11)
 
@@ -294,3 +295,15 @@ Cannot be finished or proven on k3d:
 8. Hosted servers (section 11): set `hosted.allowedImagePrefixes` to `ghcr.io/<owner>/` and require `@sha256` digests for every hosted create (section 11, gap 1). Run `hosted-check.sh all`, `netpol-check.sh hosted fx2` and `vap-check.sh` there. Confirm the pull works (a private package gives `ErrImagePull`).
 9. M12: `deploy/values-prod.yaml` sets `gateway.replicas: 2`, `gateway.pdb.enabled: true`, `gateway.rateLimitPerMinute: 60` and `monitoring.enabled: true`. The HPA stays off until the headroom is measured; if it is turned on, turn it on from the first deploy with `minReplicas` of 2 or more (switching later from a fixed count drops the gateway to one pod until the HPA acts). Run `replica-demo.sh` through TLS, the PDB eviction pair (201 then 429), `obs-check.sh`, and `netpol-check.sh platform` with Prometheus up. Confirm k3s 1.30 or later (the gateway `preStop` sleep).
 10. M13 (OAuth), first check after TLS, details in `.notes/plans/M8-vm.md`: Inspector 2.9.0 and Claude Code (`claude mcp add --transport http urumi-oauth https://mcp.<domain>/mcp`, no header) complete the flow, with consent, tools, an `oauth` audit row and a silent refresh after 15 minutes; Claude Code's own CIMD document works; the PRM, the AS metadata and the 401 `WWW-Authenticate` show https URLs; `oauth-check.sh` ends `OK` on the VM; the `Secure` session cookie survives login and the return to consent; a token verifies on both gateway replicas; NTP is in sync (the skew allowance is 30 s); the CIMD fetch works over the VM's 443 egress, and the decision in item 7 about the VM's public IP covers CIMD URLs; the daily `audit retention` log line appears; the e2e listen row passes through TLS. `oauth.enabled: true` goes into `values-prod.yaml` after those pass.
+
+### SSH access to the VM
+
+Stops: password guessing and key theft by scanners, and a stolen laptop session reaching the API server.
+
+- Exposure of port 22 (Azure NSG): restricted to the operator's IP normally. Temporarily opened to Any while the operator travels, and closed again afterwards. Whatever the NSG says, SSH is always key only and always behind fail2ban.
+- sshd (`sudo sshd -T`, drop-in `/etc/ssh/sshd_config.d/00-hardening.conf`): `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes`. The drop-in is named `00-` because sshd keeps the first value it reads and Azure's `50-cloud-init.conf` sorts after it. The VM image had `PermitRootLogin without-password`, so that one was changed. A password attempt now ends in `Permission denied (publickey)`.
+- fail2ban, default sshd jail (5 failures in 10 minutes bans the address for 10 minutes), no `ignoreip` because the operator's address is shared and changes. Ubuntu 24.04 logs sshd under the unit `ssh.service`, but the stock filter watches `sshd.service`, so the default jail saw nothing. `/etc/fail2ban/jail.d/sshd-journal.local` sets `journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd`. Proof: one failed login as an invalid user raised `Currently failed` from 0 to 1.
+- Side effect to know: an operator on a shared address can be banned by someone else's failures. The way back is the Azure serial console or run command, or waiting 10 minutes.
+- unattended-upgrades: only the `-security` pockets (including ESM), no automatic reboot (`/etc/apt/apt.conf.d/52unattended-upgrades-security`). A kernel or libc update waits for a manual reboot, which the operator does outside a demo or a check run.
+- API server: port 6443 is closed in the NSG (a probe from outside times out). kubectl reaches it only through an SSH tunnel to `127.0.0.1:16443` (`make tunnel-up`), so the API is exactly as exposed as SSH.
+- The first SSH connection trusted the host key on first use (`accept-new`). The fingerprint was not compared with the Azure portal.
