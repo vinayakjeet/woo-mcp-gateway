@@ -136,13 +136,21 @@ until [ "$(body "$(req admin.jar GET /api/servers)" | jq -r '.servers[] | select
   [ "$(ms_since "$t0")" -lt 35000 ] || fail "fx not shown unreachable 35 s after it went down"
   sleep 0.5
 done
-r=$(rpc k2 '{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}')
-t=$(tail -n1 <<<"$r")
-under "$t" 1 || fail "tools/list took $t s with fx down"
-names=$(sed '$d' <<<"$r" | jq -r '.result.tools[].name') || fail "tools/list gave no result"
-grep -q '^main__get_info$' <<<"$names" || fail "main tools missing from the list while fx is down"
-! grep -q '^fx__' <<<"$names" || fail "fx tools still listed while fx is down"
-pass "fx shown unreachable; tools/list took $t s with main tools and no fx tools"
+# Each replica marks fx unreachable on its own (3 failed checks, 10 s apart, or at once after a failed
+# call), and the status row comes from one of them. With two replicas another one can still list the
+# fx tools for up to about 30 s, so poll tools/list instead of reading it once.
+t0=$(date +%s%N)
+while :; do
+  r=$(rpc k2 '{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}')
+  t=$(tail -n1 <<<"$r")
+  under "$t" 1 || fail "tools/list took $t s with fx down"
+  names=$(sed '$d' <<<"$r" | jq -r '.result.tools[].name') || fail "tools/list gave no result"
+  grep -q '^main__get_info$' <<<"$names" || fail "main tools missing from the list while fx is down"
+  ! grep -q '^fx__' <<<"$names" && break
+  [ "$(ms_since "$t0")" -lt 35000 ] || fail "fx tools still listed 35 s after fx was shown unreachable"
+  sleep 1
+done
+pass "fx tools gone from tools/list $(ms_since "$t0") ms after fx was shown unreachable (last call $t s, main tools kept)"
 restore_fx
 kubectl -n platform rollout status deploy/fx-mcp --timeout=120s >/dev/null
 t0=$(date +%s%N)
