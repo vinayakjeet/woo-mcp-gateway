@@ -11,8 +11,8 @@ ingress:
   className: traefik
   tls:
     enabled: true
-    # Staging first. Task 7 of the M8 plan switches this to letsencrypt-prod.
-    clusterIssuer: letsencrypt-staging
+    # Staging certificates are untrusted by Node, Inspector and Claude Code.
+    clusterIssuer: letsencrypt-prod
 
 storage:
   className: local-path
