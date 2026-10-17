@@ -25,7 +25,7 @@ agent:
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b
 
-# Stays true only if the Claude Code proof passes over TLS by 18:00 Fri 23 Oct 2026 (SPEC 24).
+# The Claude Code proof over TLS passed on 2026-10-17 (SPEC 24 limit was 18:00 Fri 23 Oct).
 oauth:
   enabled: true
 
