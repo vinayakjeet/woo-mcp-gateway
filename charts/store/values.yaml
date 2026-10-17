@@ -55,7 +55,7 @@ quota:
   requestsCpu: '1'
   requestsMemory: 1536Mi
   limitsCpu: '3'
-  limitsMemory: 2Gi
+  limitsMemory: 2304Mi
   persistentVolumeClaims: 3
   requestsStorage: 8Gi
   pods: 10

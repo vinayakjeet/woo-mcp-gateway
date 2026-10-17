@@ -1,5 +1,7 @@
-# SPEC 18 guardrails. Worst case is every workload at its limit while the bootstrap Job runs:
-# 768 + 512 + 192 + 384 = 1856Mi of limits.memory, inside the 2Gi quota.
+# SPEC 18 guardrails. Worst case is every workload at its limit while the bootstrap Job runs and a
+# wp-cron tick fires: 768 + 512 + 192 + 384 + 256 = 2112Mi of limits.memory. SPEC 18 says 2Gi, which
+# left the cron pod out (added in M10) and refused the first tick; 2304Mi is the deliberate deviation.
+# scripts/store-quota-sum.py checks the sum against the rendered quota.
 apiVersion: v1
 kind: ResourceQuota
 metadata:

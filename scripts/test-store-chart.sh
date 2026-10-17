@@ -173,7 +173,7 @@ pass "a release installed without storeName still gives the bootstrap Main Store
 
 q=$(show guardrails.yaml)
 for want in "kind: ResourceQuota" "name: store-quota" "requests.cpu: \"1\"" "requests.memory: 1536Mi" \
-  "limits.cpu: \"3\"" "limits.memory: 2Gi" "persistentvolumeclaims: \"3\"" "requests.storage: 8Gi" \
+  "limits.cpu: \"3\"" "limits.memory: 2304Mi" "persistentvolumeclaims: \"3\"" "requests.storage: 8Gi" \
   "pods: \"10\"" "kind: LimitRange" "name: store-limits" "type: Container"; do
   has "$q" "$want" guardrails
 done
@@ -301,5 +301,14 @@ signing_url() { sed -n '/name: WC_SIGNING_BASE_URL/{n;s/^ *value: *"\(.*\)"$/\1/
 [ "$(signing_url "$(show woo-mcp.yaml)")" = "http://main.shop.127.0.0.1.nip.io" ] || fail "signing url over http: $(signing_url "$(show woo-mcp.yaml)")"
 [ "$(signing_url "$(prod --show-only templates/woo-mcp.yaml)")" = "http://main.shop.vinayak-urum.me" ] || fail "signing url under https: $(signing_url "$(prod --show-only templates/woo-mcp.yaml)")"
 pass "woo-mcp signs with the internal http scheme, also when the public scheme is https"
+
+# The quota must cover every pod at its limits at once. The wp-cron pod was added after the quota was
+# sized, and the first cron tick during the bootstrap Job was refused (decisions.md, M8 Task 6b).
+for label in local prod; do
+  if [ "$label" = prod ]; then rendered=$(prod); else rendered=$(render); fi
+  sum=$(python3 -I scripts/store-quota-sum.py <<<"$rendered") || fail "quota ($label): $sum"
+  echo "  quota ($label): $sum"
+done
+pass "store quota covers the sum of all pod limits, including wp-cron and the bootstrap Job"
 
 echo "OK"

@@ -127,7 +127,7 @@ export function helmCli(o: { bin?: string; env?: NodeJS.ProcessEnv } = {}): Helm
     },
     async uninstall(release, ns, timeoutSec, signal) {
       // Foreground waits for the pods too. Otherwise a reinstall starts while old pods still
-      // count against the namespace quota (limits.memory 2Gi) and its pods are refused.
+      // count against the namespace limits.memory quota and its pods are refused.
       const r = await run(
         [
           'uninstall',
