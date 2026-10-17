@@ -66,28 +66,7 @@ spec:
       # official entrypoint's tar copy aborts when it cannot chmod that directory. A uid 33
       # owned subdirectory avoids it.
       initContainers:
-        - name: prepare-html
-          image: {{ include "store.image" (list . .Values.images.wordpress) }}
-          imagePullPolicy: IfNotPresent
-          command:
-            - mkdir
-            - -p
-            - /volume/html
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 100m
-              memory: 32Mi
-          volumeMounts:
-            - name: html
-              mountPath: /volume
+        {{- include "store.prepareHtml" . | nindent 8 }}
       containers:
         - name: wordpress
           image: {{ include "store.image" (list . .Values.images.wordpress) }}

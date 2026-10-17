@@ -262,6 +262,22 @@ lacks "$c" ":latest" cronjob
 lacks "$c" "test-token" cronjob
 pass "wp-cron CronJob"
 
+# kubelet creates a missing subPath directory as root. The first wp-cron tick can start before the
+# WordPress pod does (the image pull takes ~30 s on a fresh node), and a root-owned html directory makes
+# the entrypoint's tar fail with "Cannot change mode to rwxrwxrwx". Every pod that mounts subPath: html
+# therefore runs prepare-html first, which creates it as uid 33. The bootstrap Job is a post-install hook,
+# so WordPress is already running when it starts.
+consumers=$(grep -l 'subPath: html' charts/store/templates/*.yaml | xargs -n1 basename | sort | tr '\n' ' ')
+[ "$consumers" = "bootstrap-job.yaml cronjob.yaml wordpress.yaml " ] || fail "subPath: html consumers changed: $consumers"
+for t in wordpress.yaml cronjob.yaml; do
+  y=$(show "$t")
+  for want in "initContainers:" "name: prepare-html" "- mkdir" "- /volume/html" "mountPath: /volume"; do
+    has "$y" "$want" "$t prepare-html"
+  done
+  lacks "$y" ":latest" "$t prepare-html"
+done
+pass "pods that mount subPath html create it as uid 33 first"
+
 # Production values for the VM.
 prod() {
   helm template store-main charts/store --namespace store-main \

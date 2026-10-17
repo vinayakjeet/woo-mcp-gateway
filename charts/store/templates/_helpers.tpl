@@ -77,3 +77,30 @@ app.kubernetes.io/instance: {{ .Release.Name }}
     define('DISALLOW_FILE_EDIT', true);
     define('WP_ENVIRONMENT_TYPE', '{{ .Values.wordpress.environmentType }}');
 {{- end }}
+
+{{/* Creates html on the volume as uid 33 before any container mounts it with subPath: html.
+     kubelet would create a missing subPath directory as root, and WordPress then cannot chmod it. */}}
+{{- define "store.prepareHtml" -}}
+- name: prepare-html
+  image: {{ include "store.image" (list . .Values.images.wordpress) }}
+  imagePullPolicy: IfNotPresent
+  command:
+    - mkdir
+    - -p
+    - /volume/html
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 32Mi
+  volumeMounts:
+    - name: html
+      mountPath: /volume
+{{- end }}

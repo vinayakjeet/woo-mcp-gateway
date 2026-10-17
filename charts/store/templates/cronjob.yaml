@@ -41,6 +41,8 @@ spec:
             fsGroup: 33
             seccompProfile:
               type: RuntimeDefault
+          initContainers:
+            {{- include "store.prepareHtml" . | nindent 12 }}
           containers:
             - name: wp-cron
               image: {{ include "store.image" (list . .Values.images.wordpress) }}
