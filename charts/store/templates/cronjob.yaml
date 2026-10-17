@@ -70,7 +70,7 @@ spec:
                 capabilities:
                   drop:
                     - ALL
-              # The store quota caps limits.cpu at 3. A run lasts seconds, so a low limit keeps headroom
+              # The store quota caps limits.cpu at 3500m. A run lasts seconds, so a low limit keeps headroom
               # for the bootstrap Job and a rolling WordPress update.
               resources:
                 requests:

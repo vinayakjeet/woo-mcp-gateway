@@ -54,7 +54,7 @@ networkPolicy:
 quota:
   requestsCpu: '1'
   requestsMemory: 1536Mi
-  limitsCpu: '3'
+  limitsCpu: 3500m
   limitsMemory: 2304Mi
   persistentVolumeClaims: 3
   requestsStorage: 8Gi

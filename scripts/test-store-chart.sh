@@ -173,7 +173,7 @@ pass "a release installed without storeName still gives the bootstrap Main Store
 
 q=$(show guardrails.yaml)
 for want in "kind: ResourceQuota" "name: store-quota" "requests.cpu: \"1\"" "requests.memory: 1536Mi" \
-  "limits.cpu: \"3\"" "limits.memory: 2304Mi" "persistentvolumeclaims: \"3\"" "requests.storage: 8Gi" \
+  "limits.cpu: \"3500m\"" "limits.memory: 2304Mi" "persistentvolumeclaims: \"3\"" "requests.storage: 8Gi" \
   "pods: \"10\"" "kind: LimitRange" "name: store-limits" "type: Container"; do
   has "$q" "$want" guardrails
 done
