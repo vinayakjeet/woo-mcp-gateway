@@ -45,6 +45,7 @@ login() {
 }
 
 KEY_IDS=()
+MEMBER_ID=
 trap revoke_keys EXIT
 with_key() { # makes $S/hosted-key and $S/hosted-key.hdr, revoked on exit
   local r
@@ -56,6 +57,7 @@ with_key() { # makes $S/hosted-key and $S/hosted-key.hdr, revoked on exit
 revoke_keys() {
   local id
   for id in "${KEY_IDS[@]}"; do req hosted.jar DELETE "/api/keys/$id" >/dev/null 2>&1 || true; done
+  [ -z "$MEMBER_ID" ] || req hosted.jar PATCH "/api/users/$MEMBER_ID" '{"status":"disabled"}' >/dev/null 2>&1 || true
   rm -f "$S/hosted-key" "$S/hosted-key.hdr"
 }
 
@@ -168,13 +170,19 @@ check() { # slug [WANT for the tool calls, see answered]
     fail "slug fx (a seeded server) was not refused with 409"
   pass "busybox:1.37, $HOSTED_REPO:latest and cpu 600m answer 400; slug fx answers 409"
 
-  # asha is the demo member (demo-reset.sh keeps her password in .notes/demo/asha.pw).
-  [ -s .notes/demo/asha.pw ] || fail "no .notes/demo/asha.pw: run demo-reset.sh --reset-member-password"
-  jq -n --rawfile pw .notes/demo/asha.pw '{email: "asha@example.com", password: ($pw | rtrimstr("\n"))}' >"$S/member-login.json"
+  # A throwaway member, invited and disabled like e2e.sh does, so no demo account is needed.
+  local mail=hosted-check-$(date +%s)@example.com
+  r=$(req hosted.jar POST /api/invites "{\"email\":\"$mail\",\"role\":\"member\"}")
+  [ "$(code "$r")" = 201 ] || fail "invite gave $(code "$r")"
+  local token
+  token=$(body "$r" | jq -r .url | sed 's|.*/invite/||')
+  head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$S/hosted-member.pw"
+  jq -n --rawfile pw "$S/hosted-member.pw" '{password: $pw}' >"$S/member-accept.json"
   r=$(curl -s -c "$S/hosted-member.jar" -H "origin: $APP" -H 'content-type: application/json' \
-    --data-binary @"$S/member-login.json" -w '\n%{http_code}' "$APP/api/auth/login")
-  rm -f "$S/member-login.json"
-  [ "$(code "$r")" = 200 ] || fail "member login gave $(code "$r")"
+    --data-binary @"$S/member-accept.json" -w '\n%{http_code}' "$APP/api/invites/$token/accept")
+  rm -f "$S/member-accept.json" "$S/hosted-member.pw"
+  [ "$(code "$r")" = 200 ] || fail "accept invite gave $(code "$r")"
+  MEMBER_ID=$(body "$r" | jq -r .user.id)
   [ "$(post hosted-member.jar "{$base,\"image\":\"$HOSTED_IMAGE\"}")" = 403 ] || fail "a member could POST /api/hosted"
   [ "$(code "$(req hosted-member.jar GET /api/hosted)")" = 403 ] || fail "a member could GET /api/hosted"
   rm -f "$S/hosted-member.jar"
