@@ -35,8 +35,8 @@ gateway:
   replicas: 2
   pdb:
     enabled: true
-  # Off until the VM headroom is known (M8 Task 10). If it is turned on, keep minReplicas at 2 or
-  # more from the first deploy: switching from a fixed count drops the gateway to one pod until the HPA acts.
+  # Off on the VM (M8 Task 10): two fixed replicas and the PDB. If it is ever turned on, keep minReplicas
+  # at 2 or more from the first deploy: switching from a fixed count drops the gateway to one pod until the HPA acts.
   hpa:
     enabled: false
 
@@ -50,9 +50,11 @@ provisioner:
       wordpress: 2Gi
     environmentType: production
 
-# fx-mcp is pushed here by CI. maxCpu and maxMemory stay at the chart defaults until M8 Task 10 reads the node headroom.
+# fx-mcp is pushed here by CI. The caps are the chart defaults, written out so the VM choice is visible (M8 Task 10).
 hosted:
   allowedImagePrefixes: ['ghcr.io/vinayakjeet/']
+  maxCpu: 500m
+  maxMemory: 256Mi
 
 monitoring:
   enabled: true
