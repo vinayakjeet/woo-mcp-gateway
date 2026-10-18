@@ -360,7 +360,11 @@ k5_id=$(body "$r" | jq -r .key.id)
 [ "$(body "$r" | jq -r .key.toolMode)" = search ] || fail "the new key is not in search mode"
 save_key "$(body "$r")" k5
 [ "$(list_names k5)" = $'call_tool\nsearch_tools' ] || fail "a search key listed: $(list_names k5)"
-[ "$(MCP="$MCP?toolMode=full" list_names k5 | grep -c .)" -ge 10 ] || fail "?toolMode=full did not list the full set"
+# Compare with the admin's own list, not a fixed number: the count depends on which upstreams are up.
+full_names=$(MCP="$MCP?toolMode=full" list_names k5 | sort) || fail "full-mode tools/list"
+real_names=$(list_names k2 | sort) || fail "admin tools/list"
+[ -n "$full_names" ] && [ "$full_names" = "$real_names" ] ||
+  fail "?toolMode=full listed $(grep -c . <<<"$full_names") tools, the admin key lists $(grep -c . <<<"$real_names")"
 body "$(req admin.jar GET /api/keys)" | jq -e --arg id "$k5_id" 'any(.keys[]; .id == $id and .toolMode == "search")' >/dev/null ||
   fail "GET /api/keys lacks the key's toolMode"
 pass "a key created in search mode lists two tools; ?toolMode=full lists them all"
