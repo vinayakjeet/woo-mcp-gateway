@@ -1,7 +1,13 @@
 import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
 import { Agent, fetch as undiciFetch } from 'undici';
-import { checkUpstreamUrl, isAllowedAddress, resolveAll, type Resolver } from './ssrf.js';
+import {
+  checkUpstreamUrl,
+  isAllowedAddress,
+  resolveAll,
+  type DenyList,
+  type Resolver,
+} from './ssrf.js';
 
 // Raised when an upstream name or address is not a public one. The gateway's error classifier
 // looks for this code anywhere in an error's cause chain.
@@ -13,6 +19,7 @@ export type PinnedFetch = (url: string | URL, init?: RequestInit) => Promise<Res
 export type PinnedFetchOptions = {
   allowInsecure: boolean;
   resolve?: Resolver;
+  deny?: DenyList;
   // Tests only: the default is the same address rule the control-plane applies.
   isAllowed?: (ip: string) => boolean;
 };
@@ -31,9 +38,11 @@ class BlockedError extends Error {
 // The socket connects to an address this function returned, so a name that turned private after
 // the admin added the server (DNS rebinding) is refused at the moment of connecting. Node asks
 // for one address or for all of them (happy eyeballs), so both shapes are answered.
-export function checkedLookup(o: Pick<PinnedFetchOptions, 'resolve' | 'isAllowed'>): Lookup {
+export function checkedLookup(
+  o: Pick<PinnedFetchOptions, 'resolve' | 'isAllowed' | 'deny'>,
+): Lookup {
   const resolve = o.resolve ?? resolveAll;
-  const isAllowed = o.isAllowed ?? isAllowedAddress;
+  const isAllowed = o.isAllowed ?? ((ip: string) => isAllowedAddress(ip, o.deny));
   return (host, options, cb) => {
     resolve(host).then(
       (addrs) => {
@@ -62,6 +71,7 @@ export function pinnedFetch(o: PinnedFetchOptions): PinnedFetch {
     // IP literals and cluster-internal names. The resolver stub is never asked for a real answer.
     const reason = await checkUpstreamUrl(String(url), {
       allowInsecure: o.allowInsecure,
+      ...(o.deny ? { deny: o.deny } : {}),
       resolve: async () => ['1.1.1.1'],
     });
     if (reason) throw new BlockedError(reason);

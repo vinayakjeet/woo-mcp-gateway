@@ -38,6 +38,16 @@ describe('loadConfig', () => {
     expect(loadConfig(full).allowedOrigins).toEqual([]);
   });
 
+  it('reads UPSTREAM_DENY_ADDRESSES and refuses a bad entry', () => {
+    expect(loadConfig(full).denyAddresses).toEqual([]);
+    expect(
+      loadConfig({ ...full, UPSTREAM_DENY_ADDRESSES: '20.193.153.146/32' }).denyAddresses,
+    ).toHaveLength(1);
+    expect(() => loadConfig({ ...full, UPSTREAM_DENY_ADDRESSES: '20.193.153.146/99' })).toThrow(
+      'UPSTREAM_DENY_ADDRESSES',
+    );
+  });
+
   it('defaults RATE_LIMIT_PER_MINUTE to 60 and refuses 0, -1 and text', () => {
     expect(loadConfig(full).rateLimitPerMinute).toBe(60);
     expect(loadConfig({ ...full, RATE_LIMIT_PER_MINUTE: '120' }).rateLimitPerMinute).toBe(120);

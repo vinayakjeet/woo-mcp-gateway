@@ -2,6 +2,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BLOCKED_CODE, checkedLookup, pinnedFetch } from './pinned-fetch.js';
+import { parseDenyAddresses } from './ssrf.js';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -131,6 +132,14 @@ describe('checkedLookup', () => {
 
   it('refuses when any answer is private', async () => {
     const lookup = checkedLookup({ resolve: async () => ['140.82.112.3', '10.0.0.7'] });
+    expect((await run(lookup, true)).err?.code).toBe(BLOCKED_CODE);
+  });
+
+  it('refuses a denied public address at connect time, also when the name was fine at the check', async () => {
+    const deny = parseDenyAddresses('20.193.153.146/32');
+    const answers = [['140.82.112.3'], ['20.193.153.146']];
+    const lookup = checkedLookup({ resolve: async () => answers.shift()!, deny });
+    expect((await run(lookup, true)).err).toBeNull();
     expect((await run(lookup, true)).err?.code).toBe(BLOCKED_CODE);
   });
 

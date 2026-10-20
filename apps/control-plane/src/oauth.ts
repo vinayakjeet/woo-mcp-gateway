@@ -1,5 +1,5 @@
 import rateLimit from '@fastify/rate-limit';
-import { errorCode, type PinnedFetch } from '@woo/core';
+import { errorCode, type DenyList, type PinnedFetch } from '@woo/core';
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import {
@@ -34,6 +34,8 @@ export type OAuthOptions = {
   // Fetches a client's metadata document (CIMD). Production uses the pinned fetch from core with
   // https only; tests pass a stub.
   cimdFetch?: PinnedFetch;
+  // Public addresses the default CIMD fetch refuses (UPSTREAM_DENY_ADDRESSES).
+  denyAddresses?: DenyList;
   cimdTimeoutMs?: number;
 };
 

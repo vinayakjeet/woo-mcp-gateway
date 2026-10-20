@@ -1,5 +1,5 @@
 import { tmpdir } from 'node:os';
-import { installGracefulShutdown, LOG_REDACT, parseKek } from '@woo/core';
+import { installGracefulShutdown, LOG_REDACT, parseDenyAddresses, parseKek } from '@woo/core';
 import pg from 'pg';
 import { apiRoutes } from './api.js';
 import { buildInternalApp, buildPublicApp } from './app.js';
@@ -58,6 +58,7 @@ if (oauth.enabled) {
     issuer: oauth.issuer,
     jwtKey: env.JWT_SIGNING_KEY,
     resource: env.GATEWAY_URL,
+    denyAddresses: parseDenyAddresses(process.env.UPSTREAM_DENY_ADDRESSES),
   });
 }
 const metrics = createProvisionerMetrics(pool);

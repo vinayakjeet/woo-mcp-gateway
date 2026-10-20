@@ -68,7 +68,10 @@ export async function startGateway(cfg: GatewayConfig, o: StartOptions = {}) {
   const registry = new Registry({
     log,
     upstream: {
-      externalFetch: pinnedFetch({ allowInsecure: cfg.allowInsecureUpstreams }),
+      externalFetch: pinnedFetch({
+        allowInsecure: cfg.allowInsecureUpstreams,
+        deny: cfg.denyAddresses,
+      }),
       ...o.upstream,
     },
     onTools: (u) => sync.persistTools(u),

@@ -31,6 +31,9 @@ oauth:
 
 gateway:
   allowInsecureUpstreams: false
+  # The Azure public IP of urumi-vm. Change it here if the IP changes (docs/THREAT_MODEL.md, section 1).
+  upstreamDenyAddresses:
+    - 20.193.153.146/32
   rateLimitPerMinute: 60
   replicas: 2
   pdb:

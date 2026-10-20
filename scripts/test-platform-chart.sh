@@ -609,4 +609,16 @@ done
 [ "$(grep -c 'kind: HorizontalPodAutoscaler' <<<"$p")" -eq 0 ] || fail "prod: HPA is off until M8 Task 10"
 pass "prod values: hosts, TLS, GHCR images, 2 gateway replicas, PDB, https issuer"
 
+# The guard cannot tell the VM's own public IP from any other public address, so prod lists it.
+# The gateway connects and the control-plane validates and fetches CIMD: both read the one value.
+for f in gateway.yaml control-plane.yaml; do
+  [ "$(env_value "$(show "$f")" UPSTREAM_DENY_ADDRESSES)" = '""' ] ||
+    fail "$f: UPSTREAM_DENY_ADDRESSES is not empty by default"
+  [ "$(env_value "$(show "$f" --set 'gateway.upstreamDenyAddresses={203.0.113.5/32,198.51.100.0/24}')" UPSTREAM_DENY_ADDRESSES)" = '"203.0.113.5/32,198.51.100.0/24"' ] ||
+    fail "$f: gateway.upstreamDenyAddresses does not reach UPSTREAM_DENY_ADDRESSES"
+  [ "$(env_value "$(prod --show-only "templates/$f")" UPSTREAM_DENY_ADDRESSES)" = '"20.193.153.146/32"' ] ||
+    fail "prod: $f does not deny the VM public IP 20.193.153.146/32"
+done
+pass "UPSTREAM_DENY_ADDRESSES: empty by default, overridable, the VM public IP in prod on gateway and control-plane"
+
 echo "OK"

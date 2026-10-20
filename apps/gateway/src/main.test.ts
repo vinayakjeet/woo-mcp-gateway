@@ -93,6 +93,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
         port: 0,
         healthPort: 0,
         allowInsecureUpstreams: false,
+        denyAddresses: [],
         rateLimitPerMinute: 60,
         oauthEnabled: true,
         oauthIssuer: ISSUER,

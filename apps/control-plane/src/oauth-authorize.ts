@@ -160,7 +160,9 @@ export async function authorizeRoutes(scope: FastifyInstance, o: OAuthOptions): 
     return sid && user ? { sid, user } : null;
   };
 
-  const fetchDoc = o.cimdFetch ?? pinnedFetch({ allowInsecure: false });
+  const fetchDoc =
+    o.cimdFetch ??
+    pinnedFetch({ allowInsecure: false, ...(o.denyAddresses ? { deny: o.denyAddresses } : {}) });
   const cimdLimit = scope.createRateLimit({ max: CIMD_PER_IP, timeWindow: CIMD_WINDOW_MS });
   const unknownApp: Loaded = { kind: 'page', status: 400, message: 'This app is not known here.' };
 

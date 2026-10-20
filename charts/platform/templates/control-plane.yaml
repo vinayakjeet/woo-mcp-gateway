@@ -113,6 +113,8 @@ spec:
               value: {{ include "platform.gatewayUrl" . | quote }}
             - name: ALLOW_INSECURE_UPSTREAMS
               value: {{ .Values.gateway.allowInsecureUpstreams | default false | toString | quote }}
+            - name: UPSTREAM_DENY_ADDRESSES
+              value: {{ join "," (.Values.gateway.upstreamDenyAddresses | default list) | quote }}
             - name: OAUTH_ENABLED
               value: {{ .Values.oauth.enabled | default false | toString | quote }}
             {{- if .Values.oauth.enabled }}

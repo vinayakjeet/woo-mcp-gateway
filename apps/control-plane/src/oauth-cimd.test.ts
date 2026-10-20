@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { oauthKeys, pinnedFetch, verifyAccessToken, type PinnedFetch } from '@woo/core';
+import {
+  oauthKeys,
+  parseDenyAddresses,
+  pinnedFetch,
+  verifyAccessToken,
+  type PinnedFetch,
+} from '@woo/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CIMD_MAX_BYTES, fetchClientMetadata, isCimdId, type CimdResult } from './oauth-cimd.js';
 import { ORIGIN, TEST_JWT_KEY, testApi, userWithSession } from './test-app.js';
@@ -550,6 +556,37 @@ describe.skipIf(!base)(
         }
       } finally {
         await t3.close();
+      }
+    });
+
+    it('with denyAddresses set, a client_id on the denied public IP is blocked, not fetched', async () => {
+      const lines: string[] = [];
+      const t4 = await testApi(
+        'woo_oauth_cimd_deny_test',
+        {},
+        { level: 'info', stream: { write: (l: string) => void lines.push(l) } },
+        {
+          issuer: ORIGIN,
+          jwtKey: TEST_JWT_KEY,
+          resource: RESOURCE,
+          denyAddresses: parseDenyAddresses('20.193.153.146/32'),
+        },
+      );
+      try {
+        const user = await userWithSession(t4.pool, 'asha-deny@example.com', 'member');
+        const id = 'https://20.193.153.146/m.json';
+        const res = await t4.app.inject({
+          method: 'GET',
+          url: query(id),
+          headers: { cookie: user.cookie, 'x-forwarded-for': nextIp() },
+        });
+        expect(res.statusCode).toBe(400);
+        const line = lines
+          .map((l) => JSON.parse(l))
+          .find((l) => l.msg === 'client metadata refused');
+        expect(line?.reason).toBe('blocked');
+      } finally {
+        await t4.close();
       }
     });
 

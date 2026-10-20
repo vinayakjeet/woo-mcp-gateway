@@ -1,5 +1,5 @@
 import { hostname } from 'node:os';
-import { parseKek, parseOAuthIssuer } from '@woo/core';
+import { parseDenyAddresses, parseKek, parseOAuthIssuer, type DenyList } from '@woo/core';
 
 export type GatewayConfig = {
   databaseUrl: string;
@@ -13,6 +13,8 @@ export type GatewayConfig = {
   healthPort: number;
   // Lets external upstreams use http. Off unless the chart sets it to the string "true".
   allowInsecureUpstreams: boolean;
+  // Public addresses an external upstream may never resolve to (the VM's own IP).
+  denyAddresses: DenyList;
   // Calls per minute for a key without its own limit, and for the agent.
   rateLimitPerMinute: number;
   oauthEnabled: boolean;
@@ -55,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     port: Number(env.PORT ?? 8080),
     healthPort: Number(env.HEALTH_PORT ?? 9090),
     allowInsecureUpstreams: env.ALLOW_INSECURE_UPSTREAMS === 'true',
+    denyAddresses: parseDenyAddresses(env.UPSTREAM_DENY_ADDRESSES),
     rateLimitPerMinute: parseRateLimit(env.RATE_LIMIT_PER_MINUTE),
     oauthEnabled,
     oauthIssuer: oauthEnabled ? parseOAuthIssuer(env.OAUTH_ISSUER) : null,

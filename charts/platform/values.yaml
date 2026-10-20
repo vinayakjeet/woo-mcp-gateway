@@ -31,6 +31,10 @@ gateway:
   # connect-time check read the same value. Private, loopback, link-local and cluster addresses
   # stay refused either way. Keep false in production.
   allowInsecureUpstreams: false
+  # Public addresses no external upstream or OAuth client metadata URL may resolve to, as CIDRs.
+  # Both the gateway and the control-plane read it. The VM's own public IP is plain public unicast,
+  # so the address check cannot refuse it by itself: set it in production and update it if the IP changes.
+  upstreamDenyAddresses: []
   # Tool calls per minute for a key without its own limit, and for the agent (SPEC 19).
   rateLimitPerMinute: 60
   # SPEC 23. Replicas share all state through Postgres, so any count works. Ignored while the HPA is on.
