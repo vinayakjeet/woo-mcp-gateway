@@ -24,13 +24,13 @@ Other namespaces: `kube-system` (Traefik), and `cert-manager` on the VM.
 
 Only the gateway talks to upstream MCP servers, health checks included. The control-plane never calls one. It writes rows to Postgres and sends `NOTIFY`, and every gateway replica loads the change. Postgres is the only link between the two, so a gateway replica can start, die or be added without the control-plane knowing.
 
-Jobs and the CronJob have no probes (SPEC 15 gives them none). They run once and exit, so there is nothing for a readiness or liveness probe to check. Helm waits for the bootstrap hook to finish, and `kubectl -n store-<slug> get cronjob wp-cron` shows `lastSuccessfulTime`. Every Deployment and StatefulSet has requests, limits, and readiness and liveness probes.
+Jobs and the CronJob have no probes (SPEC 15 gives them none). They run once and exit, so there is nothing for a readiness or liveness probe to check. Helm waits for the bootstrap hook to finish, and `kubectl -n store-<slug> get cronjob wp-cron` shows `lastSuccessfulTime`. Every long-running container in a Deployment or StatefulSet has requests, limits, and readiness and liveness probes (init containers have limits only).
 
 ### What is public
 
 Three hosts go through Traefik: `app.<domain>` (web at `/`, control-plane at `/api` and `/oauth`, agent at `/api/chat`), `mcp.<domain>` (gateway at `/mcp` and the protected resource metadata) and `<slug>.shop.<domain>` (the storefront and wp-admin of one store). Everything else is a ClusterIP Service with no Ingress: Postgres, woo-mcp, fx-mcp, hosted servers, the gateway health port 9090 and the control-plane internal port 3001.
 
-"Internal only" is enforced by NetworkPolicies, not by the lack of an Ingress: every namespace is default deny, and woo-mcp accepts only gateway pods (`scripts/netpol-check.sh main`, and `platform` for the rest). The rules and their proofs are in `docs/THREAT_MODEL.md`, sections 2 to 5.
+"Internal only" is enforced by NetworkPolicies, not by the lack of an Ingress: the `platform`, `mcp-hosted` and store namespaces are default deny, and woo-mcp accepts only gateway pods (`scripts/netpol-check.sh main`, and `platform` for the rest). The rules and their proofs are in `docs/THREAT_MODEL.md`, sections 2 to 5.
 
 ### Where state lives
 
@@ -46,7 +46,7 @@ Three hosts go through Traefik: `app.<domain>` (web at `/`, control-plane at `/a
 4. `tools/call` resolves the exposed name. An unknown name and a name hidden by policy get the same JSON-RPC error (-32602), so a member cannot tell a hidden tool from a missing one. Then, in order: rate limit, server state, the circuit breaker, the bulkhead, and the call with a timeout.
 5. The gateway calls the upstream over Streamable HTTP with the credential the admin stored for it, and a new `traceparent` child id. For a store that is woo-mcp in `store-<slug>`, with that store's bearer token.
 6. woo-mcp calls the WooCommerce REST API v3 in the same namespace, signing each request with OAuth 1.0a (the README explains why). It returns a one-line summary plus `structuredContent` with only the fields it chose to expose.
-7. The result goes back unchanged. An audit row is written in a `finally` block: user, key or grant, server, tool, outcome, duration, replica and a hash of the arguments. The same row is written for refusals and failures.
+7. The result goes back unchanged. An audit row is written in a `finally` block: user, key, how they authenticated, server, tool, outcome, duration, replica and a hash of the arguments. The same row is written for refusals and failures.
 
 The chat agent takes the same path from step 2, with an agent JWT instead of a key. Names and collisions are in "Naming and collisions" below.
 
@@ -85,18 +85,18 @@ Each rule below says what happens and what pins it.
 
 The charts are the same. These values differ (`deploy/values-local.yaml`, `deploy/values-prod.yaml`, and the store pair):
 
-| Concern           | Local (k3d)                                 | Production (k3s on the VM)                                                                                                                                       |
-| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Domain and scheme | `127.0.0.1.nip.io`, http                    | `vinayak-urum.me`, https                                                                                                                                         |
-| DNS               | none (nip.io resolves to 127.0.0.1)         | A records for `@`, `*` and `*.shop` to the VM's static IP                                                                                                        |
-| Images            | built locally, tag `dev`, imported into k3d | built by CI, pushed to `ghcr.io/vinayakjeet/<name>`, tag `<version>-<git sha>`, one tag for all seven images because stores use the platform tag too             |
-| Ingress and TLS   | Traefik, no TLS                             | Traefik, `ingress.tls.enabled`, cert-manager, ClusterIssuer `letsencrypt-prod`, one HTTP-01 certificate per host                                                 |
-| Storage           | `local-path`                                | `local-path` (k3s default); Postgres 5Gi, store volumes 2Gi each                                                                                                 |
-| Secrets           | generated by the charts                     | generated on first install and kept across upgrades; the LLM keys are a Secret made with `kubectl create secret` (`agent-llm`); k3s runs with secrets encryption |
-| Gateway           | 1 replica, 120 calls a minute per key       | 2 replicas, a PodDisruptionBudget (min 1), 60 calls a minute, HPA off                                                                                            |
-| SSRF              | managed servers skip the check              | `upstreamDenyAddresses` lists the VM's public IP                                                                                                                 |
-| Hosted images     | `fx-mcp:`                                   | `ghcr.io/vinayakjeet/`, caps 500m and 256Mi                                                                                                                      |
-| Monitoring        | off                                         | Prometheus on                                                                                                                                                    |
+| Concern           | Local (k3d)                                 | Production (k3s on the VM)                                                                                                                           |
+| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Domain and scheme | `127.0.0.1.nip.io`, http                    | `vinayak-urum.me`, https                                                                                                                             |
+| DNS               | none (nip.io resolves to 127.0.0.1)         | A records for `@`, `*` and `*.shop` to the VM's static IP                                                                                            |
+| Images            | built locally, tag `dev`, imported into k3d | built by CI, pushed to `ghcr.io/vinayakjeet/<name>`, tag `<version>-<git sha>`, one tag for all seven images because stores use the platform tag too |
+| Ingress and TLS   | Traefik, no TLS                             | Traefik, `ingress.tls.enabled`, cert-manager, ClusterIssuer `letsencrypt-prod`, one HTTP-01 certificate per host                                     |
+| Storage           | `local-path`                                | `local-path` (k3s default); Postgres 5Gi, store volumes 2Gi each                                                                                     |
+| Secrets           | generated by the chart on first install     | generated by the chart on first install; the LLM keys are a Secret made with `kubectl create secret` (`agent-llm`); k3s runs with secrets encryption |
+| Gateway           | 1 replica, 120 calls a minute per key       | 2 replicas, a PodDisruptionBudget (min 1), 60 calls a minute, HPA off                                                                                |
+| SSRF              | managed servers skip the check              | `upstreamDenyAddresses` lists the VM's public IP                                                                                                     |
+| Hosted images     | `fx-mcp:`                                   | `ghcr.io/vinayakjeet/`, caps 500m and 256Mi                                                                                                          |
+| Monitoring        | off                                         | Prometheus on                                                                                                                                        |
 
 `make store` and `make platform` pick the values files from `ENV=local|prod`. Production also needs `IMAGE_TAG=<version>-<git sha>` on the command line, so a missing value cannot deploy a stale tag. HPA is off on the VM because a fixed two replicas is enough and the CPU credit balance stayed flat under load (see "Scaling").
 
@@ -295,7 +295,7 @@ What that means for this repo:
 
 - The OAuth endpoints are written for https. `OAUTH_ISSUER` is `<scheme>://app.<domain>` from the chart, so on the VM it is https and the metadata documents carry https URLs.
 - On k3d everything up to the token step works with a real browser client: discovery, registration with CORS, login, the consent page and Deny. The token step and a call with the token are proven with `scripts/oauth-check.sh`, which talks to the server directly.
-- The proof with a real client (Inspector, then Claude Code) is the first check on the VM after TLS (`.notes/plans/M8-vm.md`).
+- The proof with a real client was done on the VM over TLS on 2026-10-17: Inspector 2.9.0 and Claude Code both completed consent and called `main__get_info`, and Claude Code refreshed its token without a browser. `oauth-check.sh` ends `OK` there.
 - API keys and agent JWTs work over http locally, as before.
 - Not done on purpose: a token URL override in the client, local TLS with a private CA, and the `MCP_SDK_GENERATION=v1` runtime switch in Claude Code. The rest of the OAuth design follows.
 
