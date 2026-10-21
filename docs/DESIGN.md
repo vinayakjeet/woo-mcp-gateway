@@ -1,6 +1,123 @@
 # Design notes
 
-Engineer's notes on choices the SPEC leaves open or explains only in a line. This file has the M11 and M12 sections so far. The earlier milestones are listed in `.notes/HANDOFF.md` as still to be written here.
+Engineer's notes on how the system fits together, and on choices the SPEC leaves open or explains in a line. The first part is the overview: components, the path of a tool call, failure handling, the chat agent, stores, and what changes between local and production. The sections after it explain single features.
+
+## System overview
+
+### Components
+
+| Component                | Namespace      | Kind                                       | Port                              | What it does                                                                                                                                      | Talks to                                    |
+| ------------------------ | -------------- | ------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| web                      | platform       | Deployment                                 | 8080                              | Static React dashboard                                                                                                                            | nothing                                     |
+| control-plane            | platform       | Deployment, 1 replica                      | 3000 public, 3001 internal        | Login, users, invites, keys, server CRUD, approvals, policies, audit queries, stats, stores and the provisioner, hosted servers, the OAuth server | Postgres, Kubernetes API, helm CLI          |
+| gateway                  | platform       | Deployment, 1 replica locally, 2 on the VM | 8080 MCP, 9090 health and metrics | The one MCP endpoint: auth, policy, aggregation, routing, rate limits, audit writes, upstream health checks                                       | Postgres, upstream servers                  |
+| agent                    | platform       | Deployment                                 | 3100                              | Chat endpoint (SSE) and the LLM tool loop                                                                                                         | gateway, control-plane 3001, LLM API on 443 |
+| postgres                 | platform       | StatefulSet and PVC                        | 5432                              | Platform state                                                                                                                                    | nothing                                     |
+| fx-mcp                   | platform       | Deployment                                 | 8080                              | Currency tools, a second upstream                                                                                                                 | Frankfurter API on 443                      |
+| prometheus               | platform       | Deployment, only if `monitoring.enabled`   | 9090                              | Scrapes gateway and control-plane metrics                                                                                                         | those two                                   |
+| mariadb, wordpress       | store-`<slug>` | StatefulSet and Deployment, PVCs           | 3306, 80                          | One store: database, storefront, wp-admin, WooCommerce REST API                                                                                   | each other                                  |
+| woo-mcp                  | store-`<slug>` | Deployment                                 | 8080                              | MCP server for that store                                                                                                                         | wordpress in its own namespace              |
+| store-bootstrap, wp-cron | store-`<slug>` | Job (Helm hook), CronJob                   | none                              | Install WordPress and WooCommerce and create the REST key; run WordPress cron                                                                     | mariadb                                     |
+| hosted servers           | mcp-hosted     | One Deployment each                        | admin's choice                    | A container image an admin registered                                                                                                             | public port 443 only                        |
+
+Other namespaces: `kube-system` (Traefik), and `cert-manager` on the VM.
+
+Only the gateway talks to upstream MCP servers, health checks included. The control-plane never calls one. It writes rows to Postgres and sends `NOTIFY`, and every gateway replica loads the change. Postgres is the only link between the two, so a gateway replica can start, die or be added without the control-plane knowing.
+
+Jobs and the CronJob have no probes (SPEC 15 gives them none). They run once and exit, so there is nothing for a readiness or liveness probe to check. Helm waits for the bootstrap hook to finish, and `kubectl -n store-<slug> get cronjob wp-cron` shows `lastSuccessfulTime`. Every Deployment and StatefulSet has requests, limits, and readiness and liveness probes.
+
+### What is public
+
+Three hosts go through Traefik: `app.<domain>` (web at `/`, control-plane at `/api` and `/oauth`, agent at `/api/chat`), `mcp.<domain>` (gateway at `/mcp` and the protected resource metadata) and `<slug>.shop.<domain>` (the storefront and wp-admin of one store). Everything else is a ClusterIP Service with no Ingress: Postgres, woo-mcp, fx-mcp, hosted servers, the gateway health port 9090 and the control-plane internal port 3001.
+
+"Internal only" is enforced by NetworkPolicies, not by the lack of an Ingress: every namespace is default deny, and woo-mcp accepts only gateway pods (`scripts/netpol-check.sh main`, and `platform` for the rest). The rules and their proofs are in `docs/THREAT_MODEL.md`, sections 2 to 5.
+
+### Where state lives
+
+- Postgres holds users, hashed API keys, servers with encrypted credentials, tools and their definition hashes, policies, the audit log, rate counters, stores and the OAuth tables. A store's own data is in its MariaDB and WordPress volumes.
+- A gateway replica keeps its tool map and its upstream connections in memory and rebuilds them from Postgres. It stays current through `LISTEN`: `registry_changed`, `policies_changed`, `key_revoked`, `status_changed` and `tools_changed`. Notifications sent while the connection was down are gone, so after a reconnect the replica reloads everything and drops its key cache (`apps/gateway/src/sync.ts`, `relisten`).
+- The gateway keeps no MCP sessions. Any replica can serve any request, which is why a pod can be killed mid-demo (`scripts/replica-demo.sh`, 20 of 20 calls ok). The cost: a legacy client has no push channel and sees list changes only when it lists again.
+
+### The path of a tool call
+
+1. The client sends `POST /mcp` to `mcp.<domain>` with an API key or an OAuth token. Traefik ends TLS (production) and forwards to a gateway pod on 8080.
+2. The gateway checks `Origin`, then authenticates in order: API key (prefix lookup, HMAC compare, not revoked, user active), agent JWT, OAuth access token. The result is a principal: user, role, and how they came in (`api_key`, `agent`, `oauth`).
+3. `tools/list` is answered from memory: servers that are enabled, connected and approved, tools that are active, filtered by the role's policy, named `<slug>__<tool>` and sorted. It never waits on an upstream.
+4. `tools/call` resolves the exposed name. An unknown name and a name hidden by policy get the same JSON-RPC error (-32602), so a member cannot tell a hidden tool from a missing one. Then, in order: rate limit, server state, the circuit breaker, the bulkhead, and the call with a timeout.
+5. The gateway calls the upstream over Streamable HTTP with the credential the admin stored for it, and a new `traceparent` child id. For a store that is woo-mcp in `store-<slug>`, with that store's bearer token.
+6. woo-mcp calls the WooCommerce REST API v3 in the same namespace, signing each request with OAuth 1.0a (the README explains why). It returns a one-line summary plus `structuredContent` with only the fields it chose to expose.
+7. The result goes back unchanged. An audit row is written in a `finally` block: user, key or grant, server, tool, outcome, duration, replica and a hash of the arguments. The same row is written for refusals and failures.
+
+The chat agent takes the same path from step 2, with an agent JWT instead of a key. Names and collisions are in "Naming and collisions" below.
+
+### Failure handling
+
+Each rule below says what happens and what pins it.
+
+- A slow upstream. Every call has a deadline, `timeout_ms` per server (15 s by default). On expiry the member gets a tool error, "Server `<slug>` did not answer within 15 s", audited as `timeout`. Listing is unaffected because it reads memory. Proof: `isolation.test.ts` ("lists both servers from memory in under 300 ms while a call hangs", "fails the silent call with the configured timeout error", "keeps the fast server answering while the silent one hangs").
+- A dead upstream. Each replica checks every upstream every 10 s with a `tools/list` that has a 3 s timeout. Three failures in a row turn it unreachable, so the worst case is about 30 s. A call that is refused or cannot resolve the name skips the count and marks it unreachable at once; a connection reset triggers an immediate check instead, because one dropped pooled connection is not a dead server. An unreachable server contributes no tools, calls to it answer at once with the failure kind (`dns`, `refused`, `timeout`, `tls`, `http_401`, `http_5xx`, and so on), and the gateway reconnects with backoff from 1 s to 30 s with jitter. The Servers page shows the state and the kind. Proof: `upstream.test.ts` ("turns unreachable after three failed attempts", "marks the server unreachable at once when a call is refused", "checks health at once after a connection reset ...", "reconnects when the upstream comes back on the same port"); `scripts/e2e.sh` ("fx call fails in ... with fx-mcp at zero", "main keeps answering while fx is down").
+- A flapping upstream. A circuit breaker per upstream opens after 5 consecutive timeouts, refusals, DNS or TLS failures, stays open for 30 s, then lets one trial call through. Any answer from the upstream, an error included, resets the count. Proof: `resilience.test.ts` and `upstream.test.ts` ("opens the breaker after five timeouts and then fails fast").
+- Too many calls at one upstream. A bulkhead allows 8 concurrent calls, queues up to 32 and waits at most 2 s. After that the answer is "Server `<slug>` is busy", audited as `timeout` (the SPEC outcome list has no `busy`), and the breaker does not count it. A client that cancels is audited as `upstream_error` with "cancelled by client", also not counted. Proof: `resilience.test.ts` (eight at once, queue of 32, 2 s), `upstream.test.ts` ("answers busy when the bulkhead queue wait runs out, without counting it", "reports a client cancel without counting it against the breaker").
+- Name collisions. Two servers cannot collide because every tool is `<slug>__<tool>` and slugs are unique. Two tools of one server that map to one name: the first by original name is kept and the other is skipped with a warning.
+- Other servers keep working. State, connection, breaker and bulkhead are per upstream, per replica. Proof: `scripts/e2e.sh` ("main keeps answering while fx is down").
+- Several replicas. Each replica runs its own health checks, so tool lists agree within about 3 health intervals (~30 s). One replica, holding Postgres advisory lock 4242, writes the shared status that the dashboard reads.
+- Errors do not carry upstream text. A failure message is built from error codes and status numbers, because an upstream body can echo a credential (`classify.ts`).
+- Postgres trouble. Rate limiting fails open after 2 s so a database hiccup is not a tool outage (`docs/THREAT_MODEL.md`, section 12). A policy reload that fails is retried every 2 s while the old rules stay in force.
+- A legacy-mode upstream keeps running a call after the gateway gave up on it, because the legacy SDK's cancel is a separate POST that a stateless upstream ignores. The gateway still answers at the timeout and frees its slot. `main` and `fx` are seeded with `protocol_mode = auto`, which does abort the request.
+
+### The chat agent
+
+- The browser posts to `/api/chat` with its session cookie. The agent sends that cookie to the control-plane (`POST /internal/sessions/introspect` on 3001, with a shared secret) and gets back the user and a JWT: `aud` is the gateway URL, `sub` is the user, `act` is `agent`, and it lives 300 s. The agent has no database access and never sees the user's API key.
+- Per turn, the agent opens one MCP client to the gateway with that JWT and lists the tools. The gateway sees `via = agent`, applies the user's role policy and writes the audit rows under the user. A member's chat therefore has the member's tool list, and the Audit page shows the calls under their name.
+- The loop: the system prompt plus the last 10 messages go to the model; text is streamed to the browser as `text` events; each tool call goes through the gateway and the result is clipped to 6000 characters before the model reads it; at most 8 model calls per turn. A turn stops at 240 s, so the JWT is still valid for every call. Each LLM request and each tool call has 60 s.
+- Models: the primary is `gemini-3.5-flash-lite`, the fallback `openai/gpt-oss-120b` on Groq. A 429 retries the primary once if the advised wait is 30 s or less, otherwise goes to the fallback. SPEC 13 falls back on 429 only; we also fall back on 5xx, an unreachable host and a timeout, and retry a 503 once after 2 s. A 400 never falls back, and nothing falls back after text has streamed. Once the fallback answers it keeps the rest of the turn. The extra cases are deliberate: a provider outage is as bad for the demo as a rate limit. Proof: `llm.test.ts`, `model.test.ts`.
+- Tool output is data. The prompt says so, and the role policy limits what an injected instruction could call (`docs/THREAT_MODEL.md`, section 9). The agent keeps no state between turns; the chat history is in the browser.
+
+### Stores
+
+- Creating a store from the dashboard inserts a `stores` row and a disabled managed server row. The provisioner (control-plane, under advisory lock 4243) runs `helm upgrade --install` of the store chart into namespace `store-<slug>` with the baked Helm CLI, then enables the server and waits until the gateway reports it connected. Ready therefore means "the gateway can call it", not "Helm returned". The deadline is 15 min and a failed release gets 3 attempts.
+- Delete runs `helm uninstall --wait --cascade foreground`, waits for the namespace to go, and only then removes the row. If the namespace is still there after 5 min the store stays `deleting` with a reason and the next tick tries again.
+- A restart mid-install is safe: recovery picks up `provisioning` and `deleting` rows and also handles releases left in `pending-*` states. `Idempotency-Key` makes create safe to retry.
+- Guardrails: a ResourceQuota and a LimitRange per store namespace, 3 stores per user (the admin's count includes `main`), and the provisioning deadline.
+- Deliberate changes from the SPEC, all for the VM: production stores use 2Gi MariaDB plus 2Gi WordPress (SPEC 28 says 10Gi each) so a store fits the 8Gi storage quota; the store quota's `limits.memory` is 2304Mi and `limits.cpu` 3500m so the wp-cron pod is not refused; `scripts/store-quota-sum.py` checks that the namespace keeps 200m CPU and 128Mi memory free.
+
+### Local to production
+
+The charts are the same. These values differ (`deploy/values-local.yaml`, `deploy/values-prod.yaml`, and the store pair):
+
+| Concern           | Local (k3d)                                 | Production (k3s on the VM)                                                                                                                                       |
+| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Domain and scheme | `127.0.0.1.nip.io`, http                    | `vinayak-urum.me`, https                                                                                                                                         |
+| DNS               | none (nip.io resolves to 127.0.0.1)         | A records for `@`, `*` and `*.shop` to the VM's static IP                                                                                                        |
+| Images            | built locally, tag `dev`, imported into k3d | built by CI, pushed to `ghcr.io/vinayakjeet/<name>`, tag `<version>-<git sha>`, one tag for all seven images because stores use the platform tag too             |
+| Ingress and TLS   | Traefik, no TLS                             | Traefik, `ingress.tls.enabled`, cert-manager, ClusterIssuer `letsencrypt-prod`, one HTTP-01 certificate per host                                                 |
+| Storage           | `local-path`                                | `local-path` (k3s default); Postgres 5Gi, store volumes 2Gi each                                                                                                 |
+| Secrets           | generated by the charts                     | generated on first install and kept across upgrades; the LLM keys are a Secret made with `kubectl create secret` (`agent-llm`); k3s runs with secrets encryption |
+| Gateway           | 1 replica, 120 calls a minute per key       | 2 replicas, a PodDisruptionBudget (min 1), 60 calls a minute, HPA off                                                                                            |
+| SSRF              | managed servers skip the check              | `upstreamDenyAddresses` lists the VM's public IP                                                                                                                 |
+| Hosted images     | `fx-mcp:`                                   | `ghcr.io/vinayakjeet/`, caps 500m and 256Mi                                                                                                                      |
+| Monitoring        | off                                         | Prometheus on                                                                                                                                                    |
+
+`make store` and `make platform` pick the values files from `ENV=local|prod`. Production also needs `IMAGE_TAG=<version>-<git sha>` on the command line, so a missing value cannot deploy a stale tag. HPA is off on the VM because a fixed two replicas is enough and the CPU credit balance stayed flat under load (see "Scaling").
+
+### Choices and what they cost
+
+- Postgres as the only bus (`LISTEN` and `NOTIFY`) instead of a broker. One fewer moving part, and the state is already there. The cost is that a missed notification needs a full reload, which `relisten` does.
+- Stateless MCP, no sessions. Any replica serves any request and a pod kill is invisible to clients. The cost is no server push to legacy clients.
+- Always prefixed tool names. Names stay stable when a server is added, and routing is one lookup. The cost is longer names.
+- WooCommerce REST, not WP-CLI. It runs the store's business logic and permission checks and works across a NetworkPolicy. The cost is the OAuth 1.0a signing over plain http.
+- One stored credential per upstream, not one per member. Simple, and members never hold credentials. The cost is that the upstream cannot tell members apart (`docs/THREAT_MODEL.md`, section 16).
+- Provisioning with Helm in the control-plane pod instead of an operator. Fewer parts, and a recovery path that is a `helm` command. The cost is the control-plane needs the Helm CLI and API permissions, confined to `store-*` and `mcp-hosted` (`docs/THREAT_MODEL.md`, section 3).
+
+### Where the build differs from the SPEC
+
+- Fallback beyond 429, and a 503 retry (above).
+- Slug length: 2 to 24 characters, because the SPEC's own examples `fx` and `gh` have 2 (see "Naming and collisions").
+- Audit outcomes: a full bulkhead queue is `timeout` and a client cancel is `upstream_error`, because the SPEC's outcome list has no `busy` or `cancelled`.
+- The 10 s health `tools/list` also refreshes the tool list, which covers the 60 s refresh in SPEC 6.3. `mcp_tools` is written only when a tool's name or definition hash changed.
+- Store sizes and quota in production (above).
+- Local models are Gemini and Groq, where SPEC 28 names others.
+- Migration 0001 treats a tool as already approved only if it is active and its server is approved. Tools that were changed, removed or on a pending server keep no approved hash. The policy seed sends `policies_changed` and `tools_changed` in the same transaction as its insert, so running gateways pick the rules up.
 
 ## Tool search mode (SPEC 17)
 
