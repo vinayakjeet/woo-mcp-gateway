@@ -18,7 +18,7 @@ Stops: an admin (or a stolen admin session) pointing an external server at the m
 - Control-plane check on create and on URL change: `apps/control-plane/src/api-servers.ts:123` and `:160` (400 `url_rejected` with a reason).
 - Connect time: `apps/gateway/src/pinned-fetch.ts:53` (`pinnedFetch`). A `connect.lookup` re-validates and pins the address, so a DNS answer that changes between the check and the connection (rebinding) is refused. Redirects are errors (`pinned-fetch.ts:65`, `apps/gateway/src/upstream.ts:251`).
 - Managed servers skip the check.
-- Local clusters set `gateway.allowInsecureUpstreams: true` (values-local only). The chart default is `false` and prod must keep it.
+- `gateway.allowInsecureUpstreams` is `false` in the chart and in both values files, and `scripts/test-platform-chart.sh` fails if `values-local.yaml` turns it on. It exists for tests that point an external server at plain http. Managed servers skip the check, so the local stack does not need it.
 
 Proof: `pnpm --filter @woo/core exec vitest run ssrf` (41 tests, table of hostile inputs: decimal, octal and hex IPs, IPv4-mapped IPv6, metadata host, `.svc`, `.cluster.local`) and `pnpm --filter @woo/gateway exec vitest run pinned-fetch` (10 tests: rebinding, IP literal, redirect, no socket opened).
 
