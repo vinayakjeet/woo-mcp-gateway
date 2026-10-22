@@ -1,8 +1,16 @@
 # woo-mcp-gateway
 
-> DRAFT (M7). This README will be rewritten in M14. The commands were checked on the local k3d setup on 2026-10-12.
-
 WooCommerce stores on Kubernetes, our own WooCommerce MCP server, a team MCP gateway with a React dashboard, and a chat agent. One gateway URL and one personal API key give an MCP client the tools of every enabled server.
+
+It runs on k3d locally and on a k3s VM (Azure, Let's Encrypt certificates) with the same Helm charts. Only values files differ.
+
+| Read                                         | For                                                                                                          |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| [docs/DESIGN.md](docs/DESIGN.md)             | System design and tradeoffs: components, the path of a tool call, failure handling, local to production      |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Shared upstream credentials, why client tokens are not passed on, untrusted upstreams, member against member |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md)     | Deploy, upgrade, rollback, backup and restore, SSH and certificate upkeep, incident checks                   |
+
+Layout: `apps/` (gateway, control-plane, web, agent), `servers/` (woo-mcp, fx-mcp), `packages/core`, `charts/` (platform, store), `deploy/` (values files), `scripts/` (live checks).
 
 ## Prerequisites
 
@@ -113,6 +121,62 @@ Prompts for a demo:
 
 Models (`deploy/values-local.yaml`): primary `gemini-3.5-flash-lite`, fallback `openai/gpt-oss-120b` on Groq. Free tiers answer 429 or 503 in bursts. The agent retries the primary once, then uses the fallback, and when both are limited it says so with the wait in seconds.
 
+## Production on a VPS (k3s)
+
+The VM deployment uses the same two charts, `charts/platform` and `charts/store`, with `deploy/values-prod.yaml` and `deploy/store-values-prod.yaml` instead of the local files. The full runbook with every command and the dates it was run is [docs/OPERATIONS.md](docs/OPERATIONS.md); this section is the outline.
+
+What the VM needs:
+
+- A Linux host with k3s 1.30 or later (the VM runs `v1.36.5+k3s1`, installed with `--secrets-encryption`). Traefik, kube-router and local-path storage stay on, because the charts rely on them.
+- DNS A records for the domain, `*` and `*.shop` pointing at the VM. `*` covers `app.` and `mcp.`; `*.shop` covers store hosts (`<slug>.shop.<domain>`).
+- Ports 80 and 443 open. Port 6443 stays closed: `make tunnel-up` opens an SSH tunnel to the API server on local port 16443 and the kubectl context `urumi-vm` points at it.
+- cert-manager with the two ClusterIssuers in `deploy/cert-manager/` (HTTP-01 through Traefik).
+- Images in a registry the VM can pull. CI builds them: pushing a tag `vX.Y.Z` runs `.github/workflows/images.yml`, which pushes all seven images as `ghcr.io/<owner>/<name>:X.Y.Z-<git sha>`. `make images` refuses `ENV=prod`.
+
+```bash
+make tunnel-up
+make store ENV=prod SLUG=main NAME="Main Store" IMAGE_TAG=<version>-<git sha>
+make platform ENV=prod SLUG=main IMAGE_TAG=<version>-<git sha>
+```
+
+`ENV=prod` selects the prod values files and the `urumi-vm` context, and it refuses to run without `IMAGE_TAG`. Create the `agent-llm` Secret first (see OPERATIONS, section 2).
+
+What changes between local and production, all through values:
+
+| Concern    | Local (`deploy/values-local.yaml`, `deploy/store-values-local.yaml`)                      | Production (`deploy/values-prod.yaml`, `deploy/store-values-prod.yaml`)                         |
+| ---------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Domain     | `global.domain: 127.0.0.1.nip.io`, `global.scheme: http`                                  | `global.domain: vinayak-urum.me`, `global.scheme: https`                                        |
+| Ingress    | Traefik, TLS off                                                                          | Traefik, `ingress.tls.enabled: true`, `ingress.tls.clusterIssuer: letsencrypt-prod`             |
+| Images     | `images.registry` empty, `global.imageTag: dev`, imported into k3d                        | `images.registry: ghcr.io/vinayakjeet`, tag passed with `--set global.imageTag=<version>-<sha>` |
+| Storage    | `local-path`, Postgres 2Gi (chart default), store volumes 2Gi + 2Gi                       | `local-path`, Postgres 5Gi, store volumes 2Gi + 2Gi (`provisioner.store.storage`)               |
+| Secrets    | Files in the git-ignored `deploy/secrets/`, `agent-llm` made with `kubectl create secret` | The same, with a separate store token file per environment (`store-<slug>-prod.yaml`)           |
+| Gateway    | 1 replica, rate limit 120 per minute                                                      | 2 replicas, PodDisruptionBudget, rate limit 60, `gateway.upstreamDenyAddresses` lists the VM IP |
+| Hosted     | `hosted.allowedImagePrefixes: ['fx-mcp:']`                                                | `['ghcr.io/vinayakjeet/']`, caps 500m CPU and 256Mi                                             |
+| Monitoring | off                                                                                       | `monitoring.enabled: true` (Prometheus)                                                         |
+
+Upgrade and rollback are `make platform ENV=prod ... IMAGE_TAG=<new tag>` and `helm --kube-context urumi-vm rollback platform <revision> -n platform`. OPERATIONS sections 4 to 6 give the checks and the run of 2026-10-19.
+
+## What stands out
+
+The nine optional items of the brief and the bonus. Each line says where it lives and what backs it. "On the VM" means run against the Azure VM over TLS; the date is in [docs/OPERATIONS.md](docs/OPERATIONS.md) or the section named.
+
+1. **Production-like VPS deployment.** `deploy/values-prod.yaml`, `deploy/store-values-prod.yaml`, [docs/OPERATIONS.md](docs/OPERATIONS.md). Backed by the live deployment (k3s, Let's Encrypt, GHCR images) and `scripts/test-platform-chart.sh` and `scripts/test-store-chart.sh`, which render the charts with the prod values. On the VM: `scripts/e2e.sh` 38 PASS and `scripts/oauth-check.sh` 29 passed.
+2. **Tool permissions.** Rules by role, server and tool in `packages/core/src/policy.ts`, edited on the Policies page. Members get `list_*` and `get_*` by default; hidden tools are absent from the list and rejected like unknown ones. Backed by `packages/core/src/policy.test.ts`, `apps/gateway/src/mcp.test.ts` ("hides tools from a member that the seeded rules do not allow", "answers a hidden tool exactly like a missing one") and the role-policy rows of `scripts/e2e.sh`.
+3. **OAuth on the gateway.** Authorization code with PKCE, client ID metadata documents, dynamic registration, refresh rotation; [docs/DESIGN.md](docs/DESIGN.md) "OAuth (SPEC 24)", [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) section 14. Backed by `apps/control-plane/src/oauth-*.test.ts` and `scripts/oauth-check.sh`. On the VM on 2026-10-17: Claude Code and MCP Inspector 2.9.0 completed the browser flow, called `main__get_info`, and Claude Code refreshed without a prompt.
+4. **Handling many tools.** `?toolMode=search` exposes only `search_tools` and `call_tool`; `auto` switches at 41 visible tools; `apps/gateway/src/search.ts`, [docs/DESIGN.md](docs/DESIGN.md) "Tool search mode (SPEC 17)". Backed by `apps/gateway/src/search.test.ts` and `search-mode.test.ts`. On the VM on 2026-10-18 Claude Code listed exactly those two tools.
+5. **Hosted MCP servers.** An admin adds a server by image; the platform applies a Secret, Deployment, Service and NetworkPolicy in `mcp-hosted` and removes them on delete; `apps/control-plane/src/hosted-manifests.ts`, [docs/DESIGN.md](docs/DESIGN.md) "Hosted servers (SPEC 21)". Backed by `hosted-manifests.test.ts` and `hosted-reconcile.test.ts`, and on the VM by `scripts/hosted-check.sh all` (15 checks) and `scripts/netpol-check.sh hosted fx2`.
+6. **Security hardening.** [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) sections 1 to 10.
+   - SSRF guard: `packages/core/src/ssrf.test.ts`; on the VM the platform's own URL and IP answer 400 `url_rejected` (2026-10-20).
+   - Least-privilege RBAC and a ValidatingAdmissionPolicy: `scripts/vap-check.sh` (7 checks).
+   - Default-deny NetworkPolicies: `scripts/netpol-check.sh platform|main`.
+   - Non-root, read-only filesystems, dropped capabilities: asserted by `scripts/test-platform-chart.sh` and `scripts/test-store-chart.sh`.
+   - Credentials encrypted with AES-256-GCM, bound to the server slug: `packages/core/src/crypto.test.ts`.
+   - Tool pinning against changed tool definitions: `scripts/approvals-check.sh`.
+7. **Scaling.** Two gateway replicas with a PodDisruptionBudget in `deploy/values-prod.yaml`; rate limits per key and per user in Postgres (`apps/gateway/src/rate-limit.ts`); [docs/DESIGN.md](docs/DESIGN.md) "Scaling (SPEC 23)". Backed by `apps/gateway/src/rate-limit.test.ts` and `scripts/replica-demo.sh` (20 of 20 calls ok with a pod deleted mid-run, on the VM).
+8. **Observability.** Prometheus metrics on the gateway and control-plane, the Health page (rate, p50, p95 per server), request ids and W3C trace ids across services; [docs/DESIGN.md](docs/DESIGN.md) "Observability (SPEC 20)". Backed by `scripts/obs-check.sh` (12 checks, on the VM). Upstream failures are reported with a reason from a fixed list (`timeout`, `refused`, `dns`, `tls`, `protocol`, `http_4xx`, `http_5xx`, `blocked`, `unknown`), as in `apps/gateway/src/classify.ts`.
+9. **Upgrades and rollback.** [docs/OPERATIONS.md](docs/OPERATIONS.md) sections 4 to 6. Backed by a run on the VM on 2026-10-19: upgrade to a new tag (Helm revision 4), `helm rollback` to revision 3 (recorded as revision 5), `scripts/e2e.sh` and `scripts/chat-check.sh` passing after each, and a `mariadb-dump` restored into a throwaway container with matching counts.
+10. **Bonus: multi-store provisioning.** The Stores page creates and deletes stores. Each is a Helm release in its own namespace `store-<slug>` with its own database, Secrets, volumes, Ingress host, ResourceQuota, LimitRange and NetworkPolicies, and registers its own `<slug>__*` tools in the gateway. A per-user limit and a 15 minute provisioning timeout apply, and a restart of the control-plane mid-provisioning resumes; `apps/control-plane/src/api-stores.ts`, [docs/DESIGN.md](docs/DESIGN.md) "System overview", "Stores". Backed by `api-stores.test.ts` and `api-stores-delete.test.ts`, and on the VM by `scripts/stores-check.sh all` (33 checks, including a control-plane kill mid-provision and the teardown check) and `scripts/netpol-check.sh main`. A recorded run of the chat agent comparing today's orders across two stores is not made yet.
+
 ## How woo-mcp talks to the store, and why
 
 - woo-mcp calls the WooCommerce REST API v3 at the store's in-cluster Service, `http://wordpress.store-<slug>.svc.cluster.local`.
@@ -130,7 +194,17 @@ make e2e S=<private dir>                   # live end to end checks, ends with O
 S=<private dir> scripts/chat-check.sh      # agent hardening and one chat turn, ends with OK
 S=<private dir> scripts/demo-reset.sh      # demo state; keeps orders, products and chat history
 S=<private dir> scripts/obs-check.sh       # metrics, request ids and trace ids across services, ends with OK
+S=<private dir> scripts/oauth-check.sh     # OAuth flow, consent, refresh, disabled member; ends with OK
+scripts/netpol-check.sh platform           # NetworkPolicy probes; also <slug> (a store) and hosted <slug>
+S=<private dir> scripts/vap-check.sh       # admission policy that confines the control-plane
+S=<private dir> scripts/stores-check.sh all    # create, kill the control-plane mid-provision, delete; about 15 minutes
+S=<private dir> scripts/hosted-check.sh all    # hosted server create, check, delete
+scripts/test-platform-chart.sh             # renders the charts with both values files and asserts them
+scripts/test-store-chart.sh
+pnpm -r test                               # unit tests; set TEST_DATABASE_URL for the Postgres ones
 ```
+
+Against the VM, run the same scripts with `APP`, `MCP`, `EXPECT_CONTEXT=urumi-vm` and a flattened `KUBECONFIG` as in [docs/OPERATIONS.md](docs/OPERATIONS.md), section 1.
 
 ## Scale and metrics (M12)
 
