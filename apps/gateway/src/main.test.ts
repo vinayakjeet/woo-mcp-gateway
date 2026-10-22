@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { encryptSecret, generateApiKey, oauthKeys, signAccessToken } from '@woo/core';
+import { encryptSecret, generateApiKey, oauthKeys, signAccessToken, signAgentJwt } from '@woo/core';
 import { schema } from '@woo/core/db';
 import { eq, inArray } from 'drizzle-orm';
 import type pg from 'pg';
@@ -216,6 +216,53 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
     });
     expect(bad.status).toBe(401);
     expect(bad.headers.get('www-authenticate')).toContain('error="invalid_token"');
+  });
+
+  it('does not forward an OAuth access token or an agent JWT to the upstream', async () => {
+    await db
+      .insert(schema.oauthConsents)
+      .values({ userId, clientId: 'dcr_passthrough', scope: 'mcp:tools' });
+    const oauthToken = signAccessToken({
+      keys: oauthKeys('jwt'),
+      iss: ISSUER,
+      aud: AUDIENCE,
+      sub: userId,
+      clientId: 'dcr_passthrough',
+      scope: 'mcp:tools',
+    });
+    const agentToken = signAgentJwt({ key: 'jwt', userId, audience: AUDIENCE });
+    const before = mainAuth.length;
+    for (const token of [oauthToken, agentToken]) {
+      const c = new Client({ name: 'e2e-passthrough', version: '0.0.0' });
+      await c.connect(
+        new StreamableHTTPClientTransport(mcpUrl, {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await c.listTools(undefined, { cacheMode: 'bypass' })).tools.map((t) => t.name),
+          ).toContain('main__get_info'),
+        { timeout: 5000 },
+      );
+      expect((await c.callTool({ name: 'main__get_info', arguments: {} })).content).toEqual([
+        { type: 'text', text: 'get_info ok' },
+      ]);
+      await c.close();
+    }
+    // Calls reached the upstream, and every one carried only the stored credential.
+    const seen = mainAuth.slice(before);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((h) => h === 'Bearer main-token')).toBe(true);
+    const joined = seen.join(' ');
+    expect(joined).not.toContain(oauthToken);
+    expect(joined).not.toContain(agentToken);
+    const vias = await db
+      .select({ via: schema.auditEvents.via })
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.exposedName, 'main__get_info'));
+    expect(vias.map((r) => r.via)).toEqual(expect.arrayContaining(['oauth', 'agent']));
   });
 
   describe('listen streams end with the credential they were opened with', () => {
