@@ -144,7 +144,7 @@ Rollback does not undo database migrations. Both releases in that run were on th
 
 ## 6. Backup and restore
 
-The store database is MariaDB, a StatefulSet pod `mariadb-0`, database `wordpress`. The platform database (Postgres) was not dumped in these runs: not run.
+The store database is MariaDB, a StatefulSet pod `mariadb-0`, database `wordpress`. The platform database is Postgres, a StatefulSet pod `postgres-0`, database `platform`, user `platform`. Both dumps are covered below.
 
 Dump (run on 2026-10-19; the file holds customer data, so the directory is mode 700 and the file is never printed or committed):
 
@@ -173,7 +173,48 @@ Wait until `select 1` succeeds before the `CREATE DATABASE` (the run polled for 
 
 Restoring into the live store: not run. The proof is the restore into a throwaway container only. If it is ever needed, restore into a fresh `wordpress` database and check counts before switching anything. The WordPress files (uploads) live on the `wordpress` PVC and were not backed up either: not run.
 
-When the dump is no longer needed, overwrite and remove it: `shred -u ~/backups/urumi/*.sql`.
+### Platform database (Postgres)
+
+Dump (run on 2026-10-22 against the VM, server 17.11, image `postgres:17-alpine`):
+
+```
+install -d -m700 ~/backups/urumi
+(umask 077; kubectl --context urumi-vm -n platform exec postgres-0 -- sh -c \
+  'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U platform -d platform --no-owner --no-privileges' \
+  > ~/backups/urumi/platform-<date>.sql)
+```
+
+The password is read inside the pod from `POSTGRES_PASSWORD` (a Secret) and does not appear on the command line. Check the file: mode 600, size above 0 (198604 bytes), a line `-- PostgreSQL database dump complete` near the end, and `grep -c '^CREATE TABLE'` is above 0 (18 tables).
+
+The dump holds user password hashes, API key hashes, OAuth token hashes, the audit log and the encrypted upstream credentials. Treat it like the store dump: directory 700, never printed or committed.
+
+Encrypted credentials in the dump (`mcp_servers.auth_secret_enc`, `hosted_servers.secret_env_enc`) are useless without the key. The key (KEK) is in the Kubernetes Secret `platform-crypto`, key `KEK`, and is not in the dump. A restore into a new cluster also needs that Secret from the old cluster, or every stored upstream credential is unreadable and the servers must be registered again. The KEK was not backed up in these runs: not run.
+
+Prove the dump by restoring it into a throwaway container of the same Postgres version as the cluster (read it with `show server_version` in the pod, do not assume it), then compare row counts per table on both sides with the same query:
+
+```
+PW=$(openssl rand -hex 16); export PW
+docker run -d --rm --name pg-verify -e POSTGRES_PASSWORD="$PW" postgres:17.11-alpine
+# wait until: docker exec pg-verify pg_isready -U postgres -h 127.0.0.1
+docker exec pg-verify psql -U postgres -c 'CREATE DATABASE platform'
+docker exec -i pg-verify psql -U postgres -d platform -v ON_ERROR_STOP=1 -q < ~/backups/urumi/platform-<date>.sql
+docker exec -i pg-verify psql -U postgres -d platform -At < counts.sql
+docker stop pg-verify
+```
+
+`counts.sql` lists every base table in `public` with its row count:
+
+```
+SELECT table_name || ' ' || (xpath('/row/c/text()', query_to_xml(
+  format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text
+FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name;
+```
+
+Run the same file in the live pod (`kubectl exec -i postgres-0 -- sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U platform -d platform -At' < counts.sql`). Result on 2026-10-22: the restore exited 0, the live counts were the same before and after the dump, and `diff` of live against restored printed nothing, 17 tables. Examples: users 13, mcp_servers 3, audit_events 213, api_keys 65, stores 1. If the audit log is still growing while you compare, take the live counts right before and right after the dump and expect the restored counts to sit between them. The container was stopped (`--rm` removes it) and `docker ps -a` showed none left.
+
+Restoring into the live platform database: not run. If it is ever needed, restore into a fresh database first, check counts, and only then point the control-plane and gateway at it.
+
+When the dump is no longer needed, overwrite and remove it: `shred -u ~/backups/urumi/*.sql` (both the store and the platform dumps).
 
 ## 7. SSH and NSG source changes
 
