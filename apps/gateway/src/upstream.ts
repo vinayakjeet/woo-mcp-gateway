@@ -284,6 +284,8 @@ export class Upstream {
   private ok(tools: Tool[]): void {
     this.failures = 0;
     this.st.lastOkAt = new Date();
+    // The Servers page shows this next to a Connected pill, so an old failure would read as a current one.
+    this.st.lastError = null;
     const changed = this.st.state !== 'connected';
     this.st.state = 'connected';
     this.setTools(tools);

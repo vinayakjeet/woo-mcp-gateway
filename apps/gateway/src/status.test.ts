@@ -4,9 +4,9 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { StatusWriter } from './status.js';
 import { migratedDatabase, TEST_DATABASE_URL } from './test-db.js';
-import { quietLog } from './test-helpers.js';
+import { fakeUpstream, quietLog } from './test-helpers.js';
 import type { Db } from './types.js';
-import type { UpstreamStatus } from './upstream.js';
+import { Upstream, type UpstreamStatus } from './upstream.js';
 
 describe.skipIf(!TEST_DATABASE_URL)('StatusWriter', () => {
   let url: string;
@@ -125,6 +125,59 @@ describe.skipIf(!TEST_DATABASE_URL)('StatusWriter', () => {
     });
     await leader.close();
     await follower.close();
+  });
+
+  it('drops the stored error when the upstream recovers', async () => {
+    const { leader, follower } = await pair();
+    const tools = new Map([
+      ['a', async () => ({ content: [{ type: 'text' as const, text: 'a' }] })],
+    ]);
+    const fake = await fakeUpstream({ tools, accept: () => true });
+    const u = new Upstream(
+      {
+        id: serverId,
+        slug: 'fx',
+        name: 'FX',
+        url: fake.url,
+        kind: 'external',
+        enabled: true,
+        approval: 'approved',
+        timeoutMs: 15_000,
+        protocolMode: 'legacy',
+        auth: { type: 'none' },
+      },
+      {
+        log: quietLog,
+        healthIntervalMs: 60_000,
+        healthTimeoutMs: 500,
+        backoffMinMs: 20,
+        backoffMaxMs: 100,
+      },
+    );
+    u.start();
+    let again: Awaited<ReturnType<typeof fakeUpstream>> | undefined;
+    try {
+      await vi.waitFor(() => expect(u.state).toBe('connected'), { timeout: 3000, interval: 10 });
+      await fake.close();
+      await u.call('a', {}, new AbortController().signal);
+      await leader.write(u, true);
+      expect(await row()).toMatchObject({ state: 'unreachable', errorKind: 'refused' });
+
+      again = await fakeUpstream({ tools, port: fake.port, accept: () => true });
+      await vi.waitFor(() => expect(u.state).toBe('connected'), { timeout: 3000, interval: 10 });
+      await leader.write(u, true);
+      expect(await row()).toMatchObject({
+        state: 'connected',
+        errorKind: null,
+        errorMessage: null,
+      });
+    } finally {
+      await u.stop();
+      await again?.close();
+      await fake.close();
+      await leader.close();
+      await follower.close();
+    }
   });
 
   it('prunes rate counters from the lock holder only, once its interval runs', async () => {

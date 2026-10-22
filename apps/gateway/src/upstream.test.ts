@@ -466,6 +466,19 @@ describe('Upstream', () => {
     expect((await u.call('a', {}, signal())).outcome).toBe('ok');
   });
 
+  it('clears the last error once a check succeeds again', async () => {
+    const tools = new Map([['a', async () => text('a')]]);
+    const { u, fake } = await upstreamFor(tools, {}, { healthIntervalMs: 60_000 });
+    await connected(u);
+    await fake.close();
+    await u.call('a', {}, signal());
+    expect(u.status().lastError).toEqual({ kind: 'refused', message: 'connection refused' });
+    const again = await fakeUpstream({ tools, port: fake.port, accept: bearerOk });
+    cleanup.push(() => again.close());
+    await connected(u);
+    expect(u.status().lastError).toBeNull();
+  });
+
   it('picks up a new upstream tool on the next health check', async () => {
     const onTools = vi.fn();
     const tools = new Map<string, FakeTool>([['a', async () => text('a')]]);
