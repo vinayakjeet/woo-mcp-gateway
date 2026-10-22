@@ -5,7 +5,7 @@ const URL = 'http://mcp.127.0.0.1.nip.io/mcp';
 const KEY = `urk_abcd1234_${'x'.repeat(43)}`;
 
 describe('snippets', () => {
-  it('matches the SPEC 14 Claude Code command', () => {
+  it('matches the documented Claude Code command', () => {
     expect(snippets(URL, KEY).claudeCode).toBe(
       `claude mcp add --transport http urumi http://mcp.127.0.0.1.nip.io/mcp --header "Authorization: Bearer ${KEY}"`,
     );

@@ -60,7 +60,7 @@ export const storeUrl = (d: StoreDefaults, slug: string): string =>
 export const storeMcpUrl = (slug: string): string =>
   `http://woo-mcp.store-${slug}.svc.cluster.local:8080/mcp`;
 
-// SPEC 15. Enforce refuses pods that break restricted; warn also makes helm print violations in
+// Pod security labels. Enforce refuses pods that break restricted; warn also makes helm print violations in
 // pod templates, such as the bootstrap Job, which enforce only sees when its pod is created.
 export function storeLabels(slug: string): Record<string, string> {
   return {
@@ -71,7 +71,7 @@ export function storeLabels(slug: string): Record<string, string> {
   };
 }
 
-// SPEC 18 generated values. JSON is valid YAML, so a store name needs no YAML quoting.
+// Generated values. JSON is valid YAML, so a store name needs no YAML quoting.
 export function storeValues(
   d: StoreDefaults,
   s: { slug: string; name: string },

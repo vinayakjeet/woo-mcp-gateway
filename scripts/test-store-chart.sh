@@ -202,7 +202,7 @@ done
 [ "$(grep -c namespaceSelector <<<"$db")" -eq 0 ] || fail "mariadb policy: no other namespace may connect"
 pass "store networkpolicies"
 
-# SPEC 16 default deny inside the store namespace, then DNS, then one egress rule per pair.
+# NetworkPolicy matrix, default deny inside the store namespace, then DNS, then one egress rule per pair.
 nets=$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}')
 npdoc() { awk -v n="  name: $1" 'BEGIN{RS="---\n"} index($0, n "\n") && /kind: NetworkPolicy/' <<<"$nets"; }
 d=$(npdoc default-deny)

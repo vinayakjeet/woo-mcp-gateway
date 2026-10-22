@@ -1,4 +1,4 @@
-# SPEC 16: the gateway reaches its state, the fx-mcp server, every store's woo-mcp, hosted servers
+# The NetworkPolicy matrix: the gateway reaches its state, the fx-mcp server, every store's woo-mcp, hosted servers
 # and public MCP servers on 443. DNS comes from allow-dns.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

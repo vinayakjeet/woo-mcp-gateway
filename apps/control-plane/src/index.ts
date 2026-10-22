@@ -84,7 +84,7 @@ if (provisioner) {
       kube,
       helm: helmCli(),
       defaults: provisioner.storeDefaults,
-      // Baked into the image (SPEC 18). Overridable for running outside the image.
+      // Baked into the image (the store provisioner design). Overridable for running outside the image.
       chartPath: process.env.STORE_CHART_PATH ?? '/charts/store',
       workDir: tmpdir(),
       log: provisionerLog,

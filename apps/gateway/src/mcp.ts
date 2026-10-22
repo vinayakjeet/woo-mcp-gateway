@@ -81,7 +81,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
 
   server.setRequestHandler('tools/list', () => {
     const visible = o.router.list(allowed);
-    // SPEC 17: the mode is chosen after policy, so a member is counted on what they can see.
+    // Tool search: the mode is chosen after policy, so a member is counted on what they can see.
     return {
       tools: effectiveToolMode(o.toolMode, visible.length) === 'search' ? META_TOOLS : visible,
     };
@@ -202,13 +202,13 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       }
       const { record } = route.upstream;
       // Checked before the enabled flag, so a hidden tool says nothing about its server. The
-      // message is the one a missing tool gets (SPEC 6.5 step 1).
+      // message is the one a missing tool gets (step 1 of the call path).
       if (!allowed(record.slug, route.toolName)) {
         row.outcome = 'denied';
         row.errorMessage = 'hidden by policy';
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
-      // After policy, so a hidden tool is not counted; before the enabled flag (SPEC 6.5 step 2).
+      // After policy, so a hidden tool is not counted; before the enabled flag (step 2 of the call path).
       const retry = await overLimit();
       if (retry !== null) {
         row.outcome = 'rate_limited';
@@ -221,7 +221,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
       row.outcome = 'upstream_error';
       const r = await route.upstream.call(route.toolName, args, signal, childTraceparent(trace));
       row.outcome = r.outcome;
-      // As received (SPEC 6.5 step 6): projectCallToolResult could append a content block.
+      // As received (step 6 of the call path): projectCallToolResult could append a content block.
       if ('result' in r) return r.result;
       return toolError(r.message);
     } finally {
@@ -283,7 +283,7 @@ export function createGatewayServer(o: GatewayServerOptions): Server {
         await writeAudit(row, started, trace);
       }
     }
-    // The inner call writes the audit row: one row per tools/call (SPEC 9), naming the real tool.
+    // The inner call writes the audit row: one row per tools/call (the audit log rules), naming the real tool.
     return callRouted(
       parsed.data.name,
       parsed.data.arguments,

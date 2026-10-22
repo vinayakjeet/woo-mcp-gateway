@@ -8,7 +8,7 @@ const DAY_MS = 86_400_000;
 
 type Db = Pick<pg.Pool, 'connect'>;
 
-// SPEC 9. Postgres time sets the cutoff, never the pod clock: the clock can jump (WSL) and differs
+// Audit retention. Postgres time sets the cutoff, never the pod clock: the clock can jump (WSL) and differs
 // between replicas. Returns null when another session holds the lock.
 export async function pruneAudit(db: Db, opts: { batch?: number } = {}): Promise<number | null> {
   const batch = opts.batch ?? BATCH;

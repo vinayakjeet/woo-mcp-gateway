@@ -24,7 +24,7 @@ export type GatewayAppOptions = {
   limiter: CallLimiter;
   metrics?: Pick<GatewayMetrics, 'observe'>;
   authenticate(header: string | undefined): Promise<Principal | null>;
-  // Set only while OAuth is on (SPEC 24): `resource` is GATEWAY_URL, `issuer` the authorization server origin.
+  // Set only while OAuth is on (the OAuth design): `resource` is GATEWAY_URL, `issuer` the authorization server origin.
   oauth?: { resource: string; issuer: string };
   replica: string;
   allowedOrigins: string[];
@@ -100,7 +100,7 @@ export function buildGatewayApp(o: GatewayAppOptions): FastifyInstance {
   const log: Log = app.log;
   const allowed = new Set(o.allowedOrigins);
 
-  // The root path is SPEC 24 and the target of WWW-Authenticate. The path-aware one is RFC 9728 and
+  // The root path is the one the OAuth design names and the target of WWW-Authenticate. The path-aware one is RFC 9728 and
   // what the SDK helper builds for a resource with a path, so both answer.
   let prmPaths: ReadonlySet<string> | null = null;
   let challenge: ((tokenSent: boolean) => string) | null = null;

@@ -1,4 +1,4 @@
-# Platform values for the Azure VM (SPEC 28). Pass the image tag on the command line:
+# Platform values for the Azure VM . Pass the image tag on the command line:
 # --set global.imageTag=<version>-<git sha>. It is not set here so a missing --set cannot deploy a stale tag.
 global:
   domain: vinayak-urum.me
@@ -25,7 +25,7 @@ agent:
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b
 
-# The Claude Code proof over TLS passed on 2026-10-17 (SPEC 24 limit was 18:00 Fri 23 Oct).
+# The Claude Code proof over TLS passed on 2026-10-17 (the time box for it was 18:00 Fri 23 Oct).
 oauth:
   enabled: true
 
@@ -47,7 +47,7 @@ provisioner:
   enabled: true
   maxStoresPerUser: 3
   store:
-    # 2Gi + 2Gi per store fits the 8Gi store quota (M9 decision A, a deliberate change from SPEC 28).
+    # 2Gi + 2Gi per store fits the 8Gi store quota (M9 decision A, a deliberate change from the original 10Gi sizing).
     storage:
       mariadb: 2Gi
       wordpress: 2Gi

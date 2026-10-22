@@ -21,7 +21,7 @@ const good = {
 const hdr = { alg: 'HS256', typ: 'agent+jwt' };
 
 describe('agent JWT', () => {
-  it('round trips with typ agent+jwt and the SPEC claims', () => {
+  it('round trips with typ agent+jwt and the documented claims', () => {
     const t = signAgentJwt({ key, userId: 'u1', audience: aud, now });
     expect(JSON.parse(Buffer.from(t.split('.')[0]!, 'base64url').toString())).toEqual(hdr);
     expect(verifyAgentJwt(t, { key, audience: aud, now })).toEqual(good);

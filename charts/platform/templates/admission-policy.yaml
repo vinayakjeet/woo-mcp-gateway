@@ -1,5 +1,5 @@
 {{- if .Values.provisioner.enabled }}
-# SPEC 18 and 22.3. The provisioner ClusterRole is wide because Helm's --wait lists and watches
+# Store provisioner and admission policy. The provisioner ClusterRole is wide because Helm's --wait lists and watches
 # everything it installs. This policy is the narrow part: the control-plane may only write inside
 # store-* namespaces and mcp-hosted, and may only create, change or delete those Namespace objects.
 # Reads are not matched, so the control-plane can still look at any namespace.

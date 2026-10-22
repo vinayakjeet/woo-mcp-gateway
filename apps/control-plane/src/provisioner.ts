@@ -18,14 +18,14 @@ const LOCK_RETRY_MS = 10_000;
 export type ProvisionerOptions = {
   databaseUrl: string;
   deps: ReconcileDeps;
-  // Hosted servers (SPEC 21). Left out, the pass does not run.
+  // Hosted servers. Left out, the pass does not run.
   hosted?: HostedDeps;
   log: Log;
   tickMs?: number;
   lockRetryMs?: number;
 };
 
-// SPEC 18: only the replica holding advisory lock 4243 reconciles. The lock lives on its own
+// Store provisioner: only the replica holding advisory lock 4243 reconciles. The lock lives on its own
 // session (same pattern as the gateway's status writer), and LISTEN runs on that session, so a
 // replica hears stores_changed and hosted_changed only while it leads.
 export class Provisioner {

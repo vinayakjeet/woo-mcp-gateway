@@ -3,7 +3,7 @@ import MiniSearch from 'minisearch';
 import { z } from 'zod';
 import type { ToolMode } from './types.js';
 
-// SPEC 17: above this many visible tools, `auto` lists only the two meta-tools.
+// Tool search: above this many visible tools, `auto` lists only the two meta-tools.
 export const SEARCH_THRESHOLD = 40;
 
 export type { ToolMode };

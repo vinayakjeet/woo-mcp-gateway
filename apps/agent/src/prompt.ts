@@ -8,7 +8,7 @@ const timeFormat = new Intl.DateTimeFormat('en-IN', {
   timeStyle: 'short',
 });
 
-// SPEC 13 essentials only: free tiers count every prompt token again on every iteration.
+// Chat agent essentials only: free tiers count every prompt token again on every iteration.
 export function systemPrompt(now: Date, email: string): string {
   return [
     `You are the operations assistant for a team's WooCommerce stores. You act for ${email}.`,

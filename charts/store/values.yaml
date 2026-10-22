@@ -37,20 +37,20 @@ mcp:
   sharedToken: ''
 
 wooMcp:
-  # Only these pods may call woo-mcp (SPEC 16). The platform chart (M3) must label the gateway to match.
+  # Only these pods may call woo-mcp (NetworkPolicy matrix). The platform chart (M3) must label the gateway to match.
   gateway:
     namespace: platform
     podLabels:
       app.kubernetes.io/name: gateway
 
 networkPolicy:
-  # Traefik in k3s (SPEC 16). Besides this store's woo-mcp, only these pods may open the storefront.
+  # Traefik in k3s (NetworkPolicy matrix). Besides this store's woo-mcp, only these pods may open the storefront.
   ingressController:
     namespace: kube-system
     podLabels:
       app.kubernetes.io/name: traefik
 
-# SPEC 18. Production stores use 2Gi + 2Gi volumes (a deliberate change from SPEC 28), which fits 8Gi.
+# Store provisioner. Production stores use 2Gi + 2Gi volumes (a deliberate change from the original 10Gi sizing), which fits 8Gi.
 quota:
   requestsCpu: '1'
   requestsMemory: 1536Mi

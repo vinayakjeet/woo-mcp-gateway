@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPEC 18 and 22.3 proofs for the control-plane admission policy.
+# Proofs for the store provisioner and admission policy for the control-plane admission policy.
 #   S=<scratchpad> scripts/vap-check.sh
 # Runs against the k3d context. For the VM: EXPECT_CONTEXT=urumi-vm S=<scratchpad> scripts/vap-check.sh
 # The first rows impersonate the ServiceAccount with --as and --dry-run=server, so nothing is stored.
@@ -95,7 +95,7 @@ allowed "$r" "read in default"
 grep -q 'kube-root-ca.crt' <<<"$r" || fail "read in default: unexpected answer: $r"
 pass "reads are not affected"
 
-# SPEC 18's own test: a real token, no impersonation.
+# the admission policy's own test: a real token, no impersonation.
 umask 077
 kc="$S/vap-check.kubeconfig"
 trap 'rm -f "$kc"; kubectl delete namespace m10-vap-probe store-vap-probe --ignore-not-found --wait=false >/dev/null 2>&1 || true; kubectl delete configmap vap-probe -n default --ignore-not-found >/dev/null 2>&1 || true' EXIT

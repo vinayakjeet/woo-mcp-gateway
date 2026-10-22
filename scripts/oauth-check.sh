@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live checks of the OAuth flow (M13, SPEC 24): both metadata documents, the 401 challenge, client
+# Live checks of the OAuth flow (M13): both metadata documents, the 401 challenge, client
 # registration, the consent page and its CSRF and Origin checks, the code exchange with PKCE, a
 # call through the gateway audited via oauth, rotating refresh tokens with the 30 s grace window,
 # a disabled member, and a grep of the live logs for secrets. A throwaway member is invited, used

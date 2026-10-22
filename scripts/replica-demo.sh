@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPEC 23 demo: 20 tool calls through the Ingress at 0.5 s intervals, spread over the gateway replicas,
+# Scaling demo: 20 tool calls through the Ingress at 0.5 s intervals, spread over the gateway replicas,
 # with one gateway pod deleted after call 8. Every call must answer 200 without a tool error.
 # Needs 2 or more gateway replicas: make platform HELM_FLAGS="--wait --set gateway.replicas=2".
 # Prints no passwords, cookies, tokens or keys.

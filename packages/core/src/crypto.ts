@@ -15,7 +15,7 @@ function checkKek(kek: Buffer): void {
 }
 
 // aad ties a record to its owner (the server slug), so a database writer cannot move a
-// ciphertext from one row to another. The key id byte lets a rotation re-encrypt rows one at a time (SPEC 22).
+// ciphertext from one row to another. The key id byte lets a rotation re-encrypt rows one at a time (the security hardening rules).
 export function encryptSecret(plain: string, kek: Buffer, aad: string, keyId = 1): Buffer {
   checkKek(kek);
   const nonce = randomBytes(NONCE);

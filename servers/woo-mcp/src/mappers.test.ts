@@ -52,7 +52,7 @@ describe('order mappers', () => {
       expect(s).not.toContain(secret);
     }
   });
-  it('summary has the SPEC fields', () => {
+  it('summary has the documented fields', () => {
     expect(orderSummary(order)).toEqual({
       id: 41,
       number: '41',

@@ -56,7 +56,7 @@ export function keyRoutes(scope: FastifyInstance, o: ApiOptions): void {
     const id = parseId(req.params);
     if (!id) return reply.code(404).send({ error: 'not_found' });
     const user = req.user as SessionUser;
-    // Admins revoke any key (SPEC 7). A member asking for someone else's key gets the same 404
+    // Admins revoke any key (the identity and auth rules). A member asking for someone else's key gets the same 404
     // as for a missing one.
     const owner = user.role === 'admin' ? null : user.id;
     const revoked = await withTx(o.pool, async (c) => {

@@ -13,7 +13,7 @@ export type IntrospectOptions = {
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest();
 
-// SPEC 7 agent delegation. The agent forwards the browser's Cookie header as is, so the sid is
+// Agent delegation (identity and auth rules). The agent forwards the browser's Cookie header as is, so the sid is
 // parsed by the same code as the public API. No live session means no token.
 export async function introspectRoutes(
   scope: FastifyInstance,

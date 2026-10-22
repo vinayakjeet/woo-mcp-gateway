@@ -272,7 +272,7 @@ export class Authenticator {
       // grant that was revoked and approved again. iat has whole seconds, so compare whole seconds.
       if (!user.approvedAt || grant.iat < Math.floor(user.approvedAt.getTime() / 1000)) return null;
     }
-    // No key to carry a mode, so these follow the visible-count rule (SPEC 17).
+    // No key to carry a mode, so these follow the visible-count rule (the tool search design).
     return {
       userId: user.id,
       email: user.email,

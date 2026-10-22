@@ -1,5 +1,5 @@
 {{- if .Values.provisioner.enabled }}
-# SPEC 18, plus cronjobs for the store wp-cron CronJob (M10). Helm 4's --wait uses kstatus,
+# The provisioner list, plus cronjobs for the store wp-cron CronJob (M10). Helm 4's --wait uses kstatus,
 # which lists and watches everything it installs.
 # admission-policy.yaml narrows it to store-* and mcp-hosted.
 apiVersion: rbac.authorization.k8s.io/v1

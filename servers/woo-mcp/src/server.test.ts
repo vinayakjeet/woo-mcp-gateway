@@ -67,7 +67,7 @@ describe.each(['legacy', 'auto'] as const)('woo-mcp over HTTP (%s protocol era)'
     await close();
   });
 
-  it('lists the six tools with SPEC annotations', async () => {
+  it('lists the six tools with the documented annotations', async () => {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t.annotations]));
     expect(Object.keys(byName).sort()).toEqual([

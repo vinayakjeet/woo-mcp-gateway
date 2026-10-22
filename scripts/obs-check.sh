@@ -66,7 +66,7 @@ for n in provisioner_stores provisioner_duration_seconds; do
   grep -q "^# TYPE $n " <<<"$cm" || fail "control-plane /metrics lacks $n"
 done
 grep -q '^provisioner_stores{status="ready"} ' <<<"$cm" || fail "provisioner_stores has no ready row"
-pass "both /metrics endpoints list the SPEC 20 names"
+pass "both /metrics endpoints list the documented names"
 
 # Counts, durations and labels only.
 for text in "$gm" "$cm"; do

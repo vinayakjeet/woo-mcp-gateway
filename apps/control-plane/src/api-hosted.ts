@@ -27,7 +27,7 @@ const HOSTED_SELECT = `select id, slug, image, port, path, env, cpu_limit as cpu
     status, status_reason as reason, server_id as "serverId", created_at as "createdAt"
   from hosted_servers`;
 
-// The registry row that the gateway reads. Same defaults as a store row (SPEC 4, decision 17).
+// The registry row that the gateway reads. Same defaults as a store row (the data model, decision 17).
 const HOSTED_TIMEOUT_MS = 15000;
 
 // Thrown inside the transaction so the rows inserted so far roll back with it.
@@ -167,7 +167,7 @@ export function hostedRoutes(scope: FastifyInstance, o: ApiOptions): void {
         `update hosted_servers set status = 'deleting', status_reason = null where id = $1`,
         [id],
       );
-      // The tools disappear before any Kubernetes work starts (SPEC 21: deregister, then delete).
+      // The tools disappear before any Kubernetes work starts (deregister, then delete).
       const m = await c.query<{ id: string }>(
         'delete from mcp_servers where id = $1 returning id',
         [h.serverId],

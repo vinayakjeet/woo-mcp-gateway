@@ -11,7 +11,7 @@ import {
 import { KubeError, type HostedKind, type Kube } from './kube.js';
 import { failureDetail, type Log } from './reconcile.js';
 
-// SPEC 21: the field manager for everything this pass applies.
+// Hosted servers: the field manager for everything this pass applies.
 export const HOSTED_FIELD_MANAGER = 'platform';
 // The Deployment goes first so its pods start to stop, and the Secret goes last.
 const DELETE_ORDER: HostedKind[] = ['Deployment', 'Service', 'NetworkPolicy', 'Secret'];

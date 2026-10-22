@@ -160,7 +160,7 @@ export function storeRoutes(scope: FastifyInstance, o: ApiOptions): void {
            updated_at = now() where id = $1`,
         [id],
       );
-      // SPEC 18 step 1: the tools disappear before any helm work starts.
+      // Step 1 of store creation: the tools disappear before any helm work starts.
       const m = await c.query<{ id: string }>(
         'delete from mcp_servers where store_id = $1 returning id',
         [id],

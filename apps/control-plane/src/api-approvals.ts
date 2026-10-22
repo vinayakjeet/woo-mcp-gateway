@@ -35,7 +35,7 @@ type ToolRow = {
 };
 
 export function approvalRoutes(scope: FastifyInstance, o: ApiOptions): void {
-  // No auth column is selected here: an upstream credential never leaves the database (SPEC 22.8).
+  // No auth column is selected here: an upstream credential never leaves the database.
   scope.get('/api/approvals', { preHandler: requireAdmin }, async () => {
     const s = await o.pool.query<ApprovalRow>(
       `select s.id as "serverId", s.slug, s.name, s.url, s.kind, s.approval
@@ -94,7 +94,7 @@ export function approvalRoutes(scope: FastifyInstance, o: ApiOptions): void {
       );
       const s = cur.rows[0];
       if (!s) return 'not_found' as const;
-      // Store and system servers are approved as they are (SPEC 22.7). A hosted server is approved
+      // Store and system servers are approved as they are (the tool pinning rules). A hosted server is approved
       // on its first sync only, so a later change goes through here like an external one.
       if (s.kind !== 'external' && s.kind !== 'hosted') return 'auto_approved' as const;
       await c.query(

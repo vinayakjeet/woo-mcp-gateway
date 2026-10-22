@@ -19,7 +19,7 @@ ingress:
     enabled: false
     clusterIssuer: ''
 
-# OAuth for MCP clients (SPEC 24, M13). Off keeps today's behaviour: no OAuth routes, no
+# OAuth for MCP clients (M13). Off keeps today's behaviour: no OAuth routes, no
 # WWW-Authenticate header, no Ingress paths. The issuer is always <scheme>://app.<domain>.
 oauth:
   enabled: false
@@ -27,7 +27,7 @@ oauth:
 gateway:
   # Browser origins allowed to call /mcp. Empty means <scheme>://app.<domain>.
   allowedOrigins: []
-  # Lets an admin add http:// MCP servers (SPEC 22.1). The control-plane check and the gateway's
+  # Lets an admin add http:// MCP servers (the SSRF rules). The control-plane check and the gateway's
   # connect-time check read the same value. Private, loopback, link-local and cluster addresses
   # stay refused either way. Keep false in production.
   allowInsecureUpstreams: false
@@ -35,9 +35,9 @@ gateway:
   # Both the gateway and the control-plane read it. The VM's own public IP is plain public unicast,
   # so the address check cannot refuse it by itself: set it in production and update it if the IP changes.
   upstreamDenyAddresses: []
-  # Tool calls per minute for a key without its own limit, and for the agent (SPEC 19).
+  # Tool calls per minute for a key without its own limit, and for the agent (the rate limit design).
   rateLimitPerMinute: 60
-  # SPEC 23. Replicas share all state through Postgres, so any count works. Ignored while the HPA is on.
+  # Scaling. Replicas share all state through Postgres, so any count works. Ignored while the HPA is on.
   replicas: 1
   # minAvailable 1: a node drain evicts one gateway pod at a time. Needs two replicas or the HPA.
   pdb:
@@ -50,10 +50,10 @@ gateway:
     targetCPUUtilizationPercentage: 70
 
 agent:
-  # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (SPEC 17).
+  # auto, search or full. Auto lets the gateway switch to search mode above 40 visible tools (the tool search design).
   # search and full force the mode with ?toolMode= on the gateway URL.
   toolMode: auto
-  # OpenAI-compatible chat completions. Each environment's values file sets these (SPEC 28).
+  # OpenAI-compatible chat completions. Each environment's values file sets these .
   # Keys come from Secret agent-llm: LLM_API_KEY for the primary, LLM_FALLBACK_API_KEY for the fallback.
   # The agent exits at start, naming the missing variables, while baseUrl or model is empty.
   llm:
@@ -82,7 +82,7 @@ seed:
       name: Main Store
       namespace: store-main
 
-# SPEC 18 (M9): the control-plane provisions stores with the helm CLI. Turning it on also mounts
+# Store provisioner (M9): the control-plane provisions stores with the helm CLI. Turning it on also mounts
 # the ServiceAccount token and creates the ClusterRole.
 provisioner:
   enabled: false
@@ -95,7 +95,7 @@ provisioner:
       wordpress: 2Gi
     environmentType: local
 
-# SPEC 21 (M11): hosted MCP servers run in mcp-hosted. An admin can only submit an image that starts with
+# Hosted servers (M11): hosted MCP servers run in mcp-hosted. An admin can only submit an image that starts with
 # one of these prefixes. Each entry ends with "/" or ":" so "ghcr.io/acme/" cannot admit "ghcr.io/acme-evil/".
 # Empty refuses every create. The caps bound the limits an admin may request.
 hosted:
@@ -103,7 +103,7 @@ hosted:
   maxCpu: 500m
   maxMemory: 256Mi
 
-# SPEC 20 (M12): one Prometheus that scrapes the gateway (9090) and the control-plane (3001). Off by
+# Observability (M12): one Prometheus that scrapes the gateway (9090) and the control-plane (3001). Off by
 # default and not in values-local; turn it on with --set monitoring.enabled=true. No Grafana, no
 # Ingress, no Service: use kubectl port-forward. The image is a third-party one, so it is not under
 # images.registry; it needs an explicit tag and is never latest.
@@ -118,7 +118,7 @@ fxMcp:
   name: Currency
 
 networkPolicy:
-  # Traefik in k3s (SPEC 16). The same shape as the store chart.
+  # Traefik in k3s (NetworkPolicy matrix). The same shape as the store chart.
   ingressController:
     namespace: kube-system
     podLabels:

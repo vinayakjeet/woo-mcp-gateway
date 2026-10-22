@@ -84,7 +84,7 @@ export function buildPublicApp(
   // The catch keeps a failed hash from becoming an unhandled rejection at startup; verify then fails closed.
   const dummyHash = hash('not-a-real-password').catch(() => '');
 
-  // SameSite=Lax is the first CSRF defense; this is the second (SPEC 7). Every later route inherits it.
+  // SameSite=Lax is the first CSRF defense; this is the second (the identity and auth rules). Every later route inherits it.
   app.addHook('onRequest', async (req, reply) => {
     if (SAFE_METHODS.has(req.method)) return;
     if (cfg.oauthEnabled && OAUTH_ORIGIN_EXEMPT.has(pathOf(req.url))) return;

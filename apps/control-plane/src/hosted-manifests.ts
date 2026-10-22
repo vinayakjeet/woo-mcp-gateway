@@ -3,10 +3,10 @@ import { hostedRequests, parseHostedInput, type HostedConfig } from './hosted-in
 export const HOSTED_NAMESPACE = 'mcp-hosted';
 export const HOSTED_LABEL = 'urumi.io/hosted';
 
-// SPEC 15 gives Node services uid 10001. A fixed uid lets images that default to root still run
+// The Kubernetes layout rules give Node services uid 10001. A fixed uid lets images that default to root still run
 // under runAsNonRoot.
 const UID = 10001;
-// SPEC 16: the five private and link-local ranges that public egress must not reach.
+// The NetworkPolicy matrix: the five private and link-local ranges that public egress must not reach.
 const PRIVATE_RANGES = [
   '10.0.0.0/8',
   '172.16.0.0/12',

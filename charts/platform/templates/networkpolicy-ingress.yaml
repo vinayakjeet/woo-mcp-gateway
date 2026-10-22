@@ -1,4 +1,4 @@
-# SPEC 16 inbound paths. Traefik is the public entry; the rest is pod to pod inside platform.
+# NetworkPolicy matrix, inbound paths. Traefik is the public entry; the rest is pod to pod inside platform.
 {{- $tr := .Values.networkPolicy.ingressController }}
 {{- define "platform.fromTraefik" }}
 - namespaceSelector:

@@ -1,4 +1,4 @@
-# SPEC 16: nothing enters or leaves a store namespace unless a policy says so. Ports in every store
+# The NetworkPolicy matrix: nothing enters or leaves a store namespace unless a policy says so. Ports in every store
 # policy are pod ports: kube-router matches after the Service DNAT (WordPress listens on 8080).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

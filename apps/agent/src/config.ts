@@ -29,7 +29,7 @@ const REQUIRED = [
 // Provider docs give base URLs with a trailing slash; requests append /chat/completions.
 const trimSlash = (url: string) => url.replace(/\/+$/, '');
 
-// SPEC 13: `auto` adds nothing, so the gateway decides from the visible tool count.
+// Chat agent: `auto` adds nothing, so the gateway decides from the visible tool count.
 function gatewayUrl(base: string, mode: string | undefined): string {
   if (mode === undefined || mode === '' || mode === 'auto') return base;
   if (mode !== 'search' && mode !== 'full') {

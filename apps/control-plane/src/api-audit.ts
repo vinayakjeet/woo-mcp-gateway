@@ -64,7 +64,7 @@ export function auditRoutes(scope: FastifyInstance, o: ApiOptions): void {
     if (q.data.cursor !== undefined && !cursor)
       return reply.code(400).send({ error: 'bad_request' });
     const me = req.user as SessionUser;
-    // Members see only their own rows, whatever user filter they send (SPEC 9).
+    // Members see only their own rows, whatever user filter they send (the audit log rules).
     const user = me.role === 'admin' ? (q.data.user ?? null) : me.id;
     const r = await o.pool.query<Row>(
       `select id, to_char(ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as ts,

@@ -7,7 +7,7 @@ export interface PolicyView {
 }
 
 // Rules live in memory so tools/list never waits on Postgres. Before the first load the list is
-// empty, which hides everything from members (the SPEC 8 default).
+// empty, which hides everything from members (the default tool permission rules).
 export class PolicyStore implements PolicyView {
   private rules: PolicyRule[] = [];
 

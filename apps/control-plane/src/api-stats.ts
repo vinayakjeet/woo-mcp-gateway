@@ -39,7 +39,7 @@ type ServerRow = {
   p95: number | null;
 };
 
-// SPEC 14 and 20: aggregates from audit_events, so the Health page works without Prometheus. Every
+// Dashboard API and observability: aggregates from audit_events, so the Health page works without Prometheus. Every
 // role may read them: no user, email or argument leaves this route. Rows with an empty slug are
 // search_tools calls, which belong to no server.
 export function statsRoutes(scope: FastifyInstance, o: ApiOptions): void {

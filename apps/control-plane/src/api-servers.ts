@@ -38,7 +38,7 @@ type ToolRow = {
   readOnly: boolean;
 };
 
-// auth_secret_enc is never selected: only whether it is set leaves the database (SPEC 14).
+// auth_secret_enc is never selected: only whether it is set leaves the database (the dashboard API design).
 const SERVER_SELECT = `select s.id, s.slug, s.name, s.url, s.kind, s.managed, s.enabled, s.approval,
     s.protocol_mode as "protocolMode", s.timeout_ms as "timeoutMs", s.auth_type as "authType",
     s.auth_header_name as "authHeaderName", s.auth_secret_enc is not null as "hasSecret",

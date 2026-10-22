@@ -29,7 +29,7 @@ const view = (servers: Array<{ slug: string; up: boolean; toolsExposed: number }
 });
 
 describe('gateway metrics', () => {
-  it('names the four SPEC 20 metrics', () => {
+  it('names the four documented metrics', () => {
     const out = createGatewayMetrics(view()).render();
     for (const n of [
       'gateway_tool_calls_total',

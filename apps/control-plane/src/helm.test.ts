@@ -55,7 +55,7 @@ describe('helmCli', () => {
     await expect(helm('garbage').status('store-x', 'store-x')).rejects.toBeInstanceOf(HelmError);
   });
 
-  it('runs upgrade --install with the SPEC 18 flags', async () => {
+  it('runs upgrade --install with the flags the provisioner needs', async () => {
     await helm('ok').upgradeInstall({
       release: 'store-x',
       ns: 'store-x',

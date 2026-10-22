@@ -72,7 +72,7 @@ capabilities:
 {{ printf "%s://mcp.%s/mcp" .Values.global.scheme .Values.global.domain }}
 {{- end }}
 
-{{/* Settings every provisioned store shares (SPEC 18 generated values), as JSON for the control-plane. */}}
+{{/* Settings every provisioned store shares (generated values), as JSON for the control-plane. */}}
 {{- define "platform.storeValues" -}}
 {{- $storage := merge (dict "className" .Values.storage.className) .Values.provisioner.store.storage -}}
 {{- dict "global" .Values.global "images" (dict "registry" .Values.images.registry) "ingress" .Values.ingress "storage" $storage "wordpress" (dict "environmentType" .Values.provisioner.store.environmentType) | toJson -}}

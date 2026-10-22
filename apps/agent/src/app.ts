@@ -38,11 +38,11 @@ export function buildApp(
 ): FastifyInstance {
   const app = Fastify({ logger, ...requestIdOptions });
   app.get('/healthz', async () => 'ok');
-  // SPEC 13 gives the agent no database, so there is no schema version to wait for.
+  // The chat agent design gives the agent no database, so there is no schema version to wait for.
   app.get('/readyz', async () => 'ready');
 
   app.post('/api/chat', async (req, reply) => {
-    // SPEC 7: state-changing requests carry the app Origin. A chat turn can create products.
+    // Identity and auth: state-changing requests carry the app Origin. A chat turn can create products.
     if (req.headers.origin !== deps.appOrigin) return reply.code(403).send({ error: 'bad_origin' });
     const body = chatBody.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: 'bad_request' });

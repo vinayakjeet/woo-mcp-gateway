@@ -49,7 +49,7 @@ export function parseMemory(q: string): number | null {
   return Math.ceil(Number(`${m[1]}.${m[2] ?? '0'}`) * MEMORY_UNITS[m[3] ?? '']!);
 }
 
-// Requests are fixed at fx-mcp's SPEC 15 values and lowered to the limit when the limit is smaller,
+// Requests are fixed at fx-mcp's own values and lowered to the limit when the limit is smaller,
 // because a request above its limit is rejected by the API server.
 export function hostedRequests(limits: { cpu: string; memory: string }): {
   cpu: string;

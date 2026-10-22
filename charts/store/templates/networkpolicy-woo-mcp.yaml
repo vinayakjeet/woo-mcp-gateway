@@ -1,4 +1,4 @@
-# SPEC 16: only the gateway may call woo-mcp.
+# The NetworkPolicy matrix: only the gateway may call woo-mcp.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

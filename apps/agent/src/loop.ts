@@ -90,7 +90,7 @@ async function runTool(call: WireToolCall, o: TurnOptions): Promise<string> {
   return clip(text, TOOL_TEXT_MAX);
 }
 
-// SPEC 13 turn: list tools, then call the model until it answers without tool calls.
+// Chat agent turn: list tools, then call the model until it answers without tool calls.
 export async function runTurn(o: TurnOptions): Promise<TurnStats> {
   const listed = await o.tools.listTools(o.signal).catch((err: unknown) => {
     if (o.signal.aborted) throw err;

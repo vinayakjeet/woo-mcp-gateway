@@ -41,7 +41,7 @@ export function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
   return { events, rest };
 }
 
-// Durations are measured here, between tool_call and tool_result, so the wire stays as SPEC 13 defines it.
+// Durations are measured here, between tool_call and tool_result, so the wire stays as the agent design defines it.
 export function applyEvent(entry: ChatEntry, ev: SseEvent, now: number): ChatEntry {
   let d: Record<string, unknown>;
   try {

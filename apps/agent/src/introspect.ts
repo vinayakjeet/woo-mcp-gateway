@@ -13,7 +13,7 @@ const sessionSchema = z.object({
 });
 export type SessionInfo = z.infer<typeof sessionSchema>;
 
-// SPEC 7: the browser's Cookie header goes to the control-plane unchanged. Null means no live session.
+// Identity and auth: the browser's Cookie header goes to the control-plane unchanged. Null means no live session.
 export async function introspect(o: {
   baseUrl: string;
   secret: string;

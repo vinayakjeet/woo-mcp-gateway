@@ -28,7 +28,7 @@ export function elapsed(fromIso: string, now = Date.now()): string {
   return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
 }
 
-// SPEC 18: at most 3 install attempts inside the 15 minute deadline, counted from creation.
+// Store provisioner: at most 3 install attempts inside the 15 minute deadline, counted from creation.
 export function storeProgress(
   s: Pick<Store, 'status' | 'lastStep' | 'attempt' | 'createdAt'>,
   now = Date.now(),

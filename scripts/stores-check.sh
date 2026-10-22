@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live checks for the store provisioner (SPEC 18) against the running cluster.
+# Live checks for the store provisioner against the running cluster.
 #   S=<dir> scripts/stores-check.sh create <slug> "<name>"
 #   S=<dir> scripts/stores-check.sh delete <slug>
 #   S=<dir> scripts/stores-check.sh all
@@ -203,7 +203,7 @@ phase_kill() {
       sleep 2
     done
   done
-  # helm now creates resources and waits for them: the window SPEC 18's demo kills in.
+  # helm now creates resources and waits for them: the window the provisioning demo kills in.
   sleep 20
   for s in "$@"; do
     st=$(rel_status "$s")

@@ -14,11 +14,11 @@ agent:
     fallbackBaseUrl: https://api.groq.com/openai/v1
     fallbackModel: openai/gpt-oss-120b
 
-# OAuth for MCP clients (SPEC 24, M13). Plain http here, so the Claude Code proof is on the VM.
+# OAuth for MCP clients (M13). Plain http here, so the Claude Code proof is on the VM.
 oauth:
   enabled: true
 
-# Stores from the dashboard (SPEC 18, M9).
+# Stores from the dashboard (M9).
 gateway:
   # Roomy for demos and e2e; the chart default is 60.
   rateLimitPerMinute: 120
@@ -26,6 +26,6 @@ gateway:
 provisioner:
   enabled: true
 
-# Hosted servers (SPEC 21, M11). The local fx-mcp image is imported into k3d with no registry.
+# Hosted servers (M11). The local fx-mcp image is imported into k3d with no registry.
 hosted:
   allowedImagePrefixes: ['fx-mcp:']

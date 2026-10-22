@@ -1,4 +1,4 @@
-# SPEC 16: default deny of all ingress and egress, then DNS. Every other rule is its own policy.
+# The NetworkPolicy matrix: default deny of all ingress and egress, then DNS. Every other rule is its own policy.
 # Ports in all platform policies are pod ports: kube-router matches after the Service DNAT.
 # mcp-hosted is created by the Makefile (decision E); M11 only adds workloads and their rules.
 {{- range $ns := list .Release.Namespace "mcp-hosted" }}

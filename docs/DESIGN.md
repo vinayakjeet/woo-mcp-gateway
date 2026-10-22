@@ -1,6 +1,6 @@
 # Design notes
 
-Engineer's notes on how the system fits together, and on choices the SPEC leaves open or explains in a line. The first part is the overview: components, the path of a tool call, failure handling, the chat agent, stores, and what changes between local and production. The sections after it explain single features.
+Engineer's notes on how the system fits together, and on choices the original design leaves open or explains in a line. The first part is the overview: components, the path of a tool call, failure handling, the chat agent, stores, and what changes between local and production. The sections after it explain single features.
 
 ## System overview
 
@@ -24,7 +24,7 @@ Other namespaces: `kube-system` (Traefik), and `cert-manager` on the VM.
 
 Only the gateway talks to upstream MCP servers, health checks included. The control-plane never calls one. It writes rows to Postgres and sends `NOTIFY`, and every gateway replica loads the change. Postgres is the only link between the two, so a gateway replica can start, die or be added without the control-plane knowing.
 
-Jobs and the CronJob have no probes (SPEC 15 gives them none). They run once and exit, so there is nothing for a readiness or liveness probe to check. Helm waits for the bootstrap hook to finish, and `kubectl -n store-<slug> get cronjob wp-cron` shows `lastSuccessfulTime`. Every long-running container in a Deployment or StatefulSet has requests, limits, and readiness and liveness probes (init containers have limits only).
+Jobs and the CronJob have no probes (the Kubernetes layout rules give them none). They run once and exit, so there is nothing for a readiness or liveness probe to check. Helm waits for the bootstrap hook to finish, and `kubectl -n store-<slug> get cronjob wp-cron` shows `lastSuccessfulTime`. Every long-running container in a Deployment or StatefulSet has requests, limits, and readiness and liveness probes (init containers have limits only).
 
 ### What is public
 
@@ -57,7 +57,7 @@ Each rule below says what happens and what pins it.
 - A slow upstream. Every call has a deadline, `timeout_ms` per server (15 s by default). On expiry the member gets a tool error, "Server `<slug>` did not answer within 15 s", audited as `timeout`. Listing is unaffected because it reads memory. Proof: `isolation.test.ts` ("lists both servers from memory in under 300 ms while a call hangs", "fails the silent call with the configured timeout error", "keeps the fast server answering while the silent one hangs").
 - A dead upstream. Each replica checks every upstream every 10 s with a `tools/list` that has a 3 s timeout. Three failures in a row turn it unreachable, so the worst case is about 30 s. A call that is refused or cannot resolve the name skips the count and marks it unreachable at once; a connection reset triggers an immediate check instead, because one dropped pooled connection is not a dead server. An unreachable server contributes no tools, calls to it answer at once with the failure kind (`dns`, `refused`, `timeout`, `tls`, `http_401`, `http_5xx`, and so on), and the gateway reconnects with backoff from 1 s to 30 s with jitter. The Servers page shows the state and the kind. Proof: `upstream.test.ts` ("turns unreachable after three failed attempts", "marks the server unreachable at once when a call is refused", "checks health at once after a connection reset ...", "reconnects when the upstream comes back on the same port"); `scripts/e2e.sh` ("fx call fails in ... with fx-mcp at zero", "main keeps answering while fx is down").
 - A flapping upstream. A circuit breaker per upstream opens after 5 consecutive timeouts, refusals, DNS or TLS failures, stays open for 30 s, then lets one trial call through. Any answer from the upstream, an error included, resets the count. Proof: `resilience.test.ts` and `upstream.test.ts` ("opens the breaker after five timeouts and then fails fast").
-- Too many calls at one upstream. A bulkhead allows 8 concurrent calls, queues up to 32 and waits at most 2 s. After that the answer is "Server `<slug>` is busy", audited as `timeout` (the SPEC outcome list has no `busy`), and the breaker does not count it. A client that cancels is audited as `upstream_error` with "cancelled by client", also not counted. Proof: `resilience.test.ts` (eight at once, queue of 32, 2 s), `upstream.test.ts` ("answers busy when the bulkhead queue wait runs out, without counting it", "reports a client cancel without counting it against the breaker").
+- Too many calls at one upstream. A bulkhead allows 8 concurrent calls, queues up to 32 and waits at most 2 s. After that the answer is "Server `<slug>` is busy", audited as `timeout` (the original outcome list has no `busy`), and the breaker does not count it. A client that cancels is audited as `upstream_error` with "cancelled by client", also not counted. Proof: `resilience.test.ts` (eight at once, queue of 32, 2 s), `upstream.test.ts` ("answers busy when the bulkhead queue wait runs out, without counting it", "reports a client cancel without counting it against the breaker").
 - Name collisions. Two servers cannot collide because every tool is `<slug>__<tool>` and slugs are unique. Two tools of one server that map to one name: the first by original name is kept and the other is skipped with a warning.
 - Other servers keep working. State, connection, breaker and bulkhead are per upstream, per replica. Proof: `scripts/e2e.sh` ("main keeps answering while fx is down").
 - Several replicas. Each replica runs its own health checks, so tool lists agree within about 3 health intervals (~30 s). One replica, holding Postgres advisory lock 4242, writes the shared status that the dashboard reads.
@@ -70,7 +70,7 @@ Each rule below says what happens and what pins it.
 - The browser posts to `/api/chat` with its session cookie. The agent sends that cookie to the control-plane (`POST /internal/sessions/introspect` on 3001, with a shared secret) and gets back the user and a JWT: `aud` is the gateway URL, `sub` is the user, `act` is `agent`, and it lives 300 s. The agent has no database access and never sees the user's API key.
 - Per turn, the agent opens one MCP client to the gateway with that JWT and lists the tools. The gateway sees `via = agent`, applies the user's role policy and writes the audit rows under the user. A member's chat therefore has the member's tool list, and the Audit page shows the calls under their name.
 - The loop: the system prompt plus the last 10 messages go to the model; text is streamed to the browser as `text` events; each tool call goes through the gateway and the result is clipped to 6000 characters before the model reads it; at most 8 model calls per turn. A turn stops at 240 s, so the JWT is still valid for every call. Each LLM request and each tool call has 60 s.
-- Models: the primary is `gemini-3.5-flash-lite`, the fallback `openai/gpt-oss-120b` on Groq. A 429 retries the primary once if the advised wait is 30 s or less, otherwise goes to the fallback. SPEC 13 falls back on 429 only; we also fall back on 5xx, an unreachable host and a timeout, and retry a 503 once after 2 s. A 400 never falls back, and nothing falls back after text has streamed. Once the fallback answers it keeps the rest of the turn. The extra cases are deliberate: a provider outage is as bad for the demo as a rate limit. Proof: `llm.test.ts`, `model.test.ts`.
+- Models: the primary is `gemini-3.5-flash-lite`, the fallback `openai/gpt-oss-120b` on Groq. A 429 retries the primary once if the advised wait is 30 s or less, otherwise goes to the fallback. The original agent design falls back on 429 only; we also fall back on 5xx, an unreachable host and a timeout, and retry a 503 once after 2 s. A 400 never falls back, and nothing falls back after text has streamed. Once the fallback answers it keeps the rest of the turn. The extra cases are deliberate: a provider outage is as bad for the demo as a rate limit. Proof: `llm.test.ts`, `model.test.ts`.
 - Tool output is data. The prompt says so, and the role policy limits what an injected instruction could call (`docs/THREAT_MODEL.md`, section 9). The agent keeps no state between turns; the chat history is in the browser.
 
 ### Stores
@@ -79,7 +79,7 @@ Each rule below says what happens and what pins it.
 - Delete runs `helm uninstall --wait --cascade foreground`, waits for the namespace to go, and only then removes the row. If the namespace is still there after 5 min the store stays `deleting` with a reason and the next tick tries again.
 - A restart mid-install is safe: recovery picks up `provisioning` and `deleting` rows and also handles releases left in `pending-*` states. `Idempotency-Key` makes create safe to retry.
 - Guardrails: a ResourceQuota and a LimitRange per store namespace, 3 stores per user (the admin's count includes `main`), and the provisioning deadline.
-- Deliberate changes from the SPEC, all for the VM: production stores use 2Gi MariaDB plus 2Gi WordPress (SPEC 28 says 10Gi each) so a store fits the 8Gi storage quota; the store quota's `limits.memory` is 2304Mi and `limits.cpu` 3500m so the wp-cron pod is not refused; `scripts/store-quota-sum.py` checks that the namespace keeps 200m CPU and 128Mi memory free.
+- Deliberate changes from the original design, all for the VM: production stores use 2Gi MariaDB plus 2Gi WordPress (the original sizing was 10Gi each) so a store fits the 8Gi storage quota; the store quota's `limits.memory` is 2304Mi and `limits.cpu` 3500m so the wp-cron pod is not refused; `scripts/store-quota-sum.py` checks that the namespace keeps 200m CPU and 128Mi memory free.
 
 ### Local to production
 
@@ -109,17 +109,17 @@ The charts are the same. These values differ (`deploy/values-local.yaml`, `deplo
 - One stored credential per upstream, not one per member. Simple, and members never hold credentials. The cost is that the upstream cannot tell members apart (`docs/THREAT_MODEL.md`, section 16).
 - Provisioning with Helm in the control-plane pod instead of an operator. Fewer parts, and a recovery path that is a `helm` command. The cost is the control-plane needs the Helm CLI and API permissions, confined to `store-*` and `mcp-hosted` (`docs/THREAT_MODEL.md`, section 3).
 
-### Where the build differs from the SPEC
+### Where the build differs from the original design
 
 - Fallback beyond 429, and a 503 retry (above).
-- Slug length: 2 to 24 characters, because the SPEC's own examples `fx` and `gh` have 2 (see "Naming and collisions").
-- Audit outcomes: a full bulkhead queue is `timeout` and a client cancel is `upstream_error`, because the SPEC's outcome list has no `busy` or `cancelled`.
-- The 10 s health `tools/list` also refreshes the tool list, which covers the 60 s refresh in SPEC 6.3. `mcp_tools` is written only when a tool's name or definition hash changed.
+- Slug length: 2 to 24 characters, because the original design's own examples `fx` and `gh` have 2 (see "Naming and collisions").
+- Audit outcomes: a full bulkhead queue is `timeout` and a client cancel is `upstream_error`, because the original outcome list has no `busy` or `cancelled`.
+- The 10 s health `tools/list` also refreshes the tool list, which covers the 60 s tool list refresh the design calls for. `mcp_tools` is written only when a tool's name or definition hash changed.
 - Store sizes and quota in production (above).
-- Local models are Gemini and Groq, where SPEC 28 names others.
+- Local models are Gemini and Groq, where the original design named others.
 - Migration 0001 treats a tool as already approved only if it is active and its server is approved. Tools that were changed, removed or on a pending server keep no approved hash. The policy seed sends `policies_changed` and `tools_changed` in the same transaction as its insert, so running gateways pick the rules up.
 
-## Tool search mode (SPEC 17)
+## Tool search mode
 
 ### Why it exists
 
@@ -130,7 +130,7 @@ A model that sees every tool of every server pays for it twice: the definitions 
 
 ### Why 40
 
-`SEARCH_THRESHOLD = 40` in `apps/gateway/src/search.ts`. It sits inside the 30 to 50 range, above the 19 tools the demo has (so the default experience is unchanged) and below the point where the documentation reports trouble. The rule is "more than 40 visible tools", so 40 stays in full mode and 41 switches. Visible means after the principal's policy rules (SPEC 6.4), so a member with narrow rules keeps the full list longer than an admin.
+`SEARCH_THRESHOLD = 40` in `apps/gateway/src/search.ts`. It sits inside the 30 to 50 range, above the 19 tools the demo has (so the default experience is unchanged) and below the point where the documentation reports trouble. The rule is "more than 40 visible tools", so 40 stays in full mode and 41 switches. Visible means after the principal's policy rules (the tool listing rules), so a member with narrow rules keeps the full list longer than an admin.
 
 ### Which mode a request gets
 
@@ -167,7 +167,7 @@ Measured on 2026-10-15 (Node 24, this laptop, 30 runs after a warm-up, the query
 
 `call_tool` calls the same internal function as a direct `tools/call`. Policy, the enabled check, the approval state, the bulkhead, the breaker, the timeout and the audit row all live in that function, so a second copy cannot drift. A hidden tool gets the byte-identical "Unknown tool" error and a `denied` audit outcome. `search_tools` and `call_tool` as the inner name are unknown names, so there is no recursion. `search_tools` never returns a tool the principal could not list: it searches the already filtered list.
 
-### Audit shape (SPEC 9)
+### Audit shape
 
 One row per `tools/call`, so `search_tools` gets one too.
 
@@ -179,7 +179,7 @@ One row per `tools/call`, so `search_tools` gets one too.
 
 `search_tools` rows have `server_id` null and an empty slug, so M12's Health page must skip them. The query text is never stored, only `args_sha256`.
 
-## Hosted servers (SPEC 21)
+## Hosted servers
 
 ### Flow
 
@@ -194,7 +194,7 @@ One row per `tools/call`, so `search_tools` gets one too.
 All carry `urumi.io/hosted=<slug>` and `app.kubernetes.io/managed-by: control-plane`.
 
 - Secret `<slug>-env`: the secret env plus `MCP_SHARED_TOKEN`. Applied as `data` (base64), never `stringData`.
-- NetworkPolicy `<slug>`: ingress only from the gateway pods on the server port; egress only TCP 443 to `0.0.0.0/0` except the five SPEC 16 private ranges. DNS comes from the namespace's `allow-dns`. The gateway's namespace and labels reach the control-plane as `HOSTED_GATEWAY_NAMESPACE` and `HOSTED_GATEWAY_LABELS`, rendered from the same helper the gateway pod uses.
+- NetworkPolicy `<slug>`: ingress only from the gateway pods on the server port; egress only TCP 443 to `0.0.0.0/0` except the five private ranges in the NetworkPolicy matrix. DNS comes from the namespace's `allow-dns`. The gateway's namespace and labels reach the control-plane as `HOSTED_GATEWAY_NAMESPACE` and `HOSTED_GATEWAY_LABELS`, rendered from the same helper the gateway pod uses.
 - Service `<slug>` on the server port.
 - Deployment `<slug>`: one replica, `runAsNonRoot` with uid and gid 10001, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, read-only root with a 64Mi `/tmp` emptyDir, no ServiceAccount token, no service links, `terminationGracePeriodSeconds: 10`, `progressDeadlineSeconds: 300`. Requests are fixed at 20m and 64Mi (lowered to the limit if the limit is smaller). Limits come from the form, capped by `hosted.maxCpu` (500m) and `hosted.maxMemory` (256Mi).
 
@@ -236,17 +236,17 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 
 `upsertTools` in `apps/gateway/src/registry-db.ts` approves the tools of a hosted server only when the server has no tool rows yet, which is its first sync. Creating the server is the admin's review of that image. Any later sync follows the external rules: a changed definition or a new tool is `changed` and hidden until it is approved in Tool approvals. Store and system servers stay auto-approved. The approvals list and the approve call in `apps/control-plane/src/api-approvals.ts` accept `hosted` as well as `external`. Tests: four `hosted` cases in `sync.test.ts` and two in `api-approvals.test.ts`. See the threat model, section 11, gap 3.
 
-## Rate limits (SPEC 19)
+## Rate limits
 
 - Subject and window. `key:<api_key_id>` for an API key, `user:<user_id>` for the agent. One upsert per counted call on `rate_counters`, with the window start taken from Postgres time (`date_trunc('minute', now())`), never from the replica clock. The count and the seconds left in the window come back from the same statement, so two replicas cannot disagree. The limit is the key's `rate_limit_per_min` when set (admin only, 1 to 10000), else `gateway.rateLimitPerMinute` (60 in the chart, 120 in `values-local.yaml`).
 - Fixed windows. A client can send up to twice the limit across a window boundary (N calls at :59, N more at :00). Accepted: one upsert per call is the whole cost, and a sliding window would need a read and a write.
-- What counts. Every `tools/call` that gets past SPEC 6.5 step 1: a direct call, the inner call of `call_tool` (once), and a valid `search_tools`. `tools/list` is never limited. An unknown or hidden name is answered at step 1, before the limit, so it is not counted. It is still audited, and it costs the caller nothing but one audit row. Counting it would let a client burn its quota on names, and would make a hidden tool look different from a missing one.
+- What counts. Every `tools/call` that gets past step 1 of the call path: a direct call, the inner call of `call_tool` (once), and a valid `search_tools`. `tools/list` is never limited. An unknown or hidden name is answered at step 1, before the limit, so it is not counted. It is still audited, and it costs the caller nothing but one audit row. Counting it would let a client burn its quota on names, and would make a hidden tool look different from a missing one.
 - Refusal. A tool result with `isError: true` and `Rate limit exceeded, retry in <n> s`, audit outcome `rate_limited`. Refused calls still count, so a client that keeps hammering stays blocked until the window ends. A rate-limited call to a disabled server says rate limited (step 2 comes before step 3).
 - Fails open. A counter query that errors or takes more than 2 s lets the call through and logs one `warn` with the error code. See the threat model, section 12.
 - Cleanup. The replica that holds lock 4242 (the status writer) deletes windows older than 2 minutes once a minute.
 - Race. `apps/gateway/src/rate-limit.test.ts` sends 50 parallel hits against a limit of 20 and checks that exactly 20 are allowed. `replica-demo.sh` and the limit-5 check in M12 Task 15 prove the same across two pods.
 
-## Observability (SPEC 20)
+## Observability
 
 - Metrics text. `packages/core/src/metrics.ts` writes the Prometheus text format (counter, gauge read at scrape time, histogram with `le`, label escaping, a cap of 1000 series per metric as a backstop). Decision E2: no `prom-client`, so no new npm dependency and no default process metrics. The HPA reads CPU from metrics-server, not from Prometheus.
 - Gateway metrics, on the health port 9090: `gateway_tool_calls_total{server,outcome}`, `gateway_tool_call_duration_seconds{server}`, `gateway_upstream_up{server}`, `gateway_tools_exposed{server}`. The counter and the histogram are fed from the finished audit row in `writeAudit`, so metrics and the audit log cannot disagree. The gauges are read from `Registry.serverStats()` at scrape time and describe this replica only; Prometheus keeps replicas apart by `instance`.
@@ -256,9 +256,9 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 - Request ids. Gateway, control-plane and agent use `requestIdOptions` from `@woo/core`: a UUID made by the server, logged as `request_id`. A client `x-request-id` or `request-id` header is never read. The gateway sets `x-request-id` on every response, and the audit row of that request carries the same id (stateless mode puts one JSON-RPC message in each POST).
 - Trace context. The gateway takes `params._meta.traceparent` if it is valid, else the HTTP `traceparent` header if valid, else it starts a new trace. Valid means version `00`, a lowercase 32 hex trace id and a 16 hex parent id, neither all zero, and 2 hex flags, nothing more. Each upstream call gets the same trace id and flags with a new parent id, sent as `_meta.traceparent`. `tracestate` and every other client `_meta` key are never forwarded, because client data must not reach an upstream. Health-check calls carry no trace. The agent starts one trace per chat turn and every gateway call of the turn sends it. fx-mcp and woo-mcp log `tool`, `trace_id` and `ms` per call through `logToolCalls`, never arguments, results or error text. One grep for a trace id follows a chat turn through the agent, the gateway and the upstream.
 - Call log line. One info line per `tools/call` in the gateway: `request_id`, `trace_id`, `user_id`, `server`, `tool`, `outcome`, `ms`. A name the registry did not resolve is logged as `_unknown`, not echoed.
-- Prometheus (`monitoring.enabled`, off by default). One Deployment, image `prom/prometheus:v3.15.0`, uid 65534 (the image's own user), read-only root, emptyDir for the data (24 h or 512MB), no ServiceAccount token, no Service and no Ingress: reach it with `kubectl port-forward`. It finds gateway pods through DNS on the headless Service `gateway-metrics`, so it needs no Kubernetes API access and no RBAC. The control-plane is a static target. Three rows join the SPEC 16 matrix: Prometheus egress to gateway pods on 9090 and to the control-plane on 3001 (DNS from `allow-dns`), gateway ingress on 9090 from Prometheus, control-plane ingress on 3001 from Prometheus. `netpol-check.sh platform` proves them when Prometheus is up.
+- Prometheus (`monitoring.enabled`, off by default). One Deployment, image `prom/prometheus:v3.15.0`, uid 65534 (the image's own user), read-only root, emptyDir for the data (24 h or 512MB), no ServiceAccount token, no Service and no Ingress: reach it with `kubectl port-forward`. It finds gateway pods through DNS on the headless Service `gateway-metrics`, so it needs no Kubernetes API access and no RBAC. The control-plane is a static target. Three rows join the NetworkPolicy matrix: Prometheus egress to gateway pods on 9090 and to the control-plane on 3001 (DNS from `allow-dns`), gateway ingress on 9090 from Prometheus, control-plane ingress on 3001 from Prometheus. `netpol-check.sh platform` proves them when Prometheus is up.
 
-## Scaling (SPEC 23)
+## Scaling
 
 - Why more than one gateway replica works. Nothing in a gateway holds state a second replica needs. API keys are looked up in Postgres and cached for 10 s, and a revoke or a role change reaches every replica through NOTIFY. Rate limits use `rate_counters` (above). The registry loads from Postgres and reloads on NOTIFY. Upstream health is checked by every replica for its own view, and the replica holding lock 4242 writes the status rows. MCP is stateless (one POST, one answer), so any replica can answer any call. `X-Gateway-Replica` names the answering pod.
 - Tool list across replicas. The tool list is eventually consistent across gateway replicas, within about 3 health intervals (~30 s); calls to a down server fail cleanly meanwhile. Each replica checks every upstream every 10 s and marks it unreachable after 3 failed checks, or at once when a real call has just failed and the next check is refused. The status row (and so the dashboard) comes from the replica holding lock 4242, which can be ahead of the others. Seen on the VM: one replica answered `tools/list` with the fx tools about 12 s after the dashboard showed fx unreachable. `e2e.sh` polls `tools/list` for up to 35 s and prints how long it took.
@@ -270,7 +270,7 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 - On the VM (M8 Task 10, Standard_B4ms, 4 vCPU, 15.5 GiB allocatable). Measured on 2026-10-18 with two gateway pods and Prometheus on: 860m CPU and 1900Mi memory requested, about 170m CPU and 2.4 GiB used, so about 3140m CPU and 13.7 GiB are unrequested. Each gateway pod used 4 to 6m CPU against its 50m request. The HPA stays off (`gateway.hpa.enabled: false`): two fixed replicas with the PDB already survive a pod delete and a node drain, no load has come close to the 35m trigger (70% of 50m), and a burstable VM spends CPU credits when it scales out, so a scale-out needs a load test and a tuned request before it helps. Headroom is not the reason. `hosted.maxCpu` and `hosted.maxMemory` stay at 500m and 256Mi and are written out in `values-prod.yaml`: a hosted pod requests a fixed 20m and 64Mi whatever its limit, so the cap only bounds the limit, and ten servers at the cap would limit 5000m and 2.5 GiB against that headroom.
 - Proof on the VM, through https. `replica-demo.sh` ended 20 of 20 ok with a pod deleted, twice (the second time with `pg_stat_activity` sampled every 2 s: 14 idle, 18 at most, `max_connections` 100). Evicting the first gateway pod answered 201 and the second right after answered 429 (TooManyRequests), then the Deployment returned to 2 ready pods. Prometheus (`prom/prometheus:v3.15.0`, pulled from Docker Hub, restricted PSA namespace, requests 50m and 128Mi, 0 restarts) had the control-plane and both gateway pods up. `obs-check.sh` ended OK: a `traceparent` sent to `https://mcp.vinayak-urum.me/mcp` showed its trace id in the gateway and woo-mcp logs. The stats API behind the Health page listed `main` with 21 calls, p50 138 ms and p95 200 ms in the last 60 minutes.
 
-## fx-mcp serves cached rates during an outage (SPEC 11)
+## fx-mcp serves cached rates during an outage
 
 - When. Only for outage errors: a network error or the 10 s timeout (`fx_unreachable`), any 5xx and 429. Any other 4xx is a real answer (bad date, unknown currency) and stays an error.
 - How. After an outage error fx-mcp does not call Frankfurter for 60 s (`STALE_COOLDOWN_MS`) and answers from the cache at once, so an outage costs one 10 s wait per minute, not one per call. The cache keeps at most 256 entries (`MAX_CACHE_ENTRIES`) and drops the oldest fetch first. Entries stay after the 1 hour TTL so they can serve stale.
@@ -287,7 +287,7 @@ State lives only in Postgres and in labeled objects, so a new leader needs nothi
 
 `mcp_servers.tools_synced_at` (migration `0002`) is set by the first successful tool list, even an empty one. For a hosted server, `upsertTools` runs `update mcp_servers set tools_synced_at = now() where id = $1 and tools_synced_at is null returning id` inside its transaction and approves only when that returns a row. The row lock makes two replicas agree: exactly one approves, the other sees the flag after the first commits. Before this, a hosted server whose first list was empty got its later tools approved as a first sync. `persistTools` now writes on the first list even when it is empty. The migration backfills `now()` for every server that has at least one tool row. Store and system servers set the flag as well, so the column means the same for every kind. Because of the migration, the control-plane must ship before the gateway; gateway readiness waits for every journal entry.
 
-## OAuth on k3d is plain http by design (SPEC 24)
+## OAuth on k3d is plain http by design
 
 Clients refuse to send credentials to a token endpoint that is not https, unless its host is `localhost`, `127.0.0.1` or `::1`. This is the rule of the MCP SDK 2.x client (MCP Inspector 2.9.0 stopped at the token step with it) and of Claude Code on its default v2 runtime (docs, "MCP client runtimes", and the check in the 2.1.301 binary). The local stack serves `http://app.127.0.0.1.nip.io`, and a nip.io name is not exempt.
 
@@ -299,7 +299,7 @@ What that means for this repo:
 - API keys and agent JWTs work over http locally, as before.
 - Not done on purpose: a token URL override in the client, local TLS with a private CA, and the `MCP_SDK_GENERATION=v1` runtime switch in Claude Code. The rest of the OAuth design follows.
 
-## OAuth (SPEC 24)
+## OAuth
 
 OAuth is for MCP clients that sign in through a browser. API keys and agent JWTs stay as they are. With `oauth.enabled: false` (the chart default) there are no OAuth routes, no resource metadata and no `WWW-Authenticate` header. `values-local.yaml` turns it on.
 
@@ -363,20 +363,20 @@ A grant is one user and one client, the key of `oauth_consents`. My keys lists t
 - Revoke takes effect on the next call. The gateway reads the consent row in the same query as the user row. A token with no consent row is refused, and so is a token issued before the second of the row's latest approval, so revoke then approve again does not revive an old token.
 - One audit row per revoke, `tool_name = oauth_grant_revoked`, with an empty server slug. The Audit page shows it as "Revoked by <email>", not as a failed call. No schema change: a dedicated events table would need a migration.
 
-## Naming and collisions (SPEC 5)
+## Naming and collisions
 
 - Exposed name: `<slug>__<tool>`, always prefixed, never only on a collision. Names stay stable when a server is added, the model and the audit log know the source, and routing is one map lookup.
-- Slug: `^[a-z][a-z0-9-]{0,22}[a-z0-9]$`, so 2 to 24 characters, no `__`. SPEC 5 writes `{1,22}`, which needs 3 characters, but its own examples `fx` and `gh` have 2 (user approved 2026-10-11).
+- Slug: `^[a-z][a-z0-9-]{0,22}[a-z0-9]$`, so 2 to 24 characters, no `__`. The first draft of the slug rule wrote `{1,22}`, which needs 3 characters, but its own examples `fx` and `gh` have 2 (user approved 2026-10-11).
 - Tool part: characters outside `[A-Za-z0-9_-]` become `_`. If the name is longer than 48 characters, the tool part is cut and `_` plus the first 6 hex characters of the sha256 of the original name is appended. 48 leaves room for client prefixes such as `mcp__<server>__` inside the 64-character limit of common model APIs.
 - Two tools of one server that map to one exposed name: the gateway sorts them by original name, keeps the first and skips the other with a warn log (`exposed name collision, tool skipped`).
 - `tools/list` is sorted by exposed name. Descriptions start with `[<server name>] `, or `[Store: <store name>] ` for a store.
 - Demo: woo-mcp and fx-mcp both have `get_info`, which appear as `main__get_info` and `fx__get_info`.
 
-## Audit retention (SPEC 9)
+## Audit retention
 
 The control-plane deletes `audit_events` rows older than 30 days. It runs at start and every 24 hours, on every replica, whether or not the provisioner is on. A try-lock (advisory lock 4244) lets one replica prune and the others log `audit retention skipped, lock held`. The cutoff is Postgres `now()`, never the pod clock, which can jump. Deletes go in batches of 10000 until a batch is short, and the count is logged as `audit retention`. A deleted store or server leaves its audit rows until they age out.
 
-## List changes (SPEC 6.6)
+## List changes
 
 A client on the 2026-07-28 protocol opens `subscriptions/listen` and hears `notifications/tools/list_changed` when its tool list may have changed. Then it lists again and gets its own filtered list.
 

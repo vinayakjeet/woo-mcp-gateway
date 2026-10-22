@@ -1,6 +1,6 @@
 # Threat model
 
-Notes for SPEC 22 (M10), hosted servers (M11, section 11), rate limits and observability (M12, sections 12 and 13), OAuth (M13, sections 14 and 15) and the three questions the brief asks about credentials and members (sections 16 to 18). Each item says what it stops, where it lives, and the command that proves it. Run the live checks from the repo root with `S=<private scratch dir>`. None of them print secrets.
+Notes for the security hardening work (M10), hosted servers (M11, section 11), rate limits and observability (M12, sections 12 and 13), OAuth (M13, sections 14 and 15) and the three questions the brief asks about credentials and members (sections 16 to 18). Each item says what it stops, where it lives, and the command that proves it. Run the live checks from the repo root with `S=<private scratch dir>`. None of them print secrets.
 
 Trust boundaries, in order of how much we trust them:
 
@@ -24,7 +24,7 @@ Proof: `pnpm --filter @woo/core exec vitest run ssrf` (41 tests, table of hostil
 
 Not proven live: rebinding against a real DNS server. Unit tests only.
 
-The VM's own public IP (decided in M8, Task 12). The address check lets any public unicast address through, and the VM's public IP is one. Without more, an admin could add `https://app.<domain>/mcp` as an upstream and make the gateway call its own front door through Traefik, or fetch any other path on the VM from outside the cluster's rules. SPEC 22 does not ask for a deny-list, so this is an addition, not a SPEC change.
+The VM's own public IP (decided in M8, Task 12). The address check lets any public unicast address through, and the VM's public IP is one. Without more, an admin could add `https://app.<domain>/mcp` as an upstream and make the gateway call its own front door through Traefik, or fetch any other path on the VM from outside the cluster's rules. The original security hardening design did not ask for a deny-list, so this is an addition to it.
 
 - `UPSTREAM_DENY_ADDRESSES` is a comma separated list of addresses or CIDRs, set from `gateway.upstreamDenyAddresses` in the platform chart. The gateway and the control-plane read the same value. A bad entry stops the process at start (no silent empty list).
 - It is applied in three places with the same rule (`isAllowedAddress(ip, deny)` in `packages/core/src/ssrf.ts`): the URL check on create and on URL change (a hostname is resolved and every answer must pass), the connect-time lookup in the pinned fetch (so a name that later resolves to the listed address is refused too), and the CIMD fetch (section 14).
@@ -45,11 +45,11 @@ Proof: `scripts/netpol-check.sh platform` (rows: gateway reaches fx-mcp and the 
 
 Stops: the control-plane, which holds a wide ClusterRole because Helm's `--wait` lists and watches everything it installs, writing outside its own namespaces.
 
-- `charts/platform/templates/rbac-provisioner.yaml`: the role (SPEC 18 list plus `cronjobs` for the store wp-cron CronJob).
+- `charts/platform/templates/rbac-provisioner.yaml`: the role (the provisioner role list plus `cronjobs` for the store wp-cron CronJob).
 - `charts/platform/templates/admission-policy.yaml`: policy and binding `control-plane-namespaces`. Writes by `system:serviceaccount:<release namespace>:control-plane` are denied unless the target namespace starts with `store-` or is `mcp-hosted`. A Namespace object is judged by its own name (`oldObject` on delete). `failurePolicy: Fail`, action `Deny`. Reads are not matched.
 - Other cluster-scoped kinds are refused by RBAC first. The policy would deny them too.
 
-Proof: `S=... scripts/vap-check.sh` (impersonated dry runs, a real delete, SPEC 18's ConfigMap-in-`default` test with a real token; each denial must name the policy). Needs Kubernetes 1.30 or later for the v1 API (local: 1.35).
+Proof: `S=... scripts/vap-check.sh` (impersonated dry runs, a real delete, the ConfigMap-in-`default` test with a real token; each denial must name the policy). Needs Kubernetes 1.30 or later for the v1 API (local: 1.35).
 
 ## 4. Default-deny NetworkPolicies
 
@@ -65,7 +65,7 @@ Proof: `scripts/netpol-check.sh platform`, `scripts/netpol-check.sh main`, `scri
 
 Stops: privileged or root pods in the platform and store namespaces, including a bad template shipped later.
 
-- Security contexts per SPEC 15 in every workload template.
+- Security contexts as the Kubernetes layout rules set them in every workload template.
 - Labels `pod-security.kubernetes.io/enforce=restricted` and `warn=restricted`: `Makefile:54` (stores), `:64` (platform), `:66` (`mcp-hosted`), and `apps/control-plane/src/store-values.ts:69` (provisioned stores).
 - `enforce` checks pods only. `warn` also makes `helm` print violations in pod templates such as Jobs.
 
@@ -207,7 +207,7 @@ Proof (all against the local cluster; each ends `OK`):
 Stops: one key, or the agent for one user, sending enough tool calls to starve the others or to run up the upstream's cost.
 
 - Counting. `apps/gateway/src/rate-limit.ts`: one upsert per counted call on `rate_counters`, keyed by `key:<id>` (or `user:<id>` for the agent) and a one-minute window start taken from Postgres time, so every replica shares one count. The check sits in `callRouted` after the policy check, so a hidden tool is never counted. A key's own limit (admin only, `PATCH /api/keys/:id`, 1 to 10000) beats `gateway.rateLimitPerMinute`.
-- Unknown and hidden names are answered at SPEC 6.5 step 1, before the limit, so they are not counted. They still write an audit row each, so a client can send them at the speed the gateway allows. Capping that is open work (a per-key limit on all calls, not only valid ones).
+- Unknown and hidden names are answered at step 1 of the call path, before the limit, so they are not counted. They still write an audit row each, so a client can send them at the speed the gateway allows. Capping that is open work (a per-key limit on all calls, not only valid ones).
 - Accepted: fixed windows allow up to twice the limit across a window boundary.
 - Fails open. If the counter query errors, or takes longer than 2 s (`RATE_CHECK_TIMEOUT_MS` in `apps/gateway/src/mcp.ts`), the call goes through and the gateway logs one `warn` with the error code only (no SQL, no arguments). We chose availability over strict limiting during a database problem: a Postgres hiccup must not turn into a tool outage for every user. The cost is that, while Postgres is failing or slow, limits are not enforced. Each stalled check also delays its call by up to 2 s. Other limits still hold: the per-upstream bulkhead (8 concurrent calls, queue 32) and the circuit breaker. Keys already in the 10 s auth cache keep working, but audit writes fail too in that case, so those calls leave no audit row. Watch for the `rate limit check failed, letting the call through` warning.
 - Proof: `pnpm --filter @woo/gateway exec vitest run mcp rate-limit` (limiter error and 2 s stall rows), and the rate limit rows in `scripts/e2e.sh`.
@@ -226,7 +226,7 @@ Stops: metrics or stats leaking secrets or user data; a client writing its own t
 
 ## 14. OAuth (M13)
 
-Stops: a stolen authorization code or refresh token being used, a token meant for another service being accepted, a forged approval click, and a client lying about who it is. The flow is in `docs/DESIGN.md`, "OAuth (SPEC 24)".
+Stops: a stolen authorization code or refresh token being used, a token meant for another service being accepted, a forged approval click, and a client lying about who it is. The flow is in `docs/DESIGN.md`, "OAuth".
 
 Controls:
 
@@ -298,7 +298,7 @@ How the credential moves:
 
 What a member can do:
 
-- Use the credential's reach, through allowed tools. The upstream sees one identity, the gateway's, for every member. Its own access control cannot tell members apart, so the only per-member control is the gateway policy (`tool_policies`, SPEC 8). A token that can read a private repository lets a member read what the allowed read tools return from it, though the member has no account there.
+- Use the credential's reach, through allowed tools. The upstream sees one identity, the gateway's, for every member. Its own access control cannot tell members apart, so the only per-member control is the gateway policy (`tool_policies`). A token that can read a private repository lets a member read what the allowed read tools return from it, though the member has no account there.
 - Choose the arguments. The gateway routes arguments unchanged and does not read them. A `get_*` tool that takes a free-form query returns whatever the credential can see for that query.
 - Rely on tool names for the rule. Member rules match by name pattern (`list_*`, `get_*`), and `readOnlyHint` is never used (an untrusted upstream can lie). An external upstream that names a mutating tool `get_x` would pass a member rule. The control is the approval step (section 7): an admin approves each tool definition, name included, before it is exposed, and a later change hides it again.
 - See the credential in a result, if the upstream puts it there. The gateway returns a tool result unchanged, `isError` results too (`mcp.test.ts`, "returns an upstream isError result unchanged"). It does not scan output for the credential. A tool that echoes its own request headers would hand it over. Only transport errors are rebuilt from codes.
@@ -353,7 +353,7 @@ The end-to-end check covers all three credential types. It looks at what the ups
 
 ## 18. What one team member can do to another
 
-Roles are admin and member (SPEC 7). This section is about a member acting on another member. An admin can see and change everything by design.
+Roles are admin and member (the identity and auth rules). This section is about a member acting on another member. An admin can see and change everything by design.
 
 Walls that hold, each pinned by a test:
 
@@ -368,7 +368,7 @@ Walls that hold, each pinned by a test:
 What a member can still do that touches other members. These are not walls. Item 1 is accepted for the reasons given; items 2 to 5 are open:
 
 1. Read a store another member creates. Accepted, not fixed. A store is a managed server `<slug>`, and the gateway has no notion of who owns it: policy takes the role, not the user (`evaluatePolicy(rules, role, serverSlug, toolName)` in `packages/core/src/policy.ts`). The seeded member rules (`list_*`, `get_*`) therefore apply to every store. A member who creates a store makes its products and orders readable to every member through `<slug>__list_products`, `<slug>__list_orders` and `<slug>__get_order`, in the chat and in any MCP client. The Stores page hides other members' stores; the MCP endpoint does not. Reasons it is accepted:
-   - The brief asks for a shared team model: "every team member can then use all of them" and "see the tools from every enabled server". The SPEC gives `owner_user_id` to the Stores page and to delete (SPEC 18), and gives tool access to the role (SPEC 8). Nothing in either scopes tools by owner.
+   - The brief asks for a shared team model: "every team member can then use all of them" and "see the tools from every enabled server". The store design gives `owner_user_id` to the Stores page and to delete in the store design, and gives tool access to the role in the tool permission rules. Nothing in either scopes tools by owner.
    - Members are read only. They get `list_*` and `get_*`; `create_product` and `update_order_status` are hidden from them and rejected if called. Proof: `mcp.test.ts`, "hides tools from a member that the seeded rules do not allow" and "answers a hidden tool exactly like a missing one".
    - The store server limits what it returns. Orders carry a customer first name, item names and quantities, totals and dates; the detail adds the billing first name and city. Email, phone, street and IP are not returned. Proof: `servers/woo-mcp/src/mappers.test.ts`, "%s never contains email, phone, street or IP". One exposure to know about: `list_products` defaults to status `any`, so draft products with their names and prices are readable.
    - Every call is audited under the caller. A member reading another member's store leaves a row with their name, the server and the tool, which an admin sees on the Audit page. Proof: `main.test.ts`, "routes a call with only the stored credential and writes the audit row".

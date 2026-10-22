@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export type ServerKind = 'external' | 'store' | 'hosted' | 'system';
 
-// SPEC 5 says {1,22}, but its own examples fx and gh are two characters long.
+// The first draft of the slug rule said {1,22}, but its own examples fx and gh are two characters long.
 export const SLUG_RE = /^[a-z][a-z0-9-]{0,22}[a-z0-9]$/;
 // Leaves room for client prefixes such as mcp__<server>__ inside the common 64 character limit.
 export const MAX_EXPOSED_NAME = 48;

@@ -5,7 +5,7 @@ describe('systemPrompt', () => {
   // 20:00 UTC on Monday is 01:30 on Tuesday in India.
   const p = systemPrompt(new Date('2026-10-12T20:00:00Z'), 'a@example.com');
 
-  it('states the time in Asia/Kolkata, the user and the SPEC 13 rules', () => {
+  it('states the time in Asia/Kolkata, the user and the agent rules', () => {
     expect(p).toContain('Tuesday, 13 October 2026 at 1:30 am (Asia/Kolkata)');
     expect(p).toContain('a@example.com');
     for (const rule of [

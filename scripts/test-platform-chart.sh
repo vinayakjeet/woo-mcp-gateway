@@ -136,7 +136,7 @@ for want in "kind: ClusterRole" "kind: ClusterRoleBinding" "name: control-plane"
   "- limitranges" "- pods" "- replicasets" "- events"; do
   has "$rb" "$want" rbac
 done
-if grep -Eq -- '- persistentvolumes$' <<<"$rb"; then fail "rbac: persistentvolumes is not in SPEC 18"; fi
+if grep -Eq -- '- persistentvolumes$' <<<"$rb"; then fail "rbac: persistentvolumes is not in the provisioner role list"; fi
 lacks "$rb" "'*'" rbac
 if render --set provisioner.enabled=false --show-only templates/rbac-provisioner.yaml >/dev/null 2>&1; then
   fail "rbac rendered with the provisioner off"
@@ -168,7 +168,7 @@ done
 pass "hosted server settings"
 
 
-# SPEC 18: the ClusterRole is wide because Helm's --wait lists and watches everything, so this policy is
+# Store provisioner: the ClusterRole is wide because Helm's --wait lists and watches everything, so this policy is
 # the wall that keeps the control-plane to store-* and mcp-hosted.
 vap=$(show admission-policy.yaml)
 for want in "kind: ValidatingAdmissionPolicy" "kind: ValidatingAdmissionPolicyBinding" \
@@ -256,7 +256,7 @@ lacks "$na" "Ingress" agent-netpol
 lacks "$na" "5432" agent-netpol
 pass "agent networkpolicy"
 
-# SPEC 16 default deny: one default-deny and one allow-dns in platform and in mcp-hosted (decision E).
+# NetworkPolicy matrix, default deny: one default-deny and one allow-dns in platform and in mcp-hosted (decision E).
 netpols=$(render | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ {print "---"; print}')
 npdoc() { awk -v n="  name: $1" 'BEGIN{RS="---\n"} index($0, n "\n") && /kind: NetworkPolicy/' <<<"${2:-$netpols}"; }
 for ns in platform mcp-hosted; do
@@ -402,7 +402,7 @@ for want in "image: agent:dev" "name: agent" "containerPort: 3100" "port: 3100" 
 done
 [ "$(count "$a" 'path: /readyz, port: 3100')" -eq 1 ] || fail "agent: readiness on 3100"
 [ "$(count "$a" 'path: /healthz, port: 3100')" -eq 1 ] || fail "agent: liveness on 3100"
-# SPEC 13: no database and no upstream credentials.
+# Chat agent: no database and no upstream credentials.
 for word in JWT_SIGNING_KEY DATABASE_URL API_KEY_PEPPER "key: KEK" platform-db serviceAccountName; do
   lacks "$a" "$word" agent
 done

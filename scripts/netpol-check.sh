@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPEC 16 proofs for store namespaces, with throwaway curl pods.
+# NetworkPolicy matrix proofs for store namespaces, with throwaway curl pods.
 #   scripts/netpol-check.sh <slug-a> [<slug-b>]
 #   scripts/netpol-check.sh platform
 #   scripts/netpol-check.sh hosted <slug>
@@ -39,7 +39,7 @@ probe() {
   kubectl -n "$1" logs "$pod"
   kubectl -n "$1" delete pod "$pod" --wait=false >/dev/null
 }
-# SPEC 16 expects a timeout. A refusal also means no connection, so both count as blocked; the
+# The NetworkPolicy matrix expects a timeout. A refusal also means no connection, so both count as blocked; the
 # positive controls prove each target listens.
 blocked() { [ "$1" = "000 exit=28" ] || [ "$1" = "000 exit=7" ]; }
 # Any answer proves the connection opened, even curl rejecting MariaDB's binary greeting.
@@ -166,7 +166,7 @@ s.on("error", (e) => console.log(e.code === "ECONNREFUSED" ? "refused" : "error 
 fi
 
 if [ "$A" = hosted ]; then
-  # SPEC 16 and 21: a hosted pod takes traffic from the gateway only and reaches DNS and public 443 only.
+  # NetworkPolicy matrix and hosted server design: a hosted pod takes traffic from the gateway only and reaches DNS and public 443 only.
   # The pod needs a running hosted server, so create one first (scripts/hosted-check.sh create <slug>).
   slug=${B:?usage: $0 hosted <slug>}
   H=urumi.io/hosted=$slug

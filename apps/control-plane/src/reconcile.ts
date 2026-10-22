@@ -16,7 +16,7 @@ export const VERIFY_INTERVAL_MS = 2000;
 const DEADLINE_FALLBACK_MS = 15 * 60_000;
 export const MIN_INSTALL_TIMEOUT_SEC = 30;
 
-// A control-plane that died mid-operation leaves the release locked in one of these (SPEC 18).
+// A control-plane that died mid-operation leaves the release locked in one of these (the store provisioner design).
 const RECOVERABLE: ReadonlySet<ReleaseStatus> = new Set([
   'pending-install',
   'pending-upgrade',
@@ -145,7 +145,7 @@ async function enableServer(d: ReconcileDeps, job: StoreJob): Promise<void> {
 }
 
 // Helm returning proves the bootstrap hook Job ran. "Usable" is decided through the gateway, the only
-// caller SPEC 16 lets reach woo-mcp: its health check must see the server connected. Returns the
+// caller that the NetworkPolicy matrix lets reach woo-mcp: its health check must see the server connected. Returns the
 // failure reason once the store deadline passes, or null when the server is connected.
 async function waitForGateway(
   d: ReconcileDeps,
@@ -188,7 +188,7 @@ async function storeToken(d: ReconcileDeps, job: StoreJob): Promise<string> {
   return decryptSecret(row.enc, d.kek, row.slug);
 }
 
-// SPEC 18: the values file lives in the emptyDir (/tmp) only while helm runs.
+// Store provisioner: the values file lives in the emptyDir (/tmp) only while helm runs.
 async function withValuesFile<T>(
   dir: string,
   content: string,
@@ -210,7 +210,7 @@ export async function provisionStore(
   signal?: AbortSignal,
 ): Promise<void> {
   const clock = () => (d.now ?? (() => new Date()))().getTime();
-  // SPEC 18 step 1. Resources stay for inspection; the owner can delete the failed store.
+  // Step 1 of store creation. Resources stay for inspection; the owner can delete the failed store.
   if (job.deadlineAt && clock() >= job.deadlineAt.getTime()) {
     await markFailed(
       d,
@@ -300,7 +300,7 @@ async function waitGone(d: ReconcileDeps, ns: string): Promise<boolean> {
   return !(await d.kube.namespaceExists(ns));
 }
 
-// SPEC 18 delete, steps 2 and 3. The API already removed the server row (step 1). The 15 minute
+// Store deletion, steps 2 and 3. The API already removed the server row (step 1). The 15 minute
 // deadline belongs to provisioning only: deadline_at keeps its creation value on a deleting row,
 // so nothing here may read it.
 export async function teardownStore(

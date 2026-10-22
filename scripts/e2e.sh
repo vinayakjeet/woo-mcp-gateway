@@ -161,7 +161,7 @@ done
 trap - EXIT INT TERM
 pass "fx answers again $(ms_since "$t0") ms after its pod was ready"
 
-# SPEC 16: only the gateway reaches woo-mcp. The gateway connecting first proves the probe and the
+# The NetworkPolicy matrix: only the gateway reaches woo-mcp. The gateway connecting first proves the probe and the
 # host name work, so "blocked" from the other pods means the NetworkPolicy, not a typo.
 woo_probe_node() {
   kubectl -n platform exec "deploy/$1" -c "$1" -- node -e '
@@ -249,7 +249,7 @@ jq -e --arg e "$run@example.com" '(.items | length) > 0 and all(.items[]; .userE
   <<<"$rows" >/dev/null || fail "the member's calls are not audited to the member via api_key"
 pass "audit attributes each key call to its user, via api_key, failures included"
 
-# SPEC 8: the seeded member rules hide write tools and answer a call to them like a missing tool.
+# Tool permissions: the seeded member rules hide write tools and answer a call to them like a missing tool.
 # Output is captured first: grep -q can close the pipe early, and pipefail would call that a failure.
 list_names() {
   local out
@@ -308,7 +308,7 @@ until body "$(req member.jar GET '/api/audit?server=main&outcome=denied')" |
 done
 pass "the member's audit view has one denied row for main__create_product"
 
-# SPEC 17: tool search mode. ?toolMode=search lists only the two meta-tools, search_tools ranks the
+# Tool search mode. ?toolMode=search lists only the two meta-tools, search_tools ranks the
 # principal's visible tools, and call_tool goes through the same checks and audit as a direct call.
 search_tools() { MCP="$MCP?toolMode=search" tools "$@"; }
 search_names=$(MCP="$MCP?toolMode=search" list_names k2) || fail "search-mode tools/list"
@@ -369,7 +369,7 @@ body "$(req admin.jar GET /api/keys)" | jq -e --arg id "$k5_id" 'any(.keys[]; .i
   fail "GET /api/keys lacks the key's toolMode"
 pass "a key created in search mode lists two tools; ?toolMode=full lists them all"
 
-# SPEC 19: a key limited to 3 calls a minute. All counted calls must share one window, so wait
+# Rate limits: a key limited to 3 calls a minute. All counted calls must share one window, so wait
 # for the start of a minute when fewer than 15 seconds of this one are left.
 while [ "$((10#$(date +%S)))" -ge 45 ]; do sleep 1; done
 since_rl=$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)

@@ -43,7 +43,7 @@ admin_login admin.jar
 servers=$(body "$(req admin.jar GET /api/servers)")
 for slug in main fx gh; do
   s=$(jq -c --arg s "$slug" '.servers[] | select(.slug == $s)' <<<"$servers")
-  [ -n "$s" ] || fail "server $slug is not registered (gh: add it on the Servers page, SPEC 12)"
+  [ -n "$s" ] || fail "server $slug is not registered (gh: add it on the Servers page)"
   [ "$(jq -r .approval <<<"$s")" = approved ] || fail "server $slug is not approved"
   if [ "$(jq -r .enabled <<<"$s")" != true ]; then
     [ "$(code "$(req admin.jar PATCH "/api/servers/$(jq -r .id <<<"$s")" '{"enabled":true}')")" = 200 ] ||

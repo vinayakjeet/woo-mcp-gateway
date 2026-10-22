@@ -26,7 +26,7 @@ const tables = [
 ];
 
 describe('schema', () => {
-  it('defines every SPEC 4 table', () => {
+  it('defines every data-model table', () => {
     const names = Object.values(schema)
       .filter((t) => is(t, PgTable))
       .map((t) => getTableConfig(t as PgTable).name);

@@ -63,7 +63,7 @@ describe('labels and namespace', () => {
   });
 });
 
-describe('pod security (SPEC 15, decision 14)', () => {
+describe('pod security (pod security, decision 14)', () => {
   it('sets the pod security context field by field', () => {
     expect(pod().securityContext).toEqual({
       runAsNonRoot: true,
@@ -180,7 +180,7 @@ describe('service', () => {
   });
 });
 
-describe('network policy (SPEC 16)', () => {
+describe('network policy', () => {
   const np = () => build().networkPolicy.spec;
 
   it('selects the hosted pod and restricts both directions', () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live checks for hosted MCP servers (SPEC 21), through the dashboard API.
+# Live checks for hosted MCP servers, through the dashboard API.
 #   S=<scratchpad> scripts/hosted-check.sh create <slug> [NAME=VALUE ...]
 #   S=<scratchpad> scripts/hosted-check.sh check|delete|offline <slug>
 #   S=<scratchpad> scripts/hosted-check.sh all

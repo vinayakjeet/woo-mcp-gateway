@@ -49,7 +49,7 @@ describe.skipIf(!base)('seedPolicies (needs TEST_DATABASE_URL)', () => {
     await client.query("delete from platform_settings where key = 'policies_seeded'");
   });
 
-  it('inserts the SPEC 8 rules once', async () => {
+  it('inserts the default tool permission rules once', async () => {
     await seedPolicies(db);
     expect(await rows()).toBe(SEED_POLICIES.length);
     await seedPolicies(db);

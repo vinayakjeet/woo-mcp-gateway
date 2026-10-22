@@ -8,7 +8,7 @@ RUN pnpm install --frozen-lockfile --network-concurrency "$PNPM_NETWORK_CONCURRE
  && pnpm --filter @woo/control-plane... build \
  && pnpm --filter @woo/control-plane deploy --prod --legacy /out
 
-# The provisioner runs the helm CLI (SPEC 18). The tarball is checked against a pinned digest.
+# The provisioner runs the helm CLI (the store provisioner design). The tarball is checked against a pinned digest.
 FROM node:24-alpine AS helm
 ARG TARGETARCH
 ARG HELM_VERSION=4.3.0
@@ -32,7 +32,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /out /app
 COPY --from=helm /usr/local/bin/helm /usr/local/bin/helm
-# Baked in so an install never fetches a chart at run time (SPEC 18).
+# Baked in so an install never fetches a chart at run time (the store provisioner design).
 COPY charts/store /charts/store
 USER 10001
 EXPOSE 3000 3001

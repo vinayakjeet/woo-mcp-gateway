@@ -123,7 +123,7 @@ describe('evaluatePolicy', () => {
     expect(evaluatePolicy(rules, 'admin', 'gh', 'create_issue')).toBe(true);
   });
 
-  it('seeds the seven SPEC 8 rules at priority 0', () => {
+  it('seeds the seven default tool permission rules at priority 0', () => {
     expect(SEED_POLICIES).toHaveLength(7);
     expect(SEED_POLICIES.every((r) => r.priority === 0 && r.effect === 'allow')).toBe(true);
     for (const r of SEED_POLICIES) expect(policyRuleInput.safeParse(r).success).toBe(true);

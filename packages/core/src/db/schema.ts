@@ -251,7 +251,7 @@ export const rateCounters = pgTable(
   (t) => [primaryKey({ columns: [t.subject, t.windowStart] })],
 );
 
-// SPEC 24 lists no columns; M13 only adds to these.
+// The OAuth design lists no columns; M13 only adds to these.
 export const oauthClients = pgTable('oauth_clients', {
   id: uuid('id').primaryKey().defaultRandom(),
   clientId: text('client_id').notNull().unique(),

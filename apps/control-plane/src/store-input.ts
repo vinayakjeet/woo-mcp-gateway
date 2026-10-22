@@ -1,14 +1,14 @@
 import { isValidSlug } from '@woo/core';
 import { z } from 'zod';
 
-// SPEC 18: main belongs to the store that make store installs, which the platform adopts.
+// Store provisioner: main belongs to the store that make store installs, which the platform adopts.
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set(['main']);
 export const DEADLINE_MINUTES = 15;
 
 const MAX_NAME = 60;
 const KEY_RE = /^[\x21-\x7e]{1,200}$/;
 
-// SPEC 18: lowercase, hyphens, 3 to 20 characters. The slug also names the namespace, the release,
+// Store provisioner: lowercase, hyphens, 3 to 20 characters. The slug also names the namespace, the release,
 // the store host and the MCP server, so it must pass the shared slug rule as well.
 export function deriveStoreSlug(name: string): string | null {
   const slug = name
