@@ -344,11 +344,12 @@ Related rules:
 Proof: `TEST_DATABASE_URL=... pnpm --filter @woo/gateway exec vitest run main upstream mcp`:
 
 - `main.test.ts`, "routes a call with only the stored credential and writes the audit row": a client calls through the gateway with an API key, and every `Authorization` header the upstream received is exactly `Bearer main-token`, with no `urk_` key text in any of them.
+- `main.test.ts`, "does not forward an OAuth access token or an agent JWT to the upstream": one call with each token reaches the same recording upstream. Every `Authorization` header it received is exactly `Bearer main-token`, neither token string appears in any of them, and the audit rows record the calls as `oauth` and `agent`.
 - `upstream.test.ts`, "sends only its stored credential, under the configured header name", "sends a traceparent as _meta and nothing else in protocol_mode %s".
 - `mcp.test.ts`, "does not forward tracestate or any other client _meta key".
 - The audience rows of `auth.test.ts` (section 14).
 
-Gap: the end-to-end header check covers an API key. The OAuth token and the agent token are not asserted at a recording upstream. For them the proof is structural: they enter through the same `authenticate` step, and `Upstream.call` has no place to put a client credential.
+The end-to-end check covers all three credential types. It records the `Authorization` header only. A token placed in another header or in the arguments would not be caught by it; the structural reason above (no parameter on `Upstream.call` for a client credential) covers that case.
 
 ## 18. What one team member can do to another
 
