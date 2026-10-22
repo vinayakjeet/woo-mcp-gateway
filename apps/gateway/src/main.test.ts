@@ -24,6 +24,8 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
   let fx: Awaited<ReturnType<typeof fakeUpstream>>;
   // Every Authorization header the main upstream received: only its stored credential may appear.
   const mainAuth: string[] = [];
+  // Everything else the main upstream received: the request line, all header lines and the body.
+  const mainSeen: { head: string; body: string }[] = [];
   let key: string;
   let keyId: string;
   let userId: string;
@@ -35,6 +37,11 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
     ({ pool, db } = created);
     main = await fakeUpstream({
       tools: new Map([['get_info', async () => text('get_info ok')]]),
+      onRequest: (req) => {
+        const seen = { head: `${req.method} ${req.url}\n${req.rawHeaders.join('\n')}`, body: '' };
+        mainSeen.push(seen);
+        req.on('data', (chunk: Buffer) => (seen.body += chunk.toString('utf8')));
+      },
       accept: (req) => {
         mainAuth.push(req.headers.authorization ?? '');
         return req.headers.authorization === 'Bearer main-token';
@@ -232,6 +239,7 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
     });
     const agentToken = signAgentJwt({ key: 'jwt', userId, audience: AUDIENCE });
     const before = mainAuth.length;
+    const seenBefore = mainSeen.length;
     for (const token of [oauthToken, agentToken]) {
       const c = new Client({ name: 'e2e-passthrough', version: '0.0.0' });
       await c.connect(
@@ -258,6 +266,18 @@ describe.skipIf(!TEST_DATABASE_URL)('startGateway against Postgres', () => {
     const joined = seen.join(' ');
     expect(joined).not.toContain(oauthToken);
     expect(joined).not.toContain(agentToken);
+    // Not only Authorization: no header line, URL or body carries either token. Matching on the
+    // signature part as well catches a token that was split or re-encoded at the dot.
+    const everything = mainSeen
+      .slice(seenBefore)
+      .map((r) => `${r.head}\n${r.body}`)
+      .join('\n');
+    // Proves the capture saw both the header lines and the body.
+    expect(everything).toContain('Bearer main-token');
+    expect(everything).toContain('tools/call');
+    for (const token of [oauthToken, agentToken]) {
+      for (const part of [token, ...token.split('.')]) expect(everything).not.toContain(part);
+    }
     const vias = await db
       .select({ via: schema.auditEvents.via })
       .from(schema.auditEvents)
