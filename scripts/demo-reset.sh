@@ -5,9 +5,9 @@
 # Needs kubectl, curl and jq. Secrets go to files under $S (mode 600) and are never printed.
 #
 # --reset-member-password sets a new random password for the member, written to
-# .notes/demo/asha.pw (mode 600). It runs the app's own argon2 hash inside the control-plane pod and
-# updates that one user's password_hash, so use it for an account created earlier whose password
-# nobody kept. There is no reset API.
+# $ASHA_PW_FILE (default deploy/secrets/asha.pw, git-ignored, mode 600). It runs the app's own
+# argon2 hash inside the control-plane pod and updates that one user's password_hash, so use it
+# for an account created earlier whose password nobody kept. There is no reset API.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,6 +22,7 @@ esac
 APP=${APP:-http://app.127.0.0.1.nip.io}
 MCP=${MCP:-http://mcp.127.0.0.1.nip.io/mcp}
 DEMO_MEMBER=asha@example.com
+PW_FILE=${ASHA_PW_FILE:-deploy/secrets/asha.pw}
 umask 077
 mkdir -p "$S"
 # shellcheck source=scripts/api-lib.sh
@@ -90,12 +91,11 @@ esac
 pass "$DEMO_MEMBER is an active member"
 
 if $reset_pw; then
-  mkdir -p .notes/demo
-  chmod 700 .notes/demo
-  head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >.notes/demo/asha.pw
-  chmod 600 .notes/demo/asha.pw
+  mkdir -p "$(dirname "$PW_FILE")"
+  head -c 24 /dev/urandom | base64 | tr -d '/+=\n' >"$PW_FILE"
+  chmod 600 "$PW_FILE"
   # The password and email travel on stdin, so they never reach argv or the pod's process list.
-  jq -n --rawfile pw .notes/demo/asha.pw --arg email "$DEMO_MEMBER" '{password: $pw, email: $email}' |
+  jq -n --rawfile pw "$PW_FILE" --arg email "$DEMO_MEMBER" '{password: $pw, email: $email}' |
     kubectl -n platform exec -i deploy/control-plane -c control-plane -- node -e '
       const { hash } = require("@node-rs/argon2");
       const { Client } = require("pg");
@@ -114,12 +114,12 @@ if $reset_pw; then
       });
     ' || fail "could not set the $DEMO_MEMBER password"
   # Proves the new password works through the real login route.
-  jq -n --rawfile pw .notes/demo/asha.pw --arg e "$DEMO_MEMBER" '{email: $e, password: $pw}' >"$S/asha-login.json"
+  jq -n --rawfile pw "$PW_FILE" --arg e "$DEMO_MEMBER" '{email: $e, password: $pw}' >"$S/asha-login.json"
   r=$(curl -s -o /dev/null -w '%{http_code}' -H "origin: $APP" -H 'content-type: application/json' \
     --data-binary @"$S/asha-login.json" "$APP/api/auth/login")
   rm -f "$S/asha-login.json"
   [ "$r" = 200 ] || fail "login as $DEMO_MEMBER with the new password gave $r"
-  pass "$DEMO_MEMBER password reset; it is in .notes/demo/asha.pw"
+  pass "$DEMO_MEMBER password reset; it is in $PW_FILE"
 fi
 
 # Every live key except the newest admin key named demo goes: keys from test runs, smoke checks

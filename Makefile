@@ -4,7 +4,7 @@ CLUSTER ?= urumi
 IMAGE_TAG ?= dev
 SLUG ?= main
 # ENV=local is the k3d cluster. ENV=prod is the VM: kubectl and helm go to the urumi-vm context
-# (an SSH tunnel to the API server, see .notes/plans/M8-vm.md Task 4), the prod values files are
+# (an SSH tunnel to the API server, see docs/OPERATIONS.md section 1), the prod values files are
 # used, and the image tag must be given because CI builds the images.
 ENV ?= local
 ifeq ($(ENV),local)
