@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Puts the live system in the demo state: main, fx and gh enabled and connected, the member
-# asha@example.com active, and exactly one live API key, named demo, owned by the admin.
+# Puts the live system in the demo state: main, fx and gh enabled and connected (a server that is
+# not registered is skipped), the member asha@example.com active, and exactly one live API key,
+# named demo, owned by the admin.
 # Orders, products, other users and the chat history (kept in each browser) are left alone.
 # Needs kubectl, curl and jq. Secrets go to files under $S (mode 600) and are never printed.
 #
@@ -41,9 +42,14 @@ done
 admin_login admin.jar
 
 servers=$(body "$(req admin.jar GET /api/servers)")
+present=()
 for slug in main fx gh; do
   s=$(jq -c --arg s "$slug" '.servers[] | select(.slug == $s)' <<<"$servers")
-  [ -n "$s" ] || fail "server $slug is not registered (gh: add it on the Servers page)"
+  if [ -z "$s" ]; then
+    echo "skipped $slug: not registered (add it on the Servers page, then approve its tools)"
+    continue
+  fi
+  present+=("$slug")
   [ "$(jq -r .approval <<<"$s")" = approved ] || fail "server $slug is not approved"
   if [ "$(jq -r .enabled <<<"$s")" != true ]; then
     [ "$(code "$(req admin.jar PATCH "/api/servers/$(jq -r .id <<<"$s")" '{"enabled":true}')")" = 200 ] ||
@@ -52,17 +58,18 @@ for slug in main fx gh; do
   fi
 done
 t0=$(date +%s%N)
-until body "$(req admin.jar GET /api/servers)" | jq -e '[.servers[]
-  | select(.slug == "main" or .slug == "fx" or .slug == "gh") | .status.state]
-  | length == 3 and all(. == "connected")' >/dev/null; do
+present_json=$(printf '%s\n' "${present[@]}" | jq -R . | jq -s .)
+until body "$(req admin.jar GET /api/servers)" | jq -e --argjson p "$present_json" '[.servers[]
+  | select(.slug as $s | $p | index($s)) | .status.state]
+  | length == ($p | length) and all(. == "connected")' >/dev/null; do
   if [ "$(ms_since "$t0")" -ge 60000 ]; then
     body "$(req admin.jar GET /api/servers)" |
       jq -r '.servers[] | "\(.slug): \(.status.state) \(.status.errorKind // "") \(.status.errorMessage // "")"' >&2
-    fail "main, fx and gh are not all connected after 60 s"
+    fail "${present[*]} not all connected after 60 s"
   fi
   sleep 1
 done
-pass "main, fx and gh enabled and connected"
+pass "${present[*]} enabled and connected"
 
 users=$(body "$(req admin.jar GET /api/users)")
 asha=$(jq -c --arg e "$DEMO_MEMBER" '.users[] | select(.email == $e)' <<<"$users")
