@@ -6,6 +6,8 @@ It runs on k3d locally and on a k3s VM (Azure, Let's Encrypt certificates) with 
 
 Live deployment: https://app.vinayak-urum.me (dashboard). Demo access on request.
 
+Upstreams connected on the VM: main (my WooCommerce MCP server), fx (currency), gh (GitHub remote MCP, 13 read-only tools).
+
 | Read                                         | For                                                                                                          |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | [docs/DESIGN.md](docs/DESIGN.md)             | System design and tradeoffs: components, the path of a tool call, failure handling, local to production      |
@@ -20,7 +22,7 @@ Layout: `apps/` (gateway, control-plane, web, agent), `servers/` (woo-mcp, fx-mc
 - Node.js 24 and pnpm 10.34.6 (`corepack enable` picks the pnpm pinned in `package.json`).
 - jq, curl and openssl (the Makefile and scripts use them).
 - For the chat agent: a Gemini API key (primary) and a Groq API key (fallback). Free tiers work, with rate limits.
-- For the third upstream (optional): a GitHub fine-grained personal access token limited to one repo, `store-ops`, with Issues read and write.
+- For the third upstream (`gh`): a GitHub fine-grained personal access token with read-only access to public repositories and no other permissions.
 
 ## Local setup
 
@@ -46,7 +48,7 @@ kubectl -n platform get secret platform-bootstrap -o jsonpath='{.data.ADMIN_EMAI
 kubectl -n platform get secret platform-bootstrap -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d; echo
 ```
 
-GitHub upstream (optional): on the Servers page, add a server with slug `gh`, URL `https://api.githubcopilot.com/mcp/` and a Bearer credential set to the token. The dashboard never shows the token again.
+GitHub upstream: on the Servers page, add a server with slug `gh`, URL `https://api.githubcopilot.com/mcp/x/repos/readonly` and a Bearer credential set to the token. This is the read-only endpoint, so the server exposes 13 read-only tools. The dashboard never shows the token again.
 
 After a code change, rebuild only that image and restart it, for example `make image-gateway` then `kubectl -n platform rollout restart deploy/gateway`. `make images` also rebuilds the WordPress image.
 
@@ -119,7 +121,7 @@ Prompts for a demo:
 - "How many orders today?" (`main__get_info`, or `main__list_orders` with `date: today`)
 - "Create a product called Ginger Tea 100g priced at 180." Then refresh the storefront.
 - "Total sales today in USD." (main and fx)
-- "Open an issue in store-ops listing today's on-hold orders." (main and gh)
+- "List the three newest open issues in woocommerce/woocommerce, then count today's on-hold orders in the store." (main and gh, read-only)
 
 Models (`deploy/values-local.yaml`): primary `gemini-3.5-flash-lite`, fallback `openai/gpt-oss-120b` on Groq. Free tiers answer 429 or 503 in bursts. The agent retries the primary once, then uses the fallback, and when both are limited it says so with the wait in seconds.
 
@@ -177,7 +179,7 @@ The nine optional items of the brief and the bonus. Each line says where it live
 7. **Scaling.** Two gateway replicas with a PodDisruptionBudget in `deploy/values-prod.yaml`; rate limits per key and per user in Postgres (`apps/gateway/src/rate-limit.ts`); [docs/DESIGN.md](docs/DESIGN.md) "Scaling". Backed by `apps/gateway/src/rate-limit.test.ts` and `scripts/replica-demo.sh` (20 of 20 calls ok with a pod deleted mid-run, on the VM).
 8. **Observability.** Prometheus metrics on the gateway and control-plane, the Health page (rate, p50, p95 per server), request ids and W3C trace ids across services; [docs/DESIGN.md](docs/DESIGN.md) "Observability". Backed by `scripts/obs-check.sh` (12 checks, on the VM). Upstream failures are reported with a reason from a fixed list (`timeout`, `refused`, `dns`, `tls`, `protocol`, `http_4xx`, `http_5xx`, `blocked`, `unknown`), as in `apps/gateway/src/classify.ts`.
 9. **Upgrades and rollback.** [docs/OPERATIONS.md](docs/OPERATIONS.md) sections 4 to 6. Backed by a run on the VM on 2026-10-19: upgrade to a new tag (Helm revision 4), `helm rollback` to revision 3 (recorded as revision 5), `scripts/e2e.sh` and `scripts/chat-check.sh` passing after each, and a `mariadb-dump` restored into a throwaway container with matching counts.
-10. **Bonus: multi-store provisioning.** The Stores page creates and deletes stores. Each is a Helm release in its own namespace `store-<slug>` with its own database, Secrets, volumes, Ingress host, ResourceQuota, LimitRange and NetworkPolicies, and registers its own `<slug>__*` tools in the gateway. A per-user limit and a 15 minute provisioning timeout apply, and a restart of the control-plane mid-provisioning resumes; `apps/control-plane/src/api-stores.ts`, [docs/DESIGN.md](docs/DESIGN.md) "System overview", "Stores". Backed by `api-stores.test.ts` and `api-stores-delete.test.ts`, and on the VM by `scripts/stores-check.sh all` (33 checks, including a control-plane kill mid-provision and the teardown check) and `scripts/netpol-check.sh main`. A recorded run of the chat agent comparing today's orders across two stores is not made yet.
+10. **Bonus: multi-store provisioning.** The Stores page creates and deletes stores. Each is a Helm release in its own namespace `store-<slug>` with its own database, Secrets, volumes, Ingress host, ResourceQuota, LimitRange and NetworkPolicies, and registers its own `<slug>__*` tools in the gateway. A per-user limit and a 15 minute provisioning timeout apply, and a restart of the control-plane mid-provisioning resumes; `apps/control-plane/src/api-stores.ts`, [docs/DESIGN.md](docs/DESIGN.md) "System overview", "Stores". Backed by `api-stores.test.ts` and `api-stores-delete.test.ts`, and on the VM by `scripts/stores-check.sh all` (33 checks, including a control-plane kill mid-provision and the teardown check) and `scripts/netpol-check.sh main`. A run of the chat agent comparing today's orders across two stores is shown in the demo video.
 
 ## How woo-mcp talks to the store, and why
 
@@ -208,7 +210,7 @@ pnpm -r test                               # unit tests; set TEST_DATABASE_URL f
 
 Against the VM, run the same scripts with `APP`, `MCP`, `EXPECT_CONTEXT=urumi-vm` and a flattened `KUBECONFIG` as in [docs/OPERATIONS.md](docs/OPERATIONS.md), section 1.
 
-## Scale and metrics (M12)
+## Scale and metrics
 
 Local values run one gateway and no Prometheus. Turn the extras on with `--set` and restore with a plain `make platform`:
 
