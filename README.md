@@ -121,7 +121,7 @@ Prompts for a demo:
 - "How many orders today?" (`main__get_info`, or `main__list_orders` with `date: today`)
 - "Create a product called Ginger Tea 100g priced at 180." Then refresh the storefront.
 - "Total sales today in USD." (main and fx)
-- "List the three newest open issues in woocommerce/woocommerce, then count today's on-hold orders in the store." (main and gh, read-only)
+- "Find the woocommerce/woocommerce repository on GitHub and summarise what it is, then tell me how many orders the store got today." (main and gh, read-only)
 
 Models (`deploy/values-local.yaml`): primary `gemini-3.5-flash-lite`, fallback `openai/gpt-oss-120b` on Groq. Free tiers answer 429 or 503 in bursts. The agent retries the primary once, then uses the fallback, and when both are limited it says so with the wait in seconds.
 
